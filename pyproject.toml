@@ -1,0 +1,32 @@
+[project]
+name = "dashline"
+version = "0.0.0"
+description = "One Claude Code statusline for every plan: session, plan-limit bars and a git row."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.9"
+dependencies = []
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.14"]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py39"
+line-length = 100
+src = ["src", "tests", "scripts"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF", "PTH"]
+# dashline draws with these on purpose (minus sign, separators, en dash in prose).
+allowed-confusables = ["–", "−", "·", "│", "∕"]
+
+[tool.ruff.lint.per-file-ignores]
+# The shim and the render path use os.path: pathlib costs import time on every render.
+"statusline.py" = ["PTH"]
