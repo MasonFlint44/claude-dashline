@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.1 — 2026-11-05
+
+- `--doctor` no longer warns about a cache folder other users can list. It checks
+  dashline's own files, which are always written readable only by you; the folder may
+  belong to another tool.
+
 ## 0.1.0 — 2026-11-04
 
 First release.

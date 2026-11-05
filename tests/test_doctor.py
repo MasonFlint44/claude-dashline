@@ -333,14 +333,25 @@ def test_cache_not_needed_for_api(installed, tmp_path):
     assert (status, text) == ("ok", "~/.claude/cache/statusline: not needed without plan bars")
 
 
-def test_cache_readable_by_others(sub, server, tmp_path):
+def test_shared_cache_folder_is_fine(sub, server, tmp_path):
+    """A folder others can list (made by another tool) only shows them file names."""
     server.reply(200, json.dumps(usage_fixture("ultra")))
     cache_path(sub).mkdir(parents=True)
-    cache_path(sub).chmod(0o755)
+    cache_path(sub).chmod(0o775)
     status, text, fix = check(sub, "cache", tmp_path, server.url)
+    assert (status, text, fix) == ("ok", "~/.claude/cache/statusline: fetched just now", None)
+    assert (cache_path(sub) / "usage.json").stat().st_mode & 0o777 == 0o600
+
+
+def test_cache_file_readable_by_others(sub, tmp_path):
+    cache_path(sub).mkdir(mode=0o700, parents=True)
+    cached = cache_path(sub) / "usage.json"
+    cached.write_text(json.dumps({"fetched_at": NOW - 60, "data": {}}))
+    cached.chmod(0o644)
+    status, text, fix = check(sub, "cache", tmp_path)  # the fetch fails: usage.json stays
     assert status == "warn"
-    assert "other users can read it" in text
-    assert fix == "chmod 700 ~/.claude/cache/statusline"
+    assert text.endswith("other users can read usage.json")
+    assert fix == "chmod 600 ~/.claude/cache/statusline/usage.json"
 
 
 def test_cache_not_writable(sub, tmp_path):
@@ -360,6 +371,7 @@ def test_cache_stale_lock(sub, server, tmp_path):
     cache_path(sub).mkdir(mode=0o700, parents=True)
     lock = cache_path(sub) / "fetch.lock"
     lock.write_text("{}")
+    lock.chmod(0o600)  # as take_lock makes it
     os.utime(lock, (NOW - 600, NOW - 600))
     status, text, _ = check(sub, "cache", tmp_path, server.url)
     assert status == "ok"

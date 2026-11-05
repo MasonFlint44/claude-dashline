@@ -33,7 +33,7 @@ What the checks mean:
 | `settings` | which settings file's `statusLine` wins, and whether it runs dashline; `disableAllHooks` |
 | `login` | subscription vs API key / Bedrock / Vertex / Foundry; where the token comes from |
 | `usage` | one live fetch of plan usage: the bars it would draw, or why it failed |
-| `cache` | `<config>/cache/statusline/`: writable, private, when last fetched, fetch lock |
+| `cache` | `<config>/cache/statusline/`: writable, dashline's files private, when last fetched, fetch lock |
 | `command` | runs the exact settings command on a sample session, like Claude Code does |
 | `git` | git for the directory row (2.11 or newer) |
 | `theme` | the Claude Code theme whose colors the statusline uses |
@@ -49,7 +49,7 @@ Ask first (AskUserQuestion), and act only on a yes:
 - `settings` says no statusLine, or one that runs another statusline: run
   `DASHLINE --install`. If it exits 3, show the existing entry from its output and ask
   before `DASHLINE --install --replace`.
-- `cache` says other users can read it: `chmod 700` on the folder it names.
+- `cache` says other users can read one of its files: run the `chmod 600` in its `fix:` line.
 
 Explain, and leave to the user:
 - `disableAllHooks`: it turns off hooks too, so removing it is the user's decision.

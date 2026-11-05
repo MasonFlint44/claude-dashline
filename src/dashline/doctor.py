@@ -306,12 +306,22 @@ class Doctor:
                 notes.append("a stale fetch.lock (the next render clears it)")
             else:
                 notes.append("a fetch is running")
-        status = OK
-        if os.stat(path).st_mode & 0o077:
+        # dashline's own files, not the folder: it may be shared with other tools, and a
+        # folder others can list only shows them file names.
+        exposed = []
+        for name in ("usage.json", "fetch.hold", "fetch.lock"):
+            try:
+                mode = os.stat(os.path.join(path, name)).st_mode
+            except OSError:
+                continue
+            if mode & 0o077:
+                exposed.append(name)
+        status, fix = OK, None
+        if exposed:
             status = WARN
-            notes.append("other users can read it")
+            notes.append(f"other users can read {', '.join(exposed)}")
+            fix = "chmod 600 " + " ".join(f"{where}/{name}" for name in exposed)
         text = f"{where}" + (f": {', '.join(notes)}" if notes else "")
-        fix = f"chmod 700 {where}" if status == WARN else None
         self.add(status, "cache", text, fix)
 
     def command(self):

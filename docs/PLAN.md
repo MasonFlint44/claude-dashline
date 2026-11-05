@@ -151,7 +151,8 @@ belongs to a dead child) and, after printing, starts a detached `python3 -I -S` 
 account}`. `account` is a hash of the account and org ids, so a different login never
 sees another's numbers. Holds: no login 10 min, expired token / 401 5 min, 403 1 h,
 404 6 h; anything else backs off 1, 2, 4 … 30 min (`Retry-After` honored on 429).
-Data older than a day is dropped. Files are 0600 in a 0700 directory, written
+Data older than a day is dropped. Files are 0600 in a 0700 directory (0700 when dashline creates it; a folder another
+tool made is left as it is, since its files stay 0600), written
 atomically.
 
 settings.json, written literally so a devcontainer mounting `~/.claude` under
@@ -555,7 +556,7 @@ writes. If hiding elements ever earns its keep, a file goes in
   project-local / project / user, `disableAllHooks`, `refreshInterval`), login (mode,
   label, token source and expiry, never the token), usage (one foreground fetch via
   the same `refresh` the child runs, so it also renews the cache or sets the hold),
-  cache (writable, 0700, last fetch, lock), command (runs the settings command through
+  cache (writable, dashline's files 0600 (0.1.1: not the folder), last fetch, lock), command (runs the settings command through
   `sh -c` on a sample session and times it), git (≥ 2.11), theme, font (Nerd Font
   guess). Phase 6: no profile endpoint any more (§1), and a lock or hold can't wedge
   (a lock expires after 60 s; doctor's fetch replaces the hold), so there is nothing

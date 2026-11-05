@@ -90,7 +90,7 @@ Keychain, or `~/.claude/.credentials.json`.
   backoff on errors.
 - The token goes only to `api.anthropic.com`. It is never written anywhere, passed on a
   command line or put in an environment variable.
-- The answer is cached in `~/.claude/cache/statusline/` (private to you) and tagged
+- The answer is cached in `~/.claude/cache/statusline/` (files only you can read) and tagged
   with your account, so switching logins never shows someone else's numbers.
 
 The endpoint isn't documented. If it changes, the affected bars disappear until
