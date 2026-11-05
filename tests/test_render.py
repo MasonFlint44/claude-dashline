@@ -148,10 +148,15 @@ def test_render_stays_fast(isolated_home, spawned):
     import time
 
     setup_home(isolated_home, ULTRA_ACCOUNT, "ultra")
-    render(isolated_home)
+    # A real folder: the fixture's /home/user/project is an automount lookup on macOS.
+    project = isolated_home / "project"
+    project.mkdir()
+    where = {"current_dir": str(project), "project_dir": str(project)}
+    stdin = merge(stdin_data("after-first-response"), {"workspace": where, "cwd": str(project)})
+    render(isolated_home, stdin)
     start = time.perf_counter()
     for _ in range(20):
-        render(isolated_home)
+        render(isolated_home, stdin)
     assert (time.perf_counter() - start) / 20 < 0.02
 
 

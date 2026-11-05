@@ -248,7 +248,8 @@ def test_sibling_dir_is_not_inside(project):
     """`/x/proj-old` starts with `/x/proj` but is not inside it."""
     sibling = project.parent / (project.name + "-old")
     sibling.mkdir()
-    assert row(project, current=sibling) == f"proj  ↳ {sibling}  ⎇ main"
+    # Wide enough for macOS's long temp paths: drift is the first thing a narrow row drops.
+    assert row(project, columns=400, current=sibling) == f"proj  ↳ {sibling}  ⎇ main"
 
 
 def test_colors(project):
