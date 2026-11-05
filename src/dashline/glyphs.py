@@ -19,6 +19,7 @@ NERD = {
     "bar_empty": "▁",
     "ellipsis": "…",
     "minus": "−",
+    "stale": "·",  # "·12m": the usage data's age
     # line 3 (Phase 4)
     "project": "\U000f02a2 ",  # md-git
     "folder": "\U000f0770 ",  # md-folder_open
@@ -54,6 +55,7 @@ UNICODE = {
     "bar_empty": "▁",
     "ellipsis": "…",
     "minus": "−",
+    "stale": "·",
     "project": "",
     "folder": "",
     "worktree": " ⑂ ",
@@ -88,6 +90,7 @@ ASCII = {
     "bar_empty": "-",
     "ellipsis": "...",
     "minus": "-",
+    "stale": "~",
     "project": "",
     "folder": "",
     "worktree": " [",  # "name [wt]": the closing bracket comes from the row

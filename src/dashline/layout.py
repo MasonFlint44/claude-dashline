@@ -50,10 +50,13 @@ MISS_CAUSES = {
 
 
 class Bar:
+    """One bar. `reached`: the limit blocks you, so it draws as text, not cells."""
+
     def __init__(self, label: str, percent: float, resets_at: float | None = None):
         self.label = label
         self.percent = percent
         self.resets_at = resets_at
+        self.reached = False
 
 
 class Ctx:
@@ -96,6 +99,12 @@ def truncate(line: list, limit: int, ellipsis: str, style: str) -> list:
 
 
 def bar_suffix(bar: Bar, ctx: Ctx, countdown: bool) -> list:
+    if bar.reached:
+        text = "limit"
+        left = (bar.resets_at - ctx.now) if bar.resets_at else 0
+        if countdown and left > 0:
+            text += f"{ctx.g['sep_item']}resets {bars.duration(left)}"
+        return [(" ", ""), ctx.seg(text, "error")]
     out = [(" ", ""), ctx.seg(bars.percent_text(bar.percent), "text")]
     if countdown and bar.resets_at and bar.percent >= bars.COUNTDOWN_FROM:
         left = bar.resets_at - ctx.now
@@ -106,13 +115,20 @@ def bar_suffix(bar: Bar, ctx: Ctx, countdown: bool) -> list:
 
 def bar_overhead(bar: Bar, ctx: Ctx, countdown: bool) -> int:
     """Columns a bar takes besides its cells."""
+    if bar.reached:
+        return len(bar.label) + width(bar_suffix(bar, ctx, countdown))
     return len(bar.label) + 1 + width(bar_suffix(bar, ctx, countdown))
+
+
+def bar_width(bar: Bar, ctx: Ctx, cells: int) -> int:
+    """Columns a bar takes drawn with this many cells (none when the limit is reached)."""
+    return bar_overhead(bar, ctx, True) + (0 if bar.reached else cells)
 
 
 def draw_bar(bar: Bar, cells: int | None, ctx: Ctx, countdown: bool) -> list:
     """`label ▆▆▆▁▁▁ 41% (1h40m)`; with cells=None, text only: `label 41%`."""
     out = [ctx.seg(bar.label, "text")]
-    if cells is not None:
+    if cells is not None and not bar.reached:
         n = bars.filled(bar.percent, cells)
         out += [
             (" ", ""),
@@ -185,11 +201,20 @@ class Fit:
         self.context_width = context_width
 
 
-def fit(ctx: Ctx, text_w: int, context: Bar | None, plan: list, prefix_w: int, tail_w: int):
+def fit(
+    ctx: Ctx,
+    text_w: int,
+    context: Bar | None,
+    plan: list,
+    prefix_w: int,
+    tail_w: int,
+    suffix_w: int = 0,
+):
     """Largest widths that fit, moving the fewest plan bars up to line 1; None if none do.
 
     text_w: line 1's text part; prefix_w: line 2's plan-name prefix with its separator;
-    tail_w: what follows the bars on line 1 (the cache state, with its leading space).
+    tail_w: what follows the bars on line 1 (the cache state, with its leading space);
+    suffix_w: what follows the bars on line 2 (the stale-data age).
     At least one plan bar stays on line 2.
     """
     gap, sep = len(BAR_GAP), len(ctx.g["sep_group"])
@@ -198,11 +223,11 @@ def fit(ctx: Ctx, text_w: int, context: Bar | None, plan: list, prefix_w: int, t
         stay, up = plan[: n - moved], plan[n - moved :]
         for p in range(PLAN_MAX, PLAN_MIN - 1, -1) if n else [None]:
             if stay:
-                need2 = prefix_w + sum(bar_overhead(b, ctx, True) + p for b in stay)
+                need2 = prefix_w + suffix_w + sum(bar_width(b, ctx, p) for b in stay)
                 if need2 + gap * (len(stay) - 1) > ctx.width:
                     continue
             count1 = len(up) + (1 if context else 0)
-            used1 = text_w + tail_w + sum(bar_overhead(b, ctx, True) + p for b in up)
+            used1 = text_w + tail_w + sum(bar_width(b, ctx, p) for b in up)
             used1 += ((sep if text_w else 0) + gap * (count1 - 1)) if count1 else 0
             if context is None:
                 if used1 <= ctx.width:
@@ -218,7 +243,7 @@ def fit(ctx: Ctx, text_w: int, context: Bar | None, plan: list, prefix_w: int, t
 # ---- assembly ----
 
 
-def assemble(text, context, plan, prefix, tail, ctx, f: Fit | None, countdown=True):
+def assemble(text, context, plan, prefix, tail, ctx, f: Fit | None, countdown=True, suffix=()):
     """Build both lines from a fit (or text-only bars when f is None)."""
     n = len(plan)
     moved = f.moved if f else 0
@@ -243,12 +268,14 @@ def assemble(text, context, plan, prefix, tail, ctx, f: Fit | None, countdown=Tr
         line2 = list(prefix)
         for i, b in enumerate(stay):
             line2 += ([(BAR_GAP, "")] if i else []) + draw_bar(b, pw, ctx, countdown)
-        lines.append(line2)
+        lines.append(line2 + list(suffix))
     return lines
 
 
-def lay_out(session, ctx: Ctx, plan: list, plan_label: str | None = None) -> list:
-    """Lines 1–2 as segment lists, fitted to ctx.width."""
+def lay_out(
+    session, ctx: Ctx, plan: list, plan_label: str | None = None, stale: float | None = None
+) -> list:
+    """Lines 1–2 as segment lists, fitted to ctx.width. stale: the usage data's age."""
     context = None
     if session.context_percent is not None:
         context = Bar("context", session.context_percent)
@@ -256,6 +283,9 @@ def lay_out(session, ctx: Ctx, plan: list, plan_label: str | None = None) -> lis
     prefix = []
     if plan and plan_label:
         prefix = [ctx.seg(plan_label, "inactive"), ctx.seg(ctx.g["sep_group"], "inactive")]
+    suffix = []
+    if plan and stale is not None:
+        suffix = [(" ", ""), ctx.seg(ctx.g["stale"] + bars.duration(stale), "inactive")]
 
     # Narrow terminals give up line-1 detail in this order: agent, then cache text.
     variants = [(True, False), (False, False), (False, True)]
@@ -263,9 +293,9 @@ def lay_out(session, ctx: Ctx, plan: list, plan_label: str | None = None) -> lis
         text = session_items(session, ctx, label_on_line1, with_agent)
         tail = cache_state(session, ctx, compact)
         tail = [(" ", ""), *tail] if tail else []
-        f = fit(ctx, width(text), context, plan, width(prefix), width(tail))
+        f = fit(ctx, width(text), context, plan, width(prefix), width(tail), width(suffix))
         if f:
-            return assemble(text, context, plan, prefix, tail, ctx, f)
+            return assemble(text, context, plan, prefix, tail, ctx, f, suffix=suffix)
 
     # Text-only bars, then no countdowns, then cut short.
     for countdown in (True, False):
@@ -273,7 +303,7 @@ def lay_out(session, ctx: Ctx, plan: list, plan_label: str | None = None) -> lis
             text = session_items(session, ctx, label_on_line1, with_agent)
             tail = cache_state(session, ctx, compact)
             tail = [(" ", ""), *tail] if tail else []
-            lines = assemble(text, context, plan, prefix, tail, ctx, None, countdown)
+            lines = assemble(text, context, plan, prefix, tail, ctx, None, countdown, suffix)
             if all(width(line) <= ctx.width for line in lines):
                 return lines
     ell = ctx.p.sgr("inactive")
@@ -281,7 +311,7 @@ def lay_out(session, ctx: Ctx, plan: list, plan_label: str | None = None) -> lis
 
 
 def stdin_plan_bars(session) -> list:
-    """Plan bars from stdin alone (before the usage endpoint is wired in)."""
+    """Plan bars from stdin alone: 5h and 7d."""
     out = []
     for key, label in (("five_hour", "5h"), ("seven_day", "7d")):
         window = session.windows.get(key)
@@ -290,8 +320,19 @@ def stdin_plan_bars(session) -> list:
     return out
 
 
-def render(session, glyphs: dict, palette, columns: int | None, now: float) -> list:
+def render(
+    session,
+    glyphs: dict,
+    palette,
+    columns: int | None,
+    now: float,
+    plan: list | None = None,
+    plan_label: str | None = None,
+    stale: float | None = None,
+) -> list:
     """The status lines as strings."""
     ctx = Ctx(glyphs, palette, columns or DEFAULT_COLUMNS, now)
-    lines = lay_out(session, ctx, stdin_plan_bars(session))
+    if plan is None:
+        plan = stdin_plan_bars(session)
+    lines = lay_out(session, ctx, plan, plan_label, stale)
     return [to_str(line) for line in lines if line]

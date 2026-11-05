@@ -55,3 +55,52 @@ def test_wrong_types_read_as_missing(data):
 
 def test_model_falls_back_to_id():
     assert stdin.Session({"model": {"id": "claude-x"}}).model == "claude-x"
+
+
+@pytest.mark.parametrize(
+    ("text", "epoch"),
+    [
+        ("2026-11-06T07:00:00+00:00", 1793948400.0),
+        ("2026-11-06T07:00:00Z", 1793948400.0),
+        ("2026-11-06T07:00:00", 1793948400.0),
+        ("2026-11-06T07:00:00.281290+00:00", 1793948400.28129),
+        ("2026-11-06T07:00:00.123456789Z", 1793948400.123456789),
+        ("2026-11-06T09:30:00+02:30", 1793948400.0),
+        ("2026-11-06T02:00:00-0500", 1793948400.0),
+        ("2026-11-06 07:00:00Z", 1793948400.0),
+    ],
+)
+def test_iso_time(text, epoch):
+    assert stdin.iso_time(text) == pytest.approx(epoch)
+
+
+@pytest.mark.parametrize(
+    "value", [None, 1793948400, "", "tomorrow", "2026-13-01T00:00:00Z", "2026-11-06"]
+)
+def test_iso_time_rejects(value):
+    assert stdin.iso_time(value) is None
+
+
+def test_gateway_spend_limit():
+    s = stdin.Session(
+        {
+            "rate_limits": {
+                "spend_limit": {"used_percentage": 40, "resets_at": 1793948400, "period": "month"}
+            }
+        }
+    )
+    assert (s.spend_limit.percent, s.spend_limit.resets_at, s.spend_limit.period) == (
+        40,
+        1793948400,
+        "month",
+    )
+    assert (
+        stdin.Session({"rate_limits": {"spend_limit": {"used_percentage": "x"}}}).spend_limit
+        is None
+    )
+    assert stdin.Session({}).spend_limit is None
+
+
+def test_model_id_lowercased():
+    assert stdin.Session({"model": {"id": "Claude-Fable-5-1"}}).model_id == "claude-fable-5-1"
+    assert stdin.Session({}).model_id == ""

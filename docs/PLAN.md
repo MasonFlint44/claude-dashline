@@ -68,26 +68,39 @@ effort, fast mode, permission mode, vim mode, PR status.
 
 ### Plan identity (verified)
 
-- **Label:** `GET /api/oauth/profile` → `organization.plan_display_name`
-  (`"Ultra"` for this account; the CLI itself still calls the tier
-  `default_claude_max_20x`). We fetch it once a day and cache it.
+- **Label (changed in Phase 3, 11/4):** the CLI already fetches `GET /api/oauth/profile`
+  and caches it in `.claude.json` → `oauthAccount` (`planDisplayName`,
+  `organizationType`, `organizationRateLimitTier`, `seatTier`, `claudeCodeTrialEndsAt`,
+  `accountUuid`, `organizationUuid`, `profileFetchedAt`), refreshing it itself. So a
+  render reads that one local file (under `CLAUDE_CONFIG_DIR` if set, else `~`) and
+  dashline never calls the profile endpoint. `plan_display_name` is `"Ultra"` for this
+  account; the CLI itself still calls the tier `default_claude_max_20x`.
 - **Enterprise has no `plan_display_name`** (E6 capture): the profile gives
   `organization_type: "claude_enterprise"`, `seat_tier: "enterprise_usage_based"`,
   `rate_limit_tier: "default_claude_zero"`. When the name is missing, map
-  `organization_type` (`claude_enterprise`→Enterprise, `claude_team`→Team, assumed by
-  analogy until a Team capture), then the credentials table below.
-- **Fallback when the profile can't be fetched:** credentials
-  `subscriptionType` + `rateLimitTier` → table (`pro`→Pro, `max`+5x→Max,
-  `max`+20x→Ultra, `team`→Team, `enterprise`→Enterprise).
-- **Free tier:** the profile carries `claude_code_trial_ends_at` /
-  `claude_code_trial_duration_days`. A free account shows its server label plus
-  `trial 5d` while a trial runs. Its bars are whatever `limits[]` returns, as for every
-  other plan. Phase 0, E6, needs a capture.
+  `organizationType` (`claude_enterprise`→Enterprise, `claude_team`→Team, assumed by
+  analogy until a Team capture; `claude_pro`→Pro; `claude_max`→Max, Ultra on a `20x`
+  rate tier), then the credentials file's `subscriptionType` + `rateLimitTier`
+  (same table).
+- **Trial:** `claudeCodeTrialEndsAt` (ISO) is a Claude Code trial on a Pro
+  subscription (the CLI's `Trial: N days left`). While it runs the label reads
+  `Pro · trial 5d` (`trial 7h` on the last day).
 - **Team seats:** the profile has `seat_tier`, and the CLI treats a Team seat on the
   `max_5x` rate tier as premium. The label comes from `plan_display_name`, so we
   don't need our own mapping.
-- No credentials / API key / Bedrock / Vertex → label `API` (or the gateway
-  name); context + cost only.
+- **API mode (no plan bars, no fetch):** `CLAUDE_CODE_USE_BEDROCK` / `VERTEX` /
+  `FOUNDRY` → `Bedrock` / `Vertex` / `Foundry` (the other provider flags → `API`);
+  stdin `rate_limits.spend_limit` (sent only behind a gateway) → `Gateway` with a
+  `month` bar; `ANTHROPIC_AUTH_TOKEN`, an `ANTHROPIC_API_KEY` the user approved
+  (`customApiKeyResponses.approved` holds its last 20 chars), or no `oauthAccount` and
+  no `CLAUDE_CODE_OAUTH_TOKEN` → `API`. Plan windows on stdin override all but the
+  provider flags: the CLI sends them only to subscribers.
+- **Token (background fetch only, never a render):** `CLAUDE_CODE_OAUTH_TOKEN`, then
+  on macOS the Keychain (`security find-generic-password -a $USER -w -s "Claude
+  Code-credentials"`, with `-<sha256(CLAUDE_CONFIG_DIR)[:8]>` appended when that is
+  set; account `claude-code-user` if `$USER` isn't `[A-Za-z0-9._-]+`), then
+  `<config>/.credentials.json` → `claudeAiOauth.accessToken`. A token within 60 s of
+  `expiresAt` counts as expired: the CLI renews it on its next request.
 
 ### Usage endpoint (verified live)
 
@@ -127,8 +140,19 @@ ${CLAUDE_CONFIG_DIR:-~/.claude}/scripts/statusline/
   dashline/              package, copied from the plugin
   VERSION
 ${CLAUDE_CONFIG_DIR:-~/.claude}/cache/statusline/
-  usage.json  profile.json  fetch.lock  fetch.hold
+  usage.json  fetch.lock  fetch.hold
 ```
+
+Fetching (Phase 3): a render that finds `usage.json` missing or ≥ 3 min old, and no
+`fetch.hold` in force for this login, takes `fetch.lock` (O_EXCL; a lock ≥ 60 s old
+belongs to a dead child) and, after printing, starts a detached `python3 -I -S` child
+(new session, stdio on /dev/null, no token in argv). The child fetches once and writes
+`usage.json` `{fetched_at, account, data}` or `fetch.hold` `{until, reason, failures,
+account}`. `account` is a hash of the account and org ids, so a different login never
+sees another's numbers. Holds: no login 10 min, expired token / 401 5 min, 403 1 h,
+404 6 h; anything else backs off 1, 2, 4 … 30 min (`Retry-After` honored on 429).
+Data older than a day is dropped. Files are 0600 in a 0700 directory, written
+atomically.
 
 settings.json, written literally so a devcontainer mounting `~/.claude` under
 another user still resolves it:
@@ -192,7 +216,7 @@ E1 (plan name on line 1), E2 (bars stretch to fill each line).
 | agent | `agent.name` | dim `󱙺 code-reviewer`, only with `--agent` |
 | cost | `cost.total_cost_usd` | `$4.12` |
 | cache | `prompt_cache` | hidden while warm and not close to expiry; gold `󰔟 8m` within **10 min** of expiry on a 1h cache, **1 min** on a 5m cache (settled 11/4); coral `󰜗 cold (tools changed) 󰑐38k` when cold. Hidden when `caching_observed` is false |
-| plan | profile / credentials | dim, heads line 2; `trial 5d` appended on Free |
+| plan | `.claude.json` `oauthAccount` / credentials | dim, heads line 2; `· trial 5d` appended during a trial |
 
 ### Bars
 
@@ -255,7 +279,11 @@ how a new meter shows up without a release.
 - **Limit reached:** a window at 100% with credits off or exhausted shows
   coral `limit · resets 2h10m` instead of a bare full bar.
 - **Stale data:** usage cache > 5 min old (fetch failing) → dim `·12m` after
-  the last bar on line 2 (settled 11/4).
+  the last bar on line 2 (settled 11/4; ascii `~12m`).
+- **Both sources (Phase 3):** `5h` / `7d` come from the endpoint and from stdin. stdin
+  arrives with every API response, so it is often fresher: for the same window
+  (`resets_at` within 60 s) the higher percent wins, otherwise the later window. A
+  cached row whose `resets_at` has passed reads 0%.
 - Past 100% (credits, gateway spend): the bar stays full and the percent keeps counting.
 
 ### Narrow terminals
@@ -412,7 +440,7 @@ terminator, colors intact. Whether to link the folder (opens the dir) and the br
 Already folded in above:
 
 - **Plan label from the server**: picks up renames like Max 20x → Ultra without a release.
-- **Free tier trial countdown.**
+- **Trial countdown.**
 - **Agent name** (`claude --agent X` / `agent` setting runs the main session as a custom agent); self-hiding.
 - **"Limit reached" state**: a full bar alone doesn't tell you whether you're blocked.
 - **Stale-data age tag**: a failing fetch otherwise looks like zero usage change.
@@ -560,7 +588,7 @@ skills/doctor/SKILL.md
 src/dashline/
   __init__.py  __main__.py
   stdin.py      Claude Code JSON → dataclass
-  account.py    credentials (file + macOS Keychain), profile fetch, plan label
+  account.py    auth mode, plan label (.claude.json), token (file + macOS Keychain)
   usage.py      usage fetch, cache, lock, hold, background refresh
   bars.py       bar cells, ramp color, countdown
   layout.py     lines 1–2: widths, overflow to line 1, text-only fallback, drop order
@@ -619,8 +647,10 @@ the first response, so every field is optional.
 shim, CLAUDE.md (Co-Authored-By, no session trailer).
 **Phase 2** lines 1–2 (layout E3, bars, overflow) from stdin only (context, 5h, 7d),
 with the glyph table from the start (all three sets).
-**Phase 3** account + usage: profile label, fetch/cache, data-driven rows,
-credits, month, limit-reached, stale tag.
+**Phase 3** account + usage: plan label, fetch/cache, data-driven rows,
+credits, month, limit-reached, stale tag. Done 11/4: the label comes from the CLI's
+own cached profile in `.claude.json`, so there is no profile fetch and no
+`profile.json` (§1).
 **Phase 4** directory row.
 **Phase 5** glyph polish: `--preview` in each set, NO_COLOR, ambiguous-width checks.
 **Phase 6** `--doctor`, `--preview`, install + doctor skills.

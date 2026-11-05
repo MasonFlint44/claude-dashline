@@ -58,7 +58,8 @@ def test_render_errors_show_one_line(monkeypatch, capsys):
 
     monkeypatch.setattr(layout, "render", boom)
     out = io.StringIO()
-    assert __main__.render(io.StringIO("{}"), out, env={}) == 0
+    stdin = io.StringIO(json.dumps({"model": {"display_name": "Opus 5.5"}}))
+    assert __main__.render(stdin, out, env={}) == 0
     assert out.getvalue() == "dashline: internal error (run statusline.py --doctor)\n"
     assert "RuntimeError: boom" in capsys.readouterr().err
 

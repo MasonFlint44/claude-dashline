@@ -1,6 +1,6 @@
 import pytest
 
-from conftest import NOW, lines_text, make_ctx, make_session
+from conftest import NOW, lines_text, make_ctx, make_session, plain
 from dashline import layout
 from dashline.layout import Bar
 
@@ -212,3 +212,68 @@ def test_colors_come_from_the_theme():
 def test_no_color_has_no_escapes():
     out = layout.render(make_session(**BUSY), make_ctx().g, make_ctx().p, 120, NOW)
     assert all("\x1b" not in line for line in out)
+
+
+# ---- limit reached and stale data (Phase 3) ----
+
+
+def reached(label, resets_at=None):
+    bar = Bar(label, 100, resets_at)
+    bar.reached = True
+    return bar
+
+
+def test_reached_bar_is_text():
+    plan = [Bar("5h", 30), reached("7d", NOW + 2 * 3600 + 600)]
+    lines = lines_text(make_session(), make_ctx(120), plan, "Ultra")
+    assert lines[1] == "Ultra │ 5h ▆▆▆▆▆▆▆" + "▁" * 17 + " 30%  7d limit · resets 2h10m"
+
+
+def test_reached_bar_without_reset_time():
+    lines = lines_text(make_session(), make_ctx(120), [reached("month")], "Enterprise")
+    assert lines[1] == "Enterprise │ month limit"
+
+
+def test_reached_bar_drops_resets_when_narrow():
+    plan = [Bar("5h", 30), reached("7d", NOW + 7200), Bar("Fable", 80, NOW + 600)]
+    texts = [lines_text(make_session(), make_ctx(c), plan, "Ultra") for c in range(20, 60)]
+    assert any("7d limit · resets 2h" in t[-1] for t in texts)
+    assert any(t[-1].endswith("7d limit  Fable 80%") for t in texts)
+
+
+def test_reached_bar_is_coral():
+    ctx = make_ctx(120, color=True)
+    lines = layout.lay_out(make_session(), ctx, [reached("7d", NOW + 60)])
+    seg = next(s for s in lines[1] if s[0].startswith("limit"))
+    assert seg[1] == ctx.p.sgr("error")
+
+
+def test_reached_bars_leave_room_for_others():
+    """A reached bar has no cells, so it doesn't shrink the bars beside it."""
+    plain_widths = lines_text(make_session(), make_ctx(60), [Bar("5h", 30), Bar("7d", 50)])
+    with_reached = lines_text(make_session(), make_ctx(60), [Bar("5h", 30), reached("7d")])
+    assert cells(with_reached[1], "5h") > cells(plain_widths[1], "5h")
+
+
+def test_stale_tag_after_line_2():
+    plan = [Bar("7d", 17)]
+    lines = lines_text(make_session(), make_ctx(120), plan, "Ultra")
+    stale = plain(layout.lay_out(make_session(), make_ctx(120), plan, "Ultra", stale=12 * 60))
+    assert stale[1] == lines[1] + " ·12m"
+    ascii_line = plain(
+        layout.lay_out(make_session(), make_ctx(120, "ascii"), plan, "Ultra", stale=3700)
+    )[1]
+    assert ascii_line.endswith("17% ~1h2m")
+
+
+def test_stale_tag_needs_line_2():
+    lines = plain(layout.lay_out(make_session(), make_ctx(120), [], "API", stale=900))
+    assert len(lines) == 1
+    assert "·15m" not in lines[0]
+
+
+@pytest.mark.parametrize("columns", range(10, 161, 3))
+def test_reached_and_stale_never_exceed_the_width(columns):
+    plan = [reached("5h", NOW + 3000), Bar("7d", 95, NOW + 86400), Bar("Fable", 24)]
+    lines = plain(layout.lay_out(make_session(**BUSY), make_ctx(columns), plan, "Ultra", 900))
+    assert all(len(line) <= columns - layout.RESERVE for line in lines)

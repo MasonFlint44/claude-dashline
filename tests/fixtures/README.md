@@ -8,3 +8,6 @@
   with `scripts/capture_fixtures.py`: `ultra` (credits on), `ultra-credits-off`,
   `enterprise` (its spend limit replaced with a placeholder). Ids, names, emails, URLs and
   dates that identify an account are scrubbed.
+
+  dashline doesn't call the profile endpoint (it reads the copy Claude Code keeps in
+  `.claude.json`); `profile/` stays as a record of the shape behind those fields.

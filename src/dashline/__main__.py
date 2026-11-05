@@ -88,24 +88,34 @@ def main(argv: list[str] | None = None) -> int:
 
 def render(stdin, stdout, glyphs: str = "unicode", env=None, now: float | None = None) -> int:
     """Render the status lines. Never fails loudly: Claude Code shows stdout verbatim."""
+    state = None
     try:
         import os
         import time
 
+        from dashline import account, layout, theme, usage
         from dashline import glyphs as glyph_sets
-        from dashline import layout, theme
         from dashline import stdin as stdin_mod
 
         env = os.environ if env is None else env
+        now = time.time() if now is None else now
         session = stdin_mod.load(stdin.read())
+        if session.model is None:
+            return 0  # not Claude Code's input: nothing to show
+        glyph_set = glyph_sets.get(glyphs)
         palette = theme.load(session.project_dir, env)
+        acct = account.load(env, session)
+        state = usage.load(env, acct, now)
         columns = env.get("COLUMNS", "")
         lines = layout.render(
             session,
-            glyph_sets.get(glyphs),
+            glyph_set,
             palette,
             int(columns) if columns.isdigit() else None,
-            time.time() if now is None else now,
+            now,
+            usage.plan_bars(session, acct, state.data, now),
+            account.label_text(acct, glyph_set, now),
+            state.stale_age,
         )
     except Exception:  # the statusline must never show a traceback
         import traceback
@@ -114,6 +124,14 @@ def render(stdin, stdout, glyphs: str = "unicode", env=None, now: float | None =
         lines = ["dashline: internal error (run statusline.py --doctor)"]
     if lines:
         stdout.write("\n".join(lines) + "\n")
+        stdout.flush()
+    if state is not None and state.fetch:
+        try:  # after the output, so Claude Code never waits on it
+            usage.spawn(env, now)
+        except Exception:
+            import traceback
+
+            traceback.print_exc(file=sys.stderr)
     return 0
 
 

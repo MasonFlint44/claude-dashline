@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from dashline import glyphs, layout, stdin, theme
+from dashline import glyphs, layout, stdin, theme, usage
 from dashline.colors import THEMES
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -13,6 +13,8 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures"
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 # The clock for every layout test: 2026-11-05 00:00:00 UTC.
 NOW = 1793836800.0
+# The real usage.spawn, for the one test that checks it (with Popen faked).
+REAL_SPAWN = usage.spawn
 
 
 def read_json(path: Path) -> dict:
@@ -61,3 +63,30 @@ def stdin_fixture():
         return (FIXTURES / "stdin" / f"{name}.json").read_text()
 
     return load
+
+
+TOKEN_VARS = (
+    "CLAUDE_CONFIG_DIR",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+    "CLAUDE_CODE_USE_FOUNDRY",
+)
+
+
+@pytest.fixture(autouse=True)
+def isolated_home(tmp_path, monkeypatch):
+    """No test sees the real ~/.claude, a real login, or starts a real fetch."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    for var in TOKEN_VARS:
+        monkeypatch.delenv(var, raising=False)
+
+    def no_spawn(env, now):
+        raise AssertionError("a test tried to start a real fetch")
+
+    monkeypatch.setattr(usage, "spawn", no_spawn)
+    return home
