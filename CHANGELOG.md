@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.4 — 2026-11-05
+
+- A model's weekly bar (e.g. `Fable`) also shows on other models once it has any use
+  this week, since subagents and other sessions spend it. Unused, it still shows only
+  while you're on that model.
+
 ## 0.1.3 — 2026-11-05
 
 - The context bar is the same width as the plan bars (it was twice as wide), so all

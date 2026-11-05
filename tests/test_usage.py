@@ -45,9 +45,22 @@ def test_ultra_on_fable():
     ]
 
 
-def test_scoped_bar_hidden_on_another_model():
+def test_unused_scoped_bar_hidden_on_another_model():
     session = make_session(rate_limits=None, **MODEL_OPUS)
-    plan = usage.plan_bars(session, ULTRA, usage_fixture("ultra"), NOW)
+    plan = usage.plan_bars(session, ULTRA, usage_fixture("ultra-credits-off"), NOW)  # Fable 0%
+    assert labels(plan) == ["7d"]
+
+
+def test_used_scoped_bar_shown_on_another_model():
+    """Subagents and other sessions spend the Fable week while you're on Opus."""
+    session = make_session(rate_limits=None, **MODEL_OPUS)
+    plan = usage.plan_bars(session, ULTRA, usage_fixture("ultra"), NOW)  # Fable 24%
+    assert [(b.label, b.percent) for b in plan] == [("7d", 17), ("Fable", 24)]
+
+
+def test_scoped_bar_hides_again_after_its_reset():
+    session = make_session(rate_limits=None, **MODEL_OPUS)
+    plan = usage.plan_bars(session, ULTRA, usage_fixture("ultra"), ULTRA_FABLE_RESET + 10)
     assert labels(plan) == ["7d"]
 
 
@@ -65,7 +78,7 @@ def test_scope_matches_model_id_alone():
 
 def test_scope_needs_a_word_boundary_in_the_name():
     session = make_session(rate_limits=None, model={"id": "x", "display_name": "Fabled 1"})
-    plan = usage.plan_bars(session, ULTRA, usage_fixture("ultra"), NOW)
+    plan = usage.plan_bars(session, ULTRA, usage_fixture("ultra-credits-off"), NOW)
     assert labels(plan) == ["7d"]
 
 
@@ -118,7 +131,7 @@ def test_unknown_kind_shown_by_name():
     data = usage_fixture("ultra")
     data["limits"].append({"kind": "daily_burst", "percent": 12, "resets_at": None})
     plan = usage.plan_bars(make_session(rate_limits=None, **MODEL_OPUS), ULTRA, data, NOW)
-    assert labels(plan) == ["7d", "daily burst"]
+    assert labels(plan) == ["7d", "Fable", "daily burst"]
 
 
 @pytest.mark.parametrize(

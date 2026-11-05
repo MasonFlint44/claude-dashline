@@ -35,13 +35,13 @@ about to expire shows a countdown. Once it has gone cold, the line says why (e.g
 "tools changed") and how many tokens the next request will write back into the cache.
 
 **Line 2, the plan:** the plan's name (and days left in a trial), then one bar per
-limit: the 5-hour window, the week, a model's weekly limit while you use that model
-(e.g. Fable), extra-usage credits once you've used some, and a Team or Enterprise
-monthly cap. Bars go from green through gold to coral as they fill. From 70% on, they
-show when the window resets, and a limit you've hit is a full coral bar. If the
-numbers are more than 5 minutes old because fetching keeps failing, their age follows
-(`·12m`). API-key and cloud-provider sessions bill per use and have no plan line; their
-label moves up to line 1.
+limit: the 5-hour window, the week, a model's weekly limit (e.g. Fable) while you use
+that model or once it has any use this week, extra-usage credits once you've used
+some, and a Team or Enterprise monthly cap. Bars go from green through gold to coral
+as they fill. From 70% on, they show when the window resets, and a limit you've hit is
+a full coral bar. If the numbers are more than 5 minutes old because fetching keeps
+failing, their age follows (`·12m`). API-key and cloud-provider sessions bill per use
+and have no plan line; their label moves up to line 1.
 
 **Line 3, the directory:** the project (with its worktree and the subfolder you're in),
 the branch, tag or detached commit, uncommitted lines added and removed, untracked files,

@@ -336,8 +336,10 @@ def plan_bars(session, account, data: dict | None, now: float) -> list:
             percent, resets_at = _merge((percent, resets_at), session.windows.get(key))
             windows.append(Bar(WINDOW_LABELS[kind], percent, resets_at))
         elif kind == "weekly_scoped":
+            # A model's weekly limit: shown while you use that model (even at 0%), and
+            # whenever it has use this week, since subagents and other sessions spend it.
             name = _str(_dig(row, "scope", "model", "display_name"))
-            if name and _model_matches(name, session):
+            if name and (percent > 0 or _model_matches(name, session)):
                 windows.append(Bar(name, percent, resets_at))
         else:
             windows.append(Bar(kind.replace("_", " "), percent, resets_at))

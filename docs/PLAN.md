@@ -25,7 +25,7 @@ from live calls to the endpoints on 2026-11-03.
 | Which bars | **data-driven** from the usage endpoint's `limits[]`, not a plan table |
 | Plan label | from the server (`plan_display_name`), e.g. "Ultra" |
 | Enterprise / Team spend | a simple monthly bar; no day bar, no holiday calendar |
-| Model-scoped bar (Fable) | shown while the current model is in scope, including at 0% |
+| Model-scoped bar (Fable) | shown while the current model is in scope (even at 0%), or whenever it has use this week (changed 11/5: subagents and other sessions spend it) |
 | Pace tick | out for v1; possible later feature |
 | Install path | `${CLAUDE_CONFIG_DIR:-~/.claude}/scripts/statusline/` |
 | Config file | none in v1; if ever needed, `${CLAUDE_CONFIG_DIR:-~/.claude}/config/statusline/` |
@@ -226,7 +226,7 @@ E1 (plan name on line 1), E2 (bars stretch to fill each line).
 | `context` | 1 | stdin `context_window.used_percentage` | after the first response |
 | `5h` | 2 | `limits[kind=session]`, fallback stdin `five_hour` | the row exists |
 | `7d` | 2 | `limits[kind=weekly_all]`, fallback stdin `seven_day` | the row exists |
-| model-scoped (`Fable`, …) | 2 | `limits[kind=weekly_scoped, scope.model]` | current model matches the scope, even at 0% |
+| model-scoped (`Fable`, …) | 2 | `limits[kind=weekly_scoped, scope.model]` | current model matches the scope (even at 0%), or its percent is above 0 (11/5) |
 | `credits` | 2 | endpoint `spend` | enabled and used > 0 |
 | `month` | 2 | endpoint `spend` on Team/Enterprise caps; stdin `spend_limit` behind a gateway | the account has a monthly cap (shown at 0% too; Enterprise's `limits[]` is empty, so this is its only bar) |
 
