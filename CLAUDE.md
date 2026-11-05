@@ -2,7 +2,7 @@
 
 `dashline` is one Claude Code statusline for every account type (Free, Pro, Max, Ultra,
 Team, Enterprise, API key / gateway). A Python package under `src/dashline/`, an entry
-shim `statusline.py`, and (Phase 6) install and doctor skills under `skills/`.
+shim `statusline.py`, and the install and doctor skills under `skills/`.
 `docs/PLAN.md` is the design and is canon: settled decisions there are not reopened
 without the author.
 

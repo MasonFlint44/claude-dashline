@@ -43,11 +43,16 @@ def _read_json(path: str | None) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def theme_setting(project_dir: str | None, env) -> str:
-    """The raw `theme` value the CLI would use, e.g. "dark", "auto" or "custom:slug"."""
-    conf = config_dir(env)
-    user = os.path.join(conf, "settings.json")
-    candidates = [managed_settings_path()]
+def settings_files(project_dir: str | None, env) -> list:
+    """The settings files a value can come from, the one that wins first.
+
+    Managed, project-local, project, user. (Flags like --settings can't be seen from here.)
+    """
+    user = os.path.join(config_dir(env), "settings.json")
+    candidates = []
+    managed = managed_settings_path()
+    if managed:
+        candidates.append(managed)
     if project_dir:
         project = os.path.join(project_dir, ".claude", "settings.json")
         candidates.append(os.path.join(project_dir, ".claude", "settings.local.json"))
@@ -55,7 +60,12 @@ def theme_setting(project_dir: str | None, env) -> str:
         if os.path.realpath(project) != os.path.realpath(user):
             candidates.append(project)
     candidates.append(user)
-    for path in candidates:
+    return candidates
+
+
+def theme_setting(project_dir: str | None, env) -> str:
+    """The raw `theme` value the CLI would use, e.g. "dark", "auto" or "custom:slug"."""
+    for path in settings_files(project_dir, env):
         value = _read_json(path).get("theme")
         if isinstance(value, str) and value:
             return value

@@ -86,3 +86,25 @@ def test_shim_preview():
     r = run_shim("--preview", "api", "--glyphs", "ascii")
     assert r.returncode == 0
     assert "API" in r.stdout
+
+
+def test_one_scenario_in_every_set():
+    out = io.StringIO()
+    assert preview.run("ultra-fable", "all", env={"NO_COLOR": "1", "COLUMNS": "120"}, out=out) == 0
+    text = out.getvalue()
+    heads = [line for line in text.splitlines() if line and not line.startswith(" ")]
+    assert heads == ["nerd", "unicode", "ascii"]
+    blocks = text.split("\n\n")
+    assert len(blocks) == 3
+    assert any(ord(c) >= 0xF0000 for c in blocks[0])  # nerd icons
+    assert not any(ord(c) >= 0xF0000 for c in blocks[1])
+    assert blocks[2].isascii()
+
+
+def test_every_scenario_in_every_set_has_both_in_the_header():
+    out = io.StringIO()
+    preview.run(None, "all", env={"NO_COLOR": "1", "COLUMNS": "120"}, out=out)
+    heads = [line for line in out.getvalue().splitlines() if line and not line.startswith(" ")]
+    assert len(heads) == 3 * len(preview.scenarios())
+    assert heads[0].startswith("nerd · pro-trial: ")
+    assert heads[-1].startswith("ascii · tiny: ")

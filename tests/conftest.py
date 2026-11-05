@@ -1,6 +1,8 @@
 import copy
 import json
 import re
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
@@ -84,9 +86,73 @@ def isolated_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(home))
     for var in TOKEN_VARS:
         monkeypatch.delenv(var, raising=False)
+    # Belt and braces for subprocesses: a stray HTTPS request goes to a dead port.
+    for var in ("HTTPS_PROXY", "https_proxy"):
+        monkeypatch.setenv(var, "http://127.0.0.1:9")
+    for var in ("NO_PROXY", "no_proxy", "TERM_PROGRAM", "NO_COLOR", "COLORFGBG"):
+        monkeypatch.delenv(var, raising=False)
 
     def no_spawn(env, now):
         raise AssertionError("a test tried to start a real fetch")
 
     monkeypatch.setattr(usage, "spawn", no_spawn)
     return home
+
+
+def env_for(home):
+    return {"HOME": str(home)}
+
+
+# ---- a local stand-in for the usage endpoint ----
+
+
+class Server:
+    """A local stand-in for the usage endpoint: replies come from a queue."""
+
+    def __init__(self):
+        self.replies = []
+        self.requests = []
+        server = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                server.requests.append((self.path, self.headers))
+                status, body, headers = server.replies.pop(0)
+                self.send_response(status)
+                for k, v in headers.items():
+                    self.send_header(k, v)
+                self.end_headers()
+                self.wfile.write(body.encode() if isinstance(body, str) else body)
+
+            def log_message(self, *args):
+                pass
+
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.url = f"http://127.0.0.1:{self.httpd.server_address[1]}"
+        threading.Thread(
+            target=self.httpd.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True
+        ).start()
+
+    def reply(self, status, body="", **headers):
+        self.replies.append((status, body, headers))
+
+
+@pytest.fixture
+def server():
+    s = Server()
+    yield s
+    s.httpd.shutdown()
+    s.httpd.server_close()
+
+
+@pytest.fixture
+def logged_in(isolated_home):
+    """A Linux-style login: .claude.json account plus a credentials file."""
+    (isolated_home / ".claude.json").write_text(
+        json.dumps({"oauthAccount": {"accountUuid": "a", "organizationUuid": "o"}})
+    )
+    conf = isolated_home / ".claude"
+    conf.mkdir()
+    creds = {"claudeAiOauth": {"accessToken": "tok-123", "expiresAt": (NOW + 86400) * 1000}}
+    (conf / ".credentials.json").write_text(json.dumps(creds))
+    return env_for(isolated_home)

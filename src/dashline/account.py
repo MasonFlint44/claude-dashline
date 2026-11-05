@@ -217,17 +217,21 @@ def _read_keychain(env) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def read_token(env, now: float, platform: str | None = None) -> tuple:
-    """(token, None) or (None, why). Env token, then Keychain (macOS), then the file."""
+def find_token(env, now: float, platform: str | None = None) -> tuple:
+    """(token, source, expires_at) or (None, why, None).
+
+    The env token first, then the Keychain (macOS), then the file. `source` names where
+    the token came from, for doctor; `expires_at` is in seconds, or None if unknown.
+    """
     token = env.get("CLAUDE_CODE_OAUTH_TOKEN")
     if token:
-        return token, None
+        return token, "CLAUDE_CODE_OAUTH_TOKEN", None
     platform = platform or sys.platform
     sources = []
     if platform == "darwin":
-        sources.append(lambda: _read_keychain(env))
-    sources.append(lambda: _read_json(credentials_path(env)))
-    for read in sources:
+        sources.append(("macOS Keychain", lambda: _read_keychain(env)))
+    sources.append((credentials_path(env), lambda: _read_json(credentials_path(env))))
+    for source, read in sources:
         oauth = read().get("claudeAiOauth")
         if not isinstance(oauth, dict):
             continue
@@ -235,7 +239,14 @@ def read_token(env, now: float, platform: str | None = None) -> tuple:
         if not isinstance(token, str) or not token:
             continue
         expires = _num(oauth.get("expiresAt"))
-        if expires is not None and expires / 1000 < now + EXPIRY_MARGIN:
-            return None, "token expired (Claude Code renews it on its next request)"
-        return token, None
-    return None, "no Claude login found"
+        expires = expires / 1000 if expires is not None else None
+        if expires is not None and expires < now + EXPIRY_MARGIN:
+            return None, "token expired (Claude Code renews it on its next request)", expires
+        return token, source, expires
+    return None, "no Claude login found", None
+
+
+def read_token(env, now: float, platform: str | None = None) -> tuple:
+    """(token, None) or (None, why)."""
+    token, why, _ = find_token(env, now, platform)
+    return (token, None) if token else (None, why)

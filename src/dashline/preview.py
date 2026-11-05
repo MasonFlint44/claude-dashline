@@ -255,10 +255,15 @@ def run(scenario: str | None, glyphs: str = "unicode", env=None, out=None) -> in
     columns = int(columns) if columns.isdigit() else shutil.get_terminal_size((100, 24)).columns
     palette = theme.load(None, env)
     dim = palette.sgr("inactive")
-    for i, name in enumerate(names):
-        if len(names) > 1:
-            head = f"{name}: {table[name][0]}"
+    sets = ("nerd", "unicode", "ascii") if glyphs == "all" else (glyphs,)
+    blocks = [(g, name) for g in sets for name in names]
+    for i, (g, name) in enumerate(blocks):
+        if len(blocks) > 1:
+            parts = [g] if len(sets) > 1 else []
+            if len(names) > 1:
+                parts.append(f"{name}: {table[name][0]}")
+            head = " · ".join(parts)
             out.write(("\n" if i else "") + (f"\x1b[{dim}m{head}\x1b[0m" if dim else head) + "\n")
-        for line in render(name, glyphs, palette, columns):
+        for line in render(name, g, palette, columns):
             out.write(INDENT + line + "\n")
     return 0

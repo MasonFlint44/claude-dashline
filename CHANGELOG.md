@@ -24,3 +24,9 @@
 - Clickable project folder and, on GitHub, branch (its compare page).
 - `--preview [SCENARIO|all]`: ten built-in scenarios (Pro trial, Pro, Ultra on Fable,
   Team, Enterprise, API key, limit reached, rebase, two narrow widths) with fake data.
+- `--doctor`: checks Python, the installed copy, settings, login, the usage endpoint,
+  the cache, the statusline command itself, git, theme and font, with a fix for each
+  problem.
+- `--install [--replace]`: copies dashline into the config folder and points
+  settings.json at it, without replacing another statusline unless asked.
+- `/dashline:install` and `/dashline:doctor` skills.

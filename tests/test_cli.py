@@ -78,17 +78,22 @@ def test_unknown_argument_is_a_usage_error():
     assert r.stdout == ""
 
 
+def opts(mode="render", glyphs=None, scenario=None, replace=False):
+    return {"mode": mode, "glyphs": glyphs, "scenario": scenario, "replace": replace}
+
+
 @pytest.mark.parametrize(
     ("argv", "expected"),
     [
-        ([], {"mode": "render", "glyphs": "unicode", "scenario": None}),
-        (["--glyphs", "nerd"], {"mode": "render", "glyphs": "nerd", "scenario": None}),
-        (["--glyphs=ascii", "--preview"], {"mode": "preview", "glyphs": "ascii", "scenario": None}),
-        (
-            ["--preview", "pro", "--glyphs", "nerd"],
-            {"mode": "preview", "glyphs": "nerd", "scenario": "pro"},
-        ),
-        (["-h"], {"mode": "help", "glyphs": "unicode", "scenario": None}),
+        ([], opts()),
+        (["--glyphs", "nerd"], opts(glyphs="nerd")),
+        (["--glyphs=ascii", "--preview"], opts("preview", "ascii")),
+        (["--preview", "pro", "--glyphs", "nerd"], opts("preview", "nerd", "pro")),
+        (["--preview", "pro", "--glyphs", "all"], opts("preview", "all", "pro")),
+        (["--install"], opts("install")),
+        (["--install", "--glyphs", "nerd", "--replace"], opts("install", "nerd", replace=True)),
+        (["--doctor"], opts("doctor")),
+        (["-h"], opts("help")),
     ],
 )
 def test_parse_args(argv, expected):
@@ -96,7 +101,18 @@ def test_parse_args(argv, expected):
 
 
 @pytest.mark.parametrize(
-    "argv", [["--glyphs"], ["--glyphs", "emoji"], ["--doctor", "--preview"], ["extra"]]
+    "argv",
+    [
+        ["--glyphs"],
+        ["--glyphs", "emoji"],
+        ["--doctor", "--preview"],
+        ["--install", "--doctor"],
+        ["extra"],
+        ["--glyphs", "all"],
+        ["--install", "--glyphs", "all"],
+        ["--replace"],
+        ["--doctor", "--replace"],
+    ],
 )
 def test_parse_args_rejects(argv):
     with pytest.raises(UsageError):

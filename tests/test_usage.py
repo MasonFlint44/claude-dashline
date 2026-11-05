@@ -2,12 +2,11 @@
 
 import json
 import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
 
-from conftest import FIXTURES, NOW, REAL_SPAWN, make_session, read_json
+from conftest import FIXTURES, NOW, REAL_SPAWN, env_for, make_session, read_json
 from dashline import account, usage
 from dashline.account import Account
 
@@ -265,10 +264,6 @@ def test_gateway_period_label(period, label):
 # ---- the cache as a render reads it ----
 
 
-def env_for(home):
-    return {"HOME": str(home)}
-
-
 def write_cache(home, fetched_at=NOW - 10, who="abc", data=None):
     path = home / ".claude" / "cache" / "statusline"
     path.mkdir(parents=True, exist_ok=True)
@@ -413,58 +408,6 @@ def test_child_releases_the_lock(isolated_home, monkeypatch):
 
 
 # ---- fetching against a local server ----
-
-
-class Server:
-    """A local stand-in for the usage endpoint: replies come from a queue."""
-
-    def __init__(self):
-        self.replies = []
-        self.requests = []
-        server = self
-
-        class Handler(BaseHTTPRequestHandler):
-            def do_GET(self):
-                server.requests.append((self.path, self.headers))
-                status, body, headers = server.replies.pop(0)
-                self.send_response(status)
-                for k, v in headers.items():
-                    self.send_header(k, v)
-                self.end_headers()
-                self.wfile.write(body.encode() if isinstance(body, str) else body)
-
-            def log_message(self, *args):
-                pass
-
-        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        self.url = f"http://127.0.0.1:{self.httpd.server_address[1]}"
-        threading.Thread(
-            target=self.httpd.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True
-        ).start()
-
-    def reply(self, status, body="", **headers):
-        self.replies.append((status, body, headers))
-
-
-@pytest.fixture
-def server():
-    s = Server()
-    yield s
-    s.httpd.shutdown()
-    s.httpd.server_close()
-
-
-@pytest.fixture
-def logged_in(isolated_home):
-    """A Linux-style login: .claude.json account plus a credentials file."""
-    (isolated_home / ".claude.json").write_text(
-        json.dumps({"oauthAccount": {"accountUuid": "a", "organizationUuid": "o"}})
-    )
-    conf = isolated_home / ".claude"
-    conf.mkdir()
-    creds = {"claudeAiOauth": {"accessToken": "tok-123", "expiresAt": (NOW + 86400) * 1000}}
-    (conf / ".credentials.json").write_text(json.dumps(creds))
-    return env_for(isolated_home)
 
 
 def cache_files(env):

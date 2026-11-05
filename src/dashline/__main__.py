@@ -1,4 +1,4 @@
-"""Command line: render from stdin, or one of the --doctor / --preview / --version modes.
+"""Command line: render from stdin, or one of the --doctor / --install / --preview modes.
 
 Imports stay inside the functions so a render only pays for what it uses.
 """
@@ -10,13 +10,17 @@ import sys
 GLYPH_SETS = ("nerd", "unicode", "ascii")
 
 USAGE = """\
-usage: statusline.py [--glyphs SET] [--doctor | --preview [SCENARIO] | --version | --help]
+usage: statusline.py [--glyphs SET] [--doctor | --install [--replace] | --preview [SCENARIO]
+                     | --version | --help]
 
 With no mode, reads Claude Code's statusline JSON on stdin and prints the status lines.
 
-  --glyphs SET         nerd, unicode (default) or ascii
-  --doctor             check the install, credentials, endpoints and cache
-  --preview [SCENARIO] render built-in scenarios with fake data
+  --glyphs SET         nerd, unicode (default) or ascii; --preview also takes all
+  --doctor             check the install, login, usage endpoint, cache and settings
+  --install            copy dashline into the config dir and point settings.json at it;
+                       keeps the current glyph set unless --glyphs is given
+  --replace            with --install: replace a statusLine that runs something else
+  --preview [SCENARIO] render built-in scenarios with fake data (all, or one by name)
   --version            print the version
   --help               show this help
 """
@@ -27,9 +31,19 @@ class UsageError(Exception):
 
 
 def parse_args(argv: list[str]) -> dict:
-    """Parse argv into {"mode", "glyphs", "scenario"}. Raises UsageError."""
-    opts = {"mode": "render", "glyphs": "unicode", "scenario": None}
-    modes = {"--doctor": "doctor", "--preview": "preview", "--version": "version", "--help": "help"}
+    """Parse argv into {"mode", "glyphs", "scenario", "replace"}. Raises UsageError.
+
+    `glyphs` is None when not given: render and preview use unicode, install keeps the
+    installed choice.
+    """
+    opts = {"mode": "render", "glyphs": None, "scenario": None, "replace": False}
+    modes = {
+        "--doctor": "doctor",
+        "--install": "install",
+        "--preview": "preview",
+        "--version": "version",
+        "--help": "help",
+    }
     i = 0
     while i < len(argv):
         arg = argv[i]
@@ -43,9 +57,11 @@ def parse_args(argv: list[str]) -> dict:
                 if i >= len(argv):
                     raise UsageError("--glyphs needs a value: nerd, unicode or ascii")
                 value = argv[i]
-            if value not in GLYPH_SETS:
+            if value not in (*GLYPH_SETS, "all"):
                 raise UsageError(f"unknown glyph set {value!r}: use nerd, unicode or ascii")
             opts["glyphs"] = value
+        elif arg == "--replace":
+            opts["replace"] = True
         elif arg in modes:
             if opts["mode"] != "render":
                 raise UsageError(f"{arg} can't be combined with --{opts['mode']}")
@@ -56,6 +72,10 @@ def parse_args(argv: list[str]) -> dict:
         else:
             raise UsageError(f"unknown argument {arg!r}")
         i += 1
+    if opts["glyphs"] == "all" and opts["mode"] != "preview":
+        raise UsageError("--glyphs all only works with --preview")
+    if opts["replace"] and opts["mode"] != "install":
+        raise UsageError("--replace only works with --install")
     return opts
 
 
@@ -78,12 +98,16 @@ def main(argv: list[str] | None = None) -> int:
     if mode == "doctor":
         from dashline import doctor
 
-        return doctor.run(glyphs=opts["glyphs"])
+        return doctor.run()
+    if mode == "install":
+        from dashline import install
+
+        return install.run(opts["glyphs"], replace=opts["replace"])
     if mode == "preview":
         from dashline import preview
 
-        return preview.run(opts["scenario"], glyphs=opts["glyphs"])
-    return render(sys.stdin, sys.stdout, glyphs=opts["glyphs"])
+        return preview.run(opts["scenario"], glyphs=opts["glyphs"] or "unicode")
+    return render(sys.stdin, sys.stdout, glyphs=opts["glyphs"] or "unicode")
 
 
 def render(stdin, stdout, glyphs: str = "unicode", env=None, now: float | None = None) -> int:
