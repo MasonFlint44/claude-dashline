@@ -71,6 +71,11 @@ effort, fast mode, permission mode, vim mode, PR status.
 - **Label:** `GET /api/oauth/profile` → `organization.plan_display_name`
   (`"Ultra"` for this account; the CLI itself still calls the tier
   `default_claude_max_20x`). We fetch it once a day and cache it.
+- **Enterprise has no `plan_display_name`** (E6 capture): the profile gives
+  `organization_type: "claude_enterprise"`, `seat_tier: "enterprise_usage_based"`,
+  `rate_limit_tier: "default_claude_zero"`. When the name is missing, map
+  `organization_type` (`claude_enterprise`→Enterprise, `claude_team`→Team, assumed by
+  analogy until a Team capture), then the credentials table below.
 - **Fallback when the profile can't be fetched:** credentials
   `subscriptionType` + `rateLimitTier` → table (`pro`→Pro, `max`+5x→Max,
   `max`+20x→Ultra, `team`→Team, `enterprise`→Enterprise).
@@ -198,7 +203,7 @@ E1 (plan name on line 1), E2 (bars stretch to fill each line).
 | `7d` | 2 | `limits[kind=weekly_all]`, fallback stdin `seven_day` | the row exists |
 | model-scoped (`Fable`, …) | 2 | `limits[kind=weekly_scoped, scope.model]` | current model matches the scope, even at 0% |
 | `credits` | 2 | endpoint `spend` | enabled and used > 0 |
-| `month` | 2 | endpoint `spend` on Team/Enterprise caps; stdin `spend_limit` behind a gateway | the account has a monthly cap |
+| `month` | 2 | endpoint `spend` on Team/Enterprise caps; stdin `spend_limit` behind a gateway | the account has a monthly cap (shown at 0% too; Enterprise's `limits[]` is empty, so this is its only bar) |
 
 Unknown `kind`s are rendered by their server label rather than dropped. That is
 how a new meter shows up without a release.
@@ -241,7 +246,9 @@ how a new meter shows up without a release.
   (settled 11/3). Known quirk, accepted 11/4: moving a bar up can make the bars *wider*
   at a narrower terminal (e.g. 4 bars: 8 wide at 100 cols, 12 wide at 90 cols
   with `credits` moved up). Bars move only when needed, never just to get wider.
-- Terminal width = `COLUMNS` minus the TUI frame reserve (5; re-measure, E5).
+- Terminal width = `COLUMNS` minus the TUI frame reserve: **4** in 2.1.318 (E5:
+  2-col indent + 2 at the right; a line of exactly `COLUMNS − 4` fits, one more is
+  cut with `…`). `COLUMNS` is passed to the command as the full terminal width.
 - **Reset countdown** `(1h40m)` after a bar at ≥ **70%**, the gold anchor, so color and
   countdown change together (settled 11/4).
 - **Limit reached:** a window at 100% with credits off or exhausted shows
@@ -263,18 +270,42 @@ to a fourth line.
 Every color in dashline comes from the Claude Code theme the user picked, so the
 statusline matches the rest of the UI. No dashline-specific palette.
 
-**Which theme:** the `theme` key in `${CLAUDE_CONFIG_DIR:-~}/.claude.json`, default `dark`
-(verified in the 2.1.318 binary). Values: `auto`, `dark`, `light`, `dark-daltonized`,
-`light-daltonized`, `dark-ansi`, `light-ansi`. `auto` follows the terminal background,
-which a statusline can't query. Use `COLORFGBG` if the terminal sets it, otherwise `dark`.
-Custom themes and per-theme overrides exist in the CLI too. Where they're stored and how
-they apply needs checking (Phase 0, E8); fall back to the base theme.
+**Which theme (E8, read from the 2.1.318 binary):** the stdin JSON carries no theme, so
+dashline resolves it the way the CLI does:
+
+1. The `theme` key in the settings files, highest priority first: managed/policy →
+   `<project>/.claude/settings.local.json` → `<project>/.claude/settings.json` →
+   `${CLAUDE_CONFIG_DIR:-~/.claude}/settings.json`. `/config` writes to user settings.
+   (Flag settings from `--settings` can't be seen from the statusline; ignore them.)
+2. Legacy: the `theme` key in `~/.claude.json` (older installs), if not `dark`.
+3. Default `dark`.
+
+Values: `auto`, `dark`, `light`, `dark-daltonized`, `light-daltonized`, `dark-ansi`,
+`light-ansi`, or `custom:<slug>`.
+
+- **`auto`:** the CLI asks the terminal for its background (OSC 11, luminance > 0.5 →
+  light), then `COLORFGBG` (last field ≤ 6 or 8 → dark), then `dark`. A statusline has
+  no tty to ask, so dashline uses `COLORFGBG`, else `dark`. Known gap: `auto` on a
+  light terminal that doesn't set `COLORFGBG` renders with the dark palette; doctor says so.
+- **Custom themes:** `custom:<slug>` → `${CLAUDE_CONFIG_DIR:-~/.claude}/themes/<slug>.json`
+  `{ "name", "base", "overrides": { token: color } }`. `base` is a built-in name (default
+  `dark`); `overrides` replace individual tokens (unknown tokens ignored; values like
+  `rgb(r,g,b)` or `ansi:red`). Plugin-shipped themes can't be located from outside the
+  CLI → use the `dark` base.
 
 **Values:** the built-in themes' token values are embedded in `colors.py`,
 generated at dev time by `scripts/sync_theme.py`, which extracts them from the installed
 Claude Code binary and records the CLI version. Re-run it when the CLI changes
 its palette (the earlier gold/coral values had already drifted). The `-ansi` themes map
 to ANSI named colors (`ansi:green` → SGR 32, etc.), so the terminal's own palette shows through.
+
+**How the CLI treats our escapes (E7):** truecolor, 256-color, named colors, bold, dim and
+background colors all pass through unchanged; nothing is dimmed. Two things to know:
+
+- Text with no color of its own is drawn in `inactive` gray (the CLI re-applies it after
+  every `ESC[0m`), so anything meant to be `text` white must set it explicitly.
+- Without `COLORTERM=truecolor` (and always in Apple Terminal) the CLI downsamples our
+  truecolor to the nearest 256-color index itself. dashline always emits truecolor.
 
 **Mapping (settled 11/4):**
 
@@ -368,8 +399,9 @@ Details:
   The tag lookup runs only when detached.
 - All with `--no-optional-locks`. Budget: 20 ms on a mid-size repo.
 
-**To try in Phase 0, E3:** OSC 8 hyperlinks (the folder opens the dir, the branch opens the
-GitHub compare page).
+**OSC 8 hyperlinks pass through (E3).** The CLI re-emits them with its own `id=` and a BEL
+terminator, colors intact. Whether to link the folder (opens the dir) and the branch
+(opens the GitHub compare page) is decided in Phase 4.
 
 ---
 
@@ -561,6 +593,23 @@ fixture set per plan (the old plan→bar table becomes these expectations).
 | E6 | Fixtures: Free, Pro, Max 5x, Team, Enterprise usage + profile | Enterprise from the work laptop (scrubbed); the rest synthesized from the schema unless someone can capture |
 | E7 | Does Claude Code pass truecolor, 256-color and ANSI named colors through the statusline unchanged, or dim them? | test statusline printing each |
 | E8 | Theme: confirm `~/.claude.json` `theme` is read live; how `auto`, custom themes and overrides are stored/resolved | change theme in `/config`, watch the file; read binary |
+
+**Phase 0 results (11/4, CLI 2.1.318, pty harness, `--setting-sources project --settings`):**
+
+| # | Result |
+|---|---|
+| E1 | **yes, includes subagents.** `claude -p --output-format json` with a Haiku subagent under Sonnet: `total_cost_usd` 0.0430 = Sonnet 0.0414 + Haiku 0.0016, and the statusline reads the same ledger. A background subagent's cost lands as it runs, so the next refresh shows it |
+| E2 | idle refresh: **yes**, every 2.05 s at `refreshInterval: 2`, one call at startup. Multi-session cache/lock is our own code, tested in Phase 3 |
+| E3 | **passes through** (re-emitted with `id=` + BEL) (§5) |
+| E4 | the CLI counts Nerd PUA (plane 15), the ambiguous-width set (`▆▁│·↑↓`) and the unicode fallbacks as **1 column** each. Ghostty agrees: a 40-cell ruler of every glyph lines up, icons unclipped even packed tight |
+| E5 | reserve **4** (§4) |
+| E6 | Captured via `scripts/capture_fixtures.py` into `tests/fixtures/{usage,profile}/`: `ultra` (credits on), `ultra-credits-off`, `enterprise` (no `plan_display_name`; empty `limits[]`; monthly `spend` cap; limit amount replaced with a placeholder). Free, Pro, Max 5x, Team synthesized |
+| E7 | **unchanged**, no dimming; uncolored text = `inactive`; downsampled to 256 without `COLORTERM` (§4a) |
+| E8 | theme lives in settings files (legacy `~/.claude.json`), `auto` = OSC 11 → `COLORFGBG` → dark, custom = `themes/<slug>.json` (§4a) |
+
+Also seen on stdin before the first API response: `output_style`, `thinking`,
+`exceeds_200k_tokens`, `scratchpad_dir`; `rate_limits` and `prompt_cache` are absent until
+the first response, so every field is optional.
 
 **Phase 1** skeleton: pyproject/uv/ruff/pytest/CI, plugin.json, package stubs,
 shim, CLAUDE.md (Co-Authored-By, no session trailer).
