@@ -31,8 +31,8 @@ def cells(line: str, label: str) -> int:
 def test_after_first_response_golden():
     assert lines_text(make_session(), make_ctx(120)) == [
         # Line 2: 116 usable - "7d" " 17%" (7) = 109 free; one bar gets a third, 36.
-        # Context: twice that, 72; line 1 has 77 left.
-        "Sonnet 5.5 · high · $0.09 │ context ▆▆▆" + "▁" * 69 + " 4%",
+        # Context matches it; line 1 has 77 left.
+        "Sonnet 5.5 · high · $0.09 │ context ▆" + "▁" * 35 + " 4%",
         "7d " + "▆" * 6 + "▁" * 30 + " 17%",
     ]
 
@@ -43,9 +43,8 @@ def test_startup_has_no_bars():
 
 def test_busy_golden_120():
     assert lines_text(make_session(**BUSY), make_ctx(120)) == [
-        # Line 2: 116 - 7 - 14 - 2 (gap) = 93 free, a third each = 31. Context would be 62,
-        # but line 1 has only 55 left.
-        "Sonnet 5.5 · xhigh ↯ · @code-reviewer · $11.80 │ context " + "▆" * 23 + "▁" * 32 + " 41%",
+        # Line 2: 116 - 7 - 14 - 2 (gap) = 93 free, a third each = 31; context matches.
+        "Sonnet 5.5 · xhigh ↯ · @code-reviewer · $11.80 │ context " + "▆" * 13 + "▁" * 18 + " 41%",
         "5h " + "▆" * 7 + "▁" * 24 + " 22%  7d " + "▆" * 23 + "▁" * 8 + " 74% (2d4h)",
     ]
 
@@ -53,10 +52,10 @@ def test_busy_golden_120():
 def test_ascii_golden():
     s = make_session(prompt_cache={"warm": False, "last_miss_cause": {"causes": ["tools_changed"]}})
     line = lines_text(s, make_ctx(120, "ascii"))[0]
-    assert len(line) == 116
+    # Context matches line 2's 7d bar: (116 - 7) // 3 = 36 (line 1 has room for 38).
     assert line == (
-        "Sonnet 5.5 / high / $0.09 | context ##"
-        + "-" * 36
+        "Sonnet 5.5 / high / $0.09 | context #"
+        + "-" * 35
         + " 4% cache cold (tools changed) recache 42k"
     )
 
@@ -74,18 +73,18 @@ def test_lines_never_exceed_the_width(columns, plan_label):
             assert len(lines) <= 2
 
 
-def test_plan_bars_share_a_width_and_context_is_double():
+def test_plan_bars_and_context_share_a_width():
     first, second = lines_text(make_session(**BUSY), make_ctx(120), FOUR, "Ultra")
     widths = {cells(second, label) for label in ("5h", "7d", "Fable", "credits")}
     assert widths == {16}
-    assert cells(first, "context") == 32
+    assert cells(first, "context") == 16
 
 
 def test_widths_scale_with_the_row():
     first, second = lines_text(make_session(**BUSY), make_ctx(200))
     third = (196 - 7 - 14 - 2) // 3  # usable, the two bars' text, the gap
     assert cells(second, "5h") == cells(second, "7d") == third == 57
-    assert cells(first, "context") == 2 * third
+    assert cells(first, "context") == third
 
 
 def test_three_bars_fill_line_2():
@@ -111,10 +110,10 @@ def test_four_bars_share_the_row():
 
 def test_context_alone_sizes_as_if_line_2_existed():
     s = make_session(rate_limits=None)
-    assert cells(lines_text(s, make_ctx(200), [])[0], "context") == 2 * (196 // 3)
-    assert (
-        cells(lines_text(s, make_ctx(70), [])[0], "context") == 66 - 25 - 3 - 11
-    )  # text, separator, label and percent
+    assert cells(lines_text(s, make_ctx(200), [])[0], "context") == 196 // 3
+    assert cells(lines_text(s, make_ctx(70), [])[0], "context") == 66 // 3
+    # Line 1's room still limits it: text, separator, label and percent.
+    assert cells(lines_text(s, make_ctx(52), [])[0], "context") == 48 - 25 - 3 - 11
 
 
 def test_credits_moves_up_only_when_needed():
@@ -231,8 +230,8 @@ def test_colors_come_from_the_theme():
     assert styles["max"] == "1;38;2;255;107;128"  # error, bold
     assert styles["↯"] == "38;2;255;120;20"  # fastMode
     assert styles[" · "] == "38;2;153;153;153"  # inactive
-    assert styles["▁" * 73] == "38;2;80;80;80"  # subtle
-    assert styles["▆▆▆"] == "38;2;78;186;101"  # 4%: success
+    assert styles["▁" * 36] == "38;2;80;80;80"  # subtle: context alone gets 116 // 3 = 38
+    assert styles["▆▆"] == "38;2;78;186;101"  # 4%: success
 
 
 def test_no_color_has_no_escapes():

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.3 — 2026-11-05
+
+- The context bar is the same width as the plan bars (it was twice as wide), so all
+  bars scale together.
+
 ## 0.1.2 — 2026-11-05
 
 - Bars scale with the terminal instead of stopping at 24 cells (48 for context). Plan

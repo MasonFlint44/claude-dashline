@@ -18,8 +18,8 @@ from dashline import bars
 RESERVE = 4  # columns Claude Code keeps around the statusline (Phase 0, E5)
 DEFAULT_COLUMNS = 80
 # Plan bars share line 2's free space: 1/n each, but never more than 1/3, so three bars
-# fill the row. The context bar is at most twice a plan bar. Below the minimums, bars
-# move up to line 1 or turn into text.
+# fill the row. The context bar matches them when line 1 has the room. Below the
+# minimums, bars move up to line 1 or turn into text.
 PLAN_SHARE = 3
 PLAN_MIN = 8
 CONTEXT_MIN = 8
@@ -223,8 +223,8 @@ def fit(
 
     Line 2's free space is its width less everything but bar cells. Each plan bar gets
     1/n of it, at most 1/3, so three bars fill the row. Bars moved up to line 1 keep that
-    width. The context bar gets up to twice it; with no plan bars, twice what a bar would
-    get on an empty line 2.
+    width. The context bar matches it, room on line 1 permitting; with no plan bars, it
+    gets what a bar would on an empty line 2.
     """
     gap, sep = len(BAR_GAP), len(ctx.g["sep_group"])
     n = len(plan)
@@ -247,7 +247,7 @@ def fit(
                 continue
             room = ctx.width - used1 - bar_overhead(context, ctx, True)
             share = p if p is not None else ctx.width // PLAN_SHARE
-            c = min(2 * share, room)
+            c = min(share, room)
             if c >= CONTEXT_MIN:
                 return Fit(moved, p, c)
     return None

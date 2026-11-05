@@ -30,7 +30,7 @@ from live calls to the endpoints on 2026-11-03.
 | Install path | `${CLAUDE_CONFIG_DIR:-~/.claude}/scripts/statusline/` |
 | Config file | none in v1; if ever needed, `${CLAUDE_CONFIG_DIR:-~/.claude}/config/statusline/` |
 | Layout | E3 (§4): line 1 session + `context` bar, line 2 plan name + plan bars, line 3 repo |
-| Bar widths | plan bars share line 2's free space: 1/n each, at most 1/3 (three bars fill the row), minimum 8; `context` ≤ 2× plan width; overflow moves trailing bars up only when needed; never wraps (changed 11/5, was a 24/48 cap) |
+| Bar widths | plan bars share line 2's free space: 1/n each, at most 1/3 (three bars fill the row), minimum 8; `context` = plan width (line 1's room permitting; 2× until 0.1.2); overflow moves trailing bars up only when needed; never wraps (changed 11/5, was a 24/48 cap) |
 | Separators | `·` between items, `│` between groups, both in theme gray (ascii: `/`, `\|`) |
 | Directory row | option C (§5): icons + uncommitted line delta only |
 | Glyphs | `--glyphs nerd\|unicode\|ascii` flag in the statusLine command, default `unicode`; no config file in v1 |
@@ -260,9 +260,10 @@ how a new meter shows up without a release.
   countdown, gaps, the age tag), and each bar gets **1/n of it, at most 1/3**, where n
   counts the bars on line 2. So three bars
   fill the row, two leave its last third empty, four or more share it. Minimum 8, no
-  fixed cap. The `context` bar is **at most 2× the plan-bar width** (minimum 8),
+  fixed cap. The `context` bar is **the plan-bar width** (minimum 8; changed 11/5 by
+  the author from 2×, so all bars scale together),
   limited by the room left on line 1 (e.g. a cold-cache message can shrink it). With
-  no plan bars, it sizes as if line 2 existed: at most 2× a third of an empty line 2.
+  no plan bars, it sizes as if line 2 existed: at most a third of an empty line 2.
   (Until 0.1.1: plan bars capped at 24, context at 48.)
   1. If every plan bar fits on line 2 at ≥ 8 and `context` fits on line 1 at
      ≥ 8, use the largest widths that fit.
