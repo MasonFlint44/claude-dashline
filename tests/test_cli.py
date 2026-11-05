@@ -45,14 +45,29 @@ def test_shim_renders_startup_capture(stdin_fixture):
     r = run_shim(stdin=stdin_fixture("startup"))
     assert r.returncode == 0
     assert "Opus 5.5" in r.stdout
+    assert r.stdout.endswith("\n")
+
+
+def test_render_errors_show_one_line(monkeypatch, capsys):
+    import io
+
+    from dashline import __main__, layout
+
+    def boom(*args):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(layout, "render", boom)
+    out = io.StringIO()
+    assert __main__.render(io.StringIO("{}"), out, env={}) == 0
+    assert out.getvalue() == "dashline: internal error (run statusline.py --doctor)\n"
+    assert "RuntimeError: boom" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("text", ["", "not json", "[1, 2]", json.dumps({"model": None})])
-def test_bad_stdin_never_fails(text):
+def test_bad_stdin_prints_nothing(text):
     r = run_shim(stdin=text)
     assert r.returncode == 0
-    assert r.stdout.strip()
-    assert "Traceback" not in r.stdout
+    assert r.stdout == ""
 
 
 def test_unknown_argument_is_a_usage_error():

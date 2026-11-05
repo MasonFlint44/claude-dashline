@@ -86,20 +86,34 @@ def main(argv: list[str] | None = None) -> int:
     return render(sys.stdin, sys.stdout, glyphs=opts["glyphs"])
 
 
-def render(stdin, stdout, glyphs: str = "unicode") -> int:
+def render(stdin, stdout, glyphs: str = "unicode", env=None, now: float | None = None) -> int:
     """Render the status lines. Never fails loudly: Claude Code shows stdout verbatim."""
     try:
-        from dashline import layout
+        import os
+        import time
+
+        from dashline import glyphs as glyph_sets
+        from dashline import layout, theme
         from dashline import stdin as stdin_mod
 
-        session = stdin_mod.parse(stdin.read())
-        lines = layout.render(session, glyphs=glyphs)
+        env = os.environ if env is None else env
+        session = stdin_mod.load(stdin.read())
+        palette = theme.load(session.project_dir, env)
+        columns = env.get("COLUMNS", "")
+        lines = layout.render(
+            session,
+            glyph_sets.get(glyphs),
+            palette,
+            int(columns) if columns.isdigit() else None,
+            time.time() if now is None else now,
+        )
     except Exception:  # the statusline must never show a traceback
         import traceback
 
         traceback.print_exc(file=sys.stderr)
         lines = ["dashline: internal error (run statusline.py --doctor)"]
-    stdout.write("\n".join(lines) + "\n")
+    if lines:
+        stdout.write("\n".join(lines) + "\n")
     return 0
 
 

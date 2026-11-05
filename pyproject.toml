@@ -30,3 +30,4 @@ allowed-confusables = ["–", "−", "·", "│", "∕"]
 [tool.ruff.lint.per-file-ignores]
 # The shim and the render path use os.path: pathlib costs import time on every render.
 "statusline.py" = ["PTH"]
+"src/dashline/*.py" = ["PTH"]
