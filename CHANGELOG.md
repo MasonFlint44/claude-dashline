@@ -22,3 +22,5 @@
   progress, conflicts, and where Claude's shell has wandered. Fits narrow terminals by
   dropping detail in a fixed order.
 - Clickable project folder and, on GitHub, branch (its compare page).
+- `--preview [SCENARIO|all]`: ten built-in scenarios (Pro trial, Pro, Ultra on Fable,
+  Team, Enterprise, API key, limit reached, rebase, two narrow widths) with fake data.

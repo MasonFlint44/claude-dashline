@@ -153,3 +153,22 @@ def test_render_stays_fast(isolated_home, spawned):
     for _ in range(20):
         render(isolated_home)
     assert (time.perf_counter() - start) / 20 < 0.02
+
+
+def test_no_color_render_has_no_color_codes(isolated_home, spawned):
+    setup_home(isolated_home, ULTRA_ACCOUNT, "ultra")
+    out = io.StringIO()
+    env = {"HOME": str(isolated_home), "COLUMNS": "120", "NO_COLOR": "1"}
+    stdin = io.StringIO(json.dumps(stdin_data("after-first-response")))
+    __main__.render(stdin, out, env=env, now=NOW)
+    assert "Ultra" in out.getvalue()
+    assert "\x1b[" not in out.getvalue()
+
+
+@pytest.mark.parametrize(("value", "colored"), [("1", False), ("", True)])
+def test_empty_no_color_still_colors(isolated_home, spawned, value, colored):
+    """no-color.org: only a non-empty NO_COLOR turns color off."""
+    out = io.StringIO()
+    env = {"HOME": str(isolated_home), "COLUMNS": "120", "NO_COLOR": value}
+    __main__.render(io.StringIO(json.dumps(stdin_data("startup"))), out, env=env, now=NOW)
+    assert ("\x1b[" in out.getvalue()) == colored

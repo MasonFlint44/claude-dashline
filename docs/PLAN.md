@@ -552,9 +552,12 @@ writes. If hiding elements ever earns its keep, a file goes in
 - `--doctor`: python version, credentials, both endpoints, cache dir writable,
   git, installed-copy version, settings entry, `refreshInterval`. Names the
   failing step; exit 1 if bars would be hidden.
-- `--preview`: built-in scenarios (`free-trial`, `pro`, `ultra-fable`,
-  `team`, `enterprise`, `api`, `narrow`, `rebase`) with fake data. The README
-  SVG and the install skill both use it.
+- `--preview [SCENARIO|all]`: built-in scenarios with fake data at a fixed clock:
+  `pro-trial`, `pro`, `ultra-fable`, `team`, `enterprise`, `api`, `limit`, `rebase`,
+  `narrow` (80 columns: `credits` moves up), `tiny` (64 columns: text-only bars). Uses
+  the active theme and `NO_COLOR`; reads no account, network or git. The README SVG
+  and the install skill both use it. (Phase 5: `free-trial` became `pro-trial`, since
+  the trial is a Pro trial; `limit` and `tiny` added.)
 
 Skills (model-invocable, so a plain-language request like "fix my statusline" triggers them):
 
@@ -664,6 +667,10 @@ own cached profile in `.claude.json`, so there is no profile fetch and no
 `profile.json` (§1).
 **Phase 4** directory row. Done 11/4, with branch and folder links (§5).
 **Phase 5** glyph polish: `--preview` in each set, NO_COLOR, ambiguous-width checks.
+Done 11/4: `tests/test_glyphs.py` checks every glyph and every character a preview
+prints: no East Asian Wide/Fullwidth, no combining or format characters, nothing with
+the Unicode Emoji property, no private-use characters in `unicode`, pure ASCII in
+`ascii`, Nerd icons only from the Material Design range.
 **Phase 6** `--doctor`, `--preview`, install + doctor skills.
 **Phase 7** README + preview, 0.1.0, GitHub; claude-toolbox listing when ready.
 
