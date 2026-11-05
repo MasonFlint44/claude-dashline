@@ -98,7 +98,7 @@ def test_held_fetch_does_not_spawn(isolated_home, spawned):
 def test_api_key_session(isolated_home, spawned):
     stdin = merge(stdin_data("after-first-response"), {"rate_limits": None})
     lines = render(isolated_home, stdin)
-    assert lines == [lines[0]]
+    assert lines[1:] == ["/home/user/project"]  # no plan line, just the folder row
     assert " · API · $0.09 │ context " in lines[0]
     assert spawned == []
 
@@ -108,7 +108,7 @@ def test_bedrock_session(isolated_home, spawned):
     stdin = merge(stdin_data("after-first-response"), {"rate_limits": None})
     lines = render(isolated_home, stdin, CLAUDE_CODE_USE_BEDROCK="1")
     assert " · Bedrock · $0.09 │ " in lines[0]
-    assert len(lines) == 1
+    assert lines[1:] == ["/home/user/project"]
     assert spawned == []
 
 

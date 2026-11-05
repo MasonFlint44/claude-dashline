@@ -1,8 +1,9 @@
 """Lines 1–2: the session line and the plan-bar line (PLAN §4, layout E3).
 
-A line is a list of (text, sgr) segments, so widths can be measured without escape codes
-and a line can be cut short cleanly. Every glyph dashline draws is one column wide in
-Claude Code and in the terminal (Phase 0, E4), so a segment's width is its length.
+A line is a list of (text, sgr) segments, or (text, sgr, url) for an OSC 8 link, so
+widths can be measured without escape codes and a line can be cut short cleanly. Every
+glyph dashline draws is one column wide in Claude Code and in the terminal (Phase 0,
+E4), so a segment's width is its length.
 
 Bar widths (PLAN §4 rules): plan bars share one width, 8–24. The context bar is twice
 that, at most 48 and at least 8, limited by the room left on line 1. When line 2 can't
@@ -73,11 +74,19 @@ class Ctx:
 
 
 def width(line: list) -> int:
-    return sum(len(text) for text, _ in line)
+    return sum(len(seg[0]) for seg in line)
+
+
+def _seg_str(seg: tuple) -> str:
+    text, sgr = seg[0], seg[1]
+    out = f"\x1b[{sgr}m{text}\x1b[0m" if sgr else text
+    url = seg[2] if len(seg) > 2 else None
+    # OSC 8 with the ST terminator; Claude Code re-emits it (Phase 0, E3).
+    return f"\x1b]8;;{url}\x1b\\{out}\x1b]8;;\x1b\\" if url else out
 
 
 def to_str(line: list) -> str:
-    return "".join(f"\x1b[{sgr}m{text}\x1b[0m" if sgr else text for text, sgr in line if text)
+    return "".join(_seg_str(seg) for seg in line if seg[0])
 
 
 def truncate(line: list, limit: int, ellipsis: str, style: str) -> list:
@@ -86,10 +95,10 @@ def truncate(line: list, limit: int, ellipsis: str, style: str) -> list:
         return line
     room = max(0, limit - len(ellipsis))
     out = []
-    for text, sgr in line:
+    for text, *rest in line:
         if room <= 0:
             break
-        out.append((text[:room], sgr))
+        out.append((text[:room], *rest))
         room -= len(text[:room])
     out.append((ellipsis[:limit], style))
     return out
@@ -329,10 +338,15 @@ def render(
     plan: list | None = None,
     plan_label: str | None = None,
     stale: float | None = None,
+    repo_state=None,
+    home: str | None = None,
 ) -> list:
-    """The status lines as strings."""
+    """The status lines as strings: lines 1–2, then the directory row."""
+    from dashline import repo
+
     ctx = Ctx(glyphs, palette, columns or DEFAULT_COLUMNS, now)
     if plan is None:
         plan = stdin_plan_bars(session)
     lines = lay_out(session, ctx, plan, plan_label, stale)
+    lines.append(repo.draw(repo_state, ctx, home))
     return [to_str(line) for line in lines if line]

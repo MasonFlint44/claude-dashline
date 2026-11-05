@@ -93,7 +93,7 @@ def render(stdin, stdout, glyphs: str = "unicode", env=None, now: float | None =
         import os
         import time
 
-        from dashline import account, layout, theme, usage
+        from dashline import account, layout, repo, theme, usage
         from dashline import glyphs as glyph_sets
         from dashline import stdin as stdin_mod
 
@@ -107,6 +107,9 @@ def render(stdin, stdout, glyphs: str = "unicode", env=None, now: float | None =
         acct = account.load(env, session)
         state = usage.load(env, acct, now)
         columns = env.get("COLUMNS", "")
+        repo_state = None
+        if session.project_dir:
+            repo_state = repo.inspect(session.project_dir, session.current_dir, env)
         lines = layout.render(
             session,
             glyph_set,
@@ -116,6 +119,8 @@ def render(stdin, stdout, glyphs: str = "unicode", env=None, now: float | None =
             usage.plan_bars(session, acct, state.data, now),
             account.label_text(acct, glyph_set, now),
             state.stale_age,
+            repo_state,
+            env.get("HOME") or os.path.expanduser("~"),
         )
     except Exception:  # the statusline must never show a traceback
         import traceback

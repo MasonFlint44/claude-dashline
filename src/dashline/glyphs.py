@@ -24,6 +24,8 @@ NERD = {
     "project": "\U000f02a2 ",  # md-git
     "folder": "\U000f0770 ",  # md-folder_open
     "worktree": " \U000f0645 ",  # md-file_tree
+    "worktree_end": "",
+    "ref_end": "",
     "branch": "\U000f062c ",  # md-source_branch
     "detached": "\U000f0718 ",  # md-source_commit
     "tag": "\U000f04f9 ",  # md-tag
@@ -35,6 +37,7 @@ NERD = {
     "upstream_gone": "\U000f14cc",  # md-source_branch_remove
     "conflicts": "\U000f0026 ",  # md-alert
     "drift": "\U000f060d ",  # md-subdirectory_arrow_right
+    "drift_inside": "",
     "op_rebase": "\U000f14ce ",  # md-source_branch_sync
     "op_merge": "\U000f062d ",  # md-source_merge
     "op_cherry_pick": "\U000f1042 ",  # md-fruit_cherries
@@ -59,6 +62,8 @@ UNICODE = {
     "project": "",
     "folder": "",
     "worktree": " ⑂ ",
+    "worktree_end": "",
+    "ref_end": "",
     "branch": "⎇ ",
     "detached": "#",
     "tag": "tag:",
@@ -70,6 +75,7 @@ UNICODE = {
     "upstream_gone": "gone",
     "conflicts": "✗ ",
     "drift": "↳ ",
+    "drift_inside": "",
     "op_rebase": "",
     "op_merge": "",
     "op_cherry_pick": "",
@@ -93,7 +99,9 @@ ASCII = {
     "stale": "~",
     "project": "",
     "folder": "",
-    "worktree": " [",  # "name [wt]": the closing bracket comes from the row
+    "worktree": " [",
+    "worktree_end": "]",
+    "ref_end": ")",
     "branch": "(",
     "detached": "(#",
     "tag": "(tag:",
@@ -105,6 +113,7 @@ ASCII = {
     "upstream_gone": "gone",
     "conflicts": "! ",
     "drift": "",
+    "drift_inside": "./",
     "op_rebase": "",
     "op_merge": "",
     "op_cherry_pick": "",

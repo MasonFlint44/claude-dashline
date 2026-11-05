@@ -391,9 +391,14 @@ row had too many numbers. Rules:
 Details:
 
 - A zero side is hidden (`+12`, not `+12 −0`). `+` green, `−` coral, pencil gold.
-- Narrow terminals: line counts drop first (the pencil stays), then the branch
-  truncates with `…`, then the worktree name. Operation, conflicts and sync never
-  drop.
+- Narrow terminals: line counts drop first (the pencil stays), then the cwd drift
+  (Phase 4), then the branch truncates with `…` (down to 4 characters), then the
+  worktree name; then the row is cut short. Operation, conflicts and sync never drop.
+- Built in Phase 4 (11/4): never pushed (`local`) shows only when the repo has a remote;
+  during a rebase the row shows the branch being rebased (from `rebase-merge/head-name`),
+  not the detached commit; conflict markers count in the uncommitted lines; a repo with
+  no commits yet diffs the index against the empty tree. git gets 1 s in total; past
+  that, or with no git installed, the row shows the project alone.
 - Nerd glyphs (all Material Design `md-`, codepoints checked against
   `glyphnames.json`):
 
@@ -430,8 +435,14 @@ Details:
 - All with `--no-optional-locks`. Budget: 20 ms on a mid-size repo.
 
 **OSC 8 hyperlinks pass through (E3).** The CLI re-emits them with its own `id=` and a BEL
-terminator, colors intact. Whether to link the folder (opens the dir) and the branch
-(opens the GitHub compare page) is decided in Phase 4.
+terminator, colors intact, `file://` links included (checked 11/4).
+
+**Links (chosen 11/4: branch and folder):** the project name (or plain folder) links to
+`file://<hostname><project dir>`; the branch links to GitHub when it has a live upstream
+on a `github.com` / `github.*` remote: `…/compare/<default>...<branch>`, or
+`…/tree/<branch>` when it is the default branch (from `refs/remotes/<remote>/HEAD`) or
+the default is unknown. Unpushed branches, other hosts, tags and detached commits get no
+link. Known limit: over SSH or in a devcontainer the folder link names the remote machine.
 
 ---
 
@@ -651,7 +662,7 @@ with the glyph table from the start (all three sets).
 credits, month, limit-reached, stale tag. Done 11/4: the label comes from the CLI's
 own cached profile in `.claude.json`, so there is no profile fetch and no
 `profile.json` (§1).
-**Phase 4** directory row.
+**Phase 4** directory row. Done 11/4, with branch and folder links (§5).
 **Phase 5** glyph polish: `--preview` in each set, NO_COLOR, ambiguous-width checks.
 **Phase 6** `--doctor`, `--preview`, install + doctor skills.
 **Phase 7** README + preview, 0.1.0, GitHub; claude-toolbox listing when ready.

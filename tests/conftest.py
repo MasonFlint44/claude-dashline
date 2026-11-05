@@ -10,7 +10,7 @@ from dashline.colors import THEMES
 
 ROOT = Path(__file__).resolve().parent.parent
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
-ANSI = re.compile(r"\x1b\[[0-9;]*m")
+ANSI = re.compile(r"\x1b\[[0-9;]*m|\x1b\]8;;[^\x1b]*\x1b\\")
 # The clock for every layout test: 2026-11-05 00:00:00 UTC.
 NOW = 1793836800.0
 # The real usage.spawn, for the one test that checks it (with Popen faked).
@@ -48,7 +48,7 @@ def make_ctx(columns=120, glyph_set="unicode", theme_name="dark", color=False, n
 
 
 def plain(lines) -> list:
-    return [ANSI.sub("", line) if isinstance(line, str) else layout.to_str(line) for line in lines]
+    return [ANSI.sub("", line if isinstance(line, str) else layout.to_str(line)) for line in lines]
 
 
 def lines_text(session, ctx, plan=None, plan_label=None) -> list:

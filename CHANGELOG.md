@@ -16,3 +16,9 @@
   a subscription.
 - `limit · resets 2h10m` when a limit blocks you, and the data's age (`·12m`) when the
   fetch keeps failing.
+- Line 3, the directory row: project (with worktree and subfolder), branch, tag or
+  detached commit, uncommitted `+lines −lines`, untracked, ahead / behind / diverged,
+  never pushed, upstream gone, rebase / merge / cherry-pick / revert / bisect / am in
+  progress, conflicts, and where Claude's shell has wandered. Fits narrow terminals by
+  dropping detail in a fixed order.
+- Clickable project folder and, on GitHub, branch (its compare page).
