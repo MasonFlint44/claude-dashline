@@ -13,20 +13,20 @@ Copyright (c) 2014 Ryan L McIntyre) whose glyphs come from Material Design Icons
 <text x="165.2" y="48.4" textLength="42.0" lengthAdjust="spacingAndGlyphs" fill="#ffffff" xml:space="preserve">$4.12</text>
 <rect x="219.0" y="36.0" width="1.6" height="16" fill="#999999"/>
 <text x="232.4" y="48.4" textLength="58.8" lengthAdjust="spacingAndGlyphs" fill="#ffffff" xml:space="preserve">context</text>
-<rect x="299.6" y="39.0" width="252.0" height="15.0" fill="#d6bf1d"/>
-<rect x="551.6" y="51.5" width="151.2" height="2.5" fill="#505050"/>
-<text x="711.2" y="48.4" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#ffffff" xml:space="preserve">63%</text>
+<rect x="299.6" y="39.0" width="235.2" height="15.0" fill="#d6bf1d"/>
+<rect x="534.8" y="51.5" width="134.4" height="2.5" fill="#505050"/>
+<text x="677.6" y="48.4" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#ffffff" xml:space="preserve">63%</text>
 <text x="14.0" y="68.4" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#999999" xml:space="preserve">Pro </text>
 <rect x="51.0" y="56.0" width="1.6" height="16" fill="#999999"/>
 <text x="64.4" y="68.4" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#ffffff" xml:space="preserve">5h</text>
-<rect x="89.6" y="59.0" width="159.6" height="15.0" fill="#ff924a"/>
-<rect x="249.2" y="71.5" width="42.0" height="2.5" fill="#505050"/>
-<text x="299.6" y="68.4" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#ffffff" xml:space="preserve">81%</text>
-<text x="324.8" y="68.4" textLength="84.0" lengthAdjust="spacingAndGlyphs" fill="#999999" xml:space="preserve"> (1h40m)  </text>
-<text x="408.8" y="68.4" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#ffffff" xml:space="preserve">7d</text>
-<rect x="434.0" y="59.0" width="67.2" height="15.0" fill="#4eba65"/>
-<rect x="501.2" y="71.5" width="134.4" height="2.5" fill="#505050"/>
-<text x="644.0" y="68.4" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#ffffff" xml:space="preserve">34%</text>
+<rect x="89.6" y="59.0" width="151.2" height="15.0" fill="#ff924a"/>
+<rect x="240.8" y="71.5" width="33.6" height="2.5" fill="#505050"/>
+<text x="282.8" y="68.4" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#ffffff" xml:space="preserve">81%</text>
+<text x="308.0" y="68.4" textLength="84.0" lengthAdjust="spacingAndGlyphs" fill="#999999" xml:space="preserve"> (1h40m)  </text>
+<text x="392.0" y="68.4" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#ffffff" xml:space="preserve">7d</text>
+<rect x="417.2" y="59.0" width="58.8" height="15.0" fill="#4eba65"/>
+<rect x="476.0" y="71.5" width="126.0" height="2.5" fill="#505050"/>
+<text x="610.4" y="68.4" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#ffffff" xml:space="preserve">34%</text>
 <text x="14.0" y="88.4" textLength="142.8" lengthAdjust="spacingAndGlyphs" fill="#ffffff" xml:space="preserve">󰊢 claude-dashline</text>
 <text x="173.6" y="88.4" textLength="100.8" lengthAdjust="spacingAndGlyphs" fill="#ffffff" xml:space="preserve">󰘬 feat/cache</text>
 <text x="291.2" y="88.4" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#ffc107" xml:space="preserve">󰏫</text>
@@ -117,12 +117,14 @@ Copyright (c) 2014 Ryan L McIntyre) whose glyphs come from Material Design Icons
 <text x="14.0" y="528.4" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#999999" xml:space="preserve">Pro </text>
 <rect x="51.0" y="516.0" width="1.6" height="16" fill="#999999"/>
 <text x="64.4" y="528.4" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#ffffff" xml:space="preserve">5h</text>
-<text x="89.6" y="528.4" textLength="168.0" lengthAdjust="spacingAndGlyphs" fill="#ff6b80" xml:space="preserve">limit · resets 1h12m</text>
-<text x="274.4" y="528.4" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#ffffff" xml:space="preserve">7d</text>
-<rect x="299.6" y="519.0" width="142.8" height="15.0" fill="#ffbd0d"/>
-<rect x="442.4" y="531.5" width="58.8" height="2.5" fill="#505050"/>
-<text x="509.6" y="528.4" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#ffffff" xml:space="preserve">71%</text>
-<text x="534.8" y="528.4" textLength="58.8" lengthAdjust="spacingAndGlyphs" fill="#999999" xml:space="preserve"> (2d5h)</text>
+<rect x="89.6" y="519.0" width="159.6" height="15.0" fill="#ff6b80"/>
+<text x="257.6" y="528.4" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#ffffff" xml:space="preserve">100%</text>
+<text x="291.2" y="528.4" textLength="84.0" lengthAdjust="spacingAndGlyphs" fill="#999999" xml:space="preserve"> (1h12m)  </text>
+<text x="375.2" y="528.4" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#ffffff" xml:space="preserve">7d</text>
+<rect x="400.4" y="519.0" width="109.2" height="15.0" fill="#ffbd0d"/>
+<rect x="509.6" y="531.5" width="50.4" height="2.5" fill="#505050"/>
+<text x="568.4" y="528.4" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#ffffff" xml:space="preserve">71%</text>
+<text x="593.6" y="528.4" textLength="58.8" lengthAdjust="spacingAndGlyphs" fill="#999999" xml:space="preserve"> (2d5h)</text>
 <text x="14.0" y="548.4" textLength="142.8" lengthAdjust="spacingAndGlyphs" fill="#ffffff" xml:space="preserve">󰊢 claude-dashline</text>
 <text x="173.6" y="548.4" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#ffffff" xml:space="preserve">󰘬 main</text>
 <text x="2" y="595.0" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="13" fill="#8b949e">Rebase stopped on conflicts, branch diverged from its upstream</text>

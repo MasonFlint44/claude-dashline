@@ -66,13 +66,13 @@ def test_enterprise_month_bar(isolated_home, spawned):
     setup_home(isolated_home, ENTERPRISE_ACCOUNT, "enterprise")
     stdin = merge(stdin_data("after-first-response"), {"rate_limits": None})
     lines = render(isolated_home, stdin)
-    assert lines[1] == "Enterprise │ month " + "▁" * 24 + " 0%"
+    assert lines[1] == "Enterprise │ month " + "▁" * ((116 - 13 - 9) // 3) + " 0%"
 
 
 def test_no_cache_yet_uses_stdin_and_fetches(isolated_home, spawned):
     setup_home(isolated_home, ULTRA_ACCOUNT)
     lines = render(isolated_home)
-    assert lines[1] == "Ultra │ 7d ▆▆▆▆" + "▁" * 20 + " 17%"
+    assert lines[1] == "Ultra │ 7d " + "▆" * 6 + "▁" * 27 + " 17%"  # (116 - 8 - 7) // 3
     assert spawned == [NOW]
 
 
@@ -122,14 +122,15 @@ def test_gateway_spend_bar(isolated_home, spawned):
     assert spawned == []
 
 
-def test_limit_reached_line(isolated_home, spawned):
+def test_full_week_line(isolated_home, spawned):
     setup_home(isolated_home, ULTRA_ACCOUNT, "ultra-credits-off")
     stdin = merge(
         stdin_data("after-first-response"),
         {"rate_limits": {"seven_day": {"used_percentage": 100, "resets_at": 1794229200}}},
     )
     lines = render(isolated_home, stdin)
-    assert lines[1] == "Ultra │ 7d limit · resets 4d13h"
+    # 116 - "Ultra │ " (8) - "7d" " 100% (4d13h)" (16) = 92 free: a third is 30.
+    assert lines[1] == "Ultra │ 7d " + "▆" * 30 + " 100% (4d13h)"
 
 
 def test_fetch_error_still_prints_first(isolated_home, monkeypatch):

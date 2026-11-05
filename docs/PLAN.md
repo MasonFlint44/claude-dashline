@@ -30,7 +30,7 @@ from live calls to the endpoints on 2026-11-03.
 | Install path | `${CLAUDE_CONFIG_DIR:-~/.claude}/scripts/statusline/` |
 | Config file | none in v1; if ever needed, `${CLAUDE_CONFIG_DIR:-~/.claude}/config/statusline/` |
 | Layout | E3 (§4): line 1 session + `context` bar, line 2 plan name + plan bars, line 3 repo |
-| Bar widths | plan bars shared 8–24; `context` = 2× plan width; overflow moves trailing bars up only when needed; never wraps |
+| Bar widths | plan bars share line 2's free space: 1/n each, at most 1/3 (three bars fill the row), minimum 8; `context` ≤ 2× plan width; overflow moves trailing bars up only when needed; never wraps (changed 11/5, was a 24/48 cap) |
 | Separators | `·` between items, `│` between groups, both in theme gray (ascii: `/`, `\|`) |
 | Directory row | option C (§5): icons + uncommitted line delta only |
 | Glyphs | `--glyphs nerd\|unicode\|ascii` flag in the statusLine command, default `unicode`; no config file in v1 |
@@ -253,12 +253,17 @@ how a new meter shows up without a release.
 
 ### Rules
 
-- **Widths, no wrapping (settled 11/4).** Plan bars share one width (cap 24,
-  minimum 8), so they stay comparable side by side; `credits` keeps that width even
-  when it moves to line 1. The `context` bar is **2× the plan-bar width**
-  (so at most 48, minimum 8; no separate cap), limited by the room left on line 1
-  (e.g. a cold-cache message can shrink it). With no plan bars, context takes
-  line 1's room up to 48, the same as 2× a full-width plan bar.
+- **Widths, no wrapping (settled 11/4; widths changed 11/5 by the author).** Plan bars
+  share one width, so they stay comparable side by side; `credits` keeps that width
+  even when it moves to line 1. The width scales with the row: line 2's **free space**
+  is its width less everything but bar cells (plan name, each bar's label, percent and
+  countdown, gaps, the age tag), and each bar gets **1/n of it, at most 1/3**, where n
+  counts the bars on line 2. So three bars
+  fill the row, two leave its last third empty, four or more share it. Minimum 8, no
+  fixed cap. The `context` bar is **at most 2× the plan-bar width** (minimum 8),
+  limited by the room left on line 1 (e.g. a cold-cache message can shrink it). With
+  no plan bars, it sizes as if line 2 existed: at most 2× a third of an empty line 2.
+  (Until 0.1.1: plan bars capped at 24, context at 48.)
   1. If every plan bar fits on line 2 at ≥ 8 and `context` fits on line 1 at
      ≥ 8, use the largest widths that fit.
   2. Otherwise the trailing plan bars move to the end of line 1, after
@@ -270,15 +275,21 @@ how a new meter shows up without a release.
      then cut the line short with `…`.
   Bars resizing when line-1 text changes (e.g. the cache warning) is fine
   (settled 11/3). Known quirk, accepted 11/4: moving a bar up can make the bars *wider*
-  at a narrower terminal (e.g. 4 bars: 8 wide at 100 cols, 12 wide at 90 cols
-  with `credits` moved up). Bars move only when needed, never just to get wider.
+  at a narrower terminal (e.g. with four bars, once `credits` moves up the three left on
+  line 2 get a third of the free space each instead of a quarter). Bars move only when
+  needed, never just to get wider.
 - Terminal width = `COLUMNS` minus the TUI frame reserve: **4** in 2.1.318 (E5:
   2-col indent + 2 at the right; a line of exactly `COLUMNS − 4` fits, one more is
   cut with `…`). `COLUMNS` is passed to the command as the full terminal width.
 - **Reset countdown** `(1h40m)` after a bar at ≥ **70%**, the gold anchor, so color and
   countdown change together (settled 11/4).
-- **Limit reached:** a window at 100% with credits off or exhausted shows
-  coral `limit · resets 2h10m` instead of a bare full bar.
+- **Limit reached:** a bar at 100% is simply full, in coral, with its countdown:
+  `5h ▆▆▆▆▆▆ 100% (1h12m)` (changed 11/5 by the author; until 0.1.1 a blocked window
+  showed `limit · resets 2h10m` with no cells). A full bar is the clearest signal, and
+  the bar no longer turns into text of another width. (`100%` is still a column wider
+  than `99%`, as `10%` is than `9%`, so the shared width can shift by a cell then,
+  like when a countdown appears; accepted 11/5.) Whether credits carry you past a full
+  window isn't drawn separately: the `credits` bar beside it shows that.
 - **Stale data:** usage cache > 5 min old (fetch failing) → dim `·12m` after
   the last bar on line 2 (settled 11/4; ascii `~12m`).
 - **Both sources (Phase 3):** `5h` / `7d` come from the endpoint and from stdin. stdin
@@ -349,7 +360,7 @@ background colors all pass through unchanged; nothing is dimmed. Two things to k
 | bar labels and percents | `text` (Phase 2) | |
 | separators, plan name, agent, countdowns, stale tag, upstream gone, cwd drift | `inactive` | `#999999` |
 | cache expiring, uncommitted/untracked/ahead/behind/never-pushed icons, detached | `warning` | |
-| cache cold, limit reached, operations, conflicts, diverged | `error` | |
+| cache cold, operations, conflicts, diverged | `error` | |
 | `+lines` / `−lines` | `success` / `error` | |
 
 ---
@@ -454,7 +465,7 @@ Already folded in above:
 - **Plan label from the server**: picks up renames like Max 20x → Ultra without a release.
 - **Trial countdown.**
 - **Agent name** (`claude --agent X` / `agent` setting runs the main session as a custom agent); self-hiding.
-- **"Limit reached" state**: a full bar alone doesn't tell you whether you're blocked.
+- **"Limit reached" state**: dropped 11/5 in favor of a plain full bar (§4).
 - **Stale-data age tag**: a failing fetch otherwise looks like zero usage change.
 - **Cold-cache cause**: `󰜗 cold (tools changed) 󰑐38k`, from
   `last_miss_cause`. It tells you *why* the next turn costs more.

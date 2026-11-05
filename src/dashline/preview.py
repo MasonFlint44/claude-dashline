@@ -35,12 +35,10 @@ def _session(**overrides):
     return Session(data)
 
 
-def _bar(label, percent, resets_in=None, reached=False):
+def _bar(label, percent, resets_in=None):
     from dashline.layout import Bar
 
-    bar = Bar(label, percent, NOW + resets_in if resets_in else None)
-    bar.reached = reached
-    return bar
+    return Bar(label, percent, NOW + resets_in if resets_in else None)
 
 
 def _repo(name="claude-dashline", **attrs):
@@ -143,7 +141,7 @@ def scenarios() -> dict:
         "limit": (
             "Pro at its 5-hour limit after the cache went cold",
             _session(prompt_cache=_cold_cache(), context_window={"used_percentage": 57}),
-            [_bar("5h", 100, 72 * 60, reached=True), _bar("7d", 71, 2 * 86400 + 5 * 3600)],
+            [_bar("5h", 100, 72 * 60), _bar("7d", 71, 2 * 86400 + 5 * 3600)],
             "Pro",
             _repo(),
             None,

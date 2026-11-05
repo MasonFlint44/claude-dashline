@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.2 — 2026-11-05
+
+- Bars scale with the terminal instead of stopping at 24 cells (48 for context). Plan
+  bars share line 2's free space, a third each at most, so three bars fill the row;
+  the context bar is up to twice a plan bar.
+- A limit you've hit is a full coral bar with its percent and countdown
+  (`100% (1h12m)`) instead of the `limit · resets` text.
+
 ## 0.1.1 — 2026-11-05
 
 - `--doctor` no longer warns about a cache folder other users can list. It checks

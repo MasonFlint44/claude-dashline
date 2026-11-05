@@ -21,8 +21,8 @@ def usage_fixture(name):
 
 
 def summary(plan):
-    """[(label, percent, resets_at, reached)] for readable asserts."""
-    return [(b.label, b.percent, b.resets_at, b.reached) for b in plan]
+    """[(label, percent, resets_at)] for readable asserts."""
+    return [(b.label, b.percent, b.resets_at) for b in plan]
 
 
 def labels(plan):
@@ -40,8 +40,8 @@ def test_ultra_on_fable():
     session = make_session(rate_limits=None, **MODEL_FABLE)
     plan = usage.plan_bars(session, ULTRA, usage_fixture("ultra"), NOW)
     assert summary(plan) == [
-        ("7d", 17, pytest.approx(ULTRA_7D_RESET), False),
-        ("Fable", 24, pytest.approx(ULTRA_FABLE_RESET), False),
+        ("7d", 17, pytest.approx(ULTRA_7D_RESET)),
+        ("Fable", 24, pytest.approx(ULTRA_FABLE_RESET)),
     ]
 
 
@@ -72,7 +72,7 @@ def test_scope_needs_a_word_boundary_in_the_name():
 def test_enterprise_month_bar_at_zero():
     session = make_session(rate_limits=None)
     plan = usage.plan_bars(session, ENTERPRISE, usage_fixture("enterprise"), NOW)
-    assert summary(plan) == [("month", 0, None, False)]
+    assert summary(plan) == [("month", 0, None)]
 
 
 def test_credits_only_once_used():
@@ -82,7 +82,7 @@ def test_credits_only_once_used():
     data["spend"]["used"]["amount_minor"] = 5000
     data["spend"]["percent"] = 25
     plan = usage.plan_bars(session, ULTRA, data, NOW)
-    assert summary(plan)[-1] == ("credits", 25, None, False)
+    assert summary(plan)[-1] == ("credits", 25, None)
 
 
 def test_credits_percent_from_amounts():
@@ -139,14 +139,14 @@ def test_odd_rows_are_skipped(row):
 @pytest.mark.parametrize("data", [None, {}, {"limits": "x", "spend": []}, {"spend": {"x": 1}}])
 def test_odd_shapes_fall_back_to_stdin(data):
     plan = usage.plan_bars(make_session(), ULTRA, data, NOW)
-    assert summary(plan) == [("7d", 17, 1793948400, False)]
+    assert summary(plan) == [("7d", 17, 1793948400)]
 
 
 def test_rolled_over_window_reads_zero():
     data = usage_fixture("ultra")
     later = ULTRA_7D_RESET + 10
     plan = usage.plan_bars(make_session(rate_limits=None, **MODEL_OPUS), ULTRA, data, later)
-    assert summary(plan) == [("7d", 0, None, False)]
+    assert summary(plan) == [("7d", 0, None)]
 
 
 # ---- merging with stdin ----
@@ -190,7 +190,7 @@ def test_stdin_window_missing_from_endpoint_kept():
     assert labels(plan) == ["5h", "7d", "Fable"]
 
 
-# ---- limit reached ----
+# ---- full windows ----
 
 
 def full_week(data):
@@ -198,28 +198,12 @@ def full_week(data):
     return data
 
 
-def test_full_window_without_credits_is_reached():
-    data = full_week(usage_fixture("ultra-credits-off"))
-    plan = usage.plan_bars(make_session(rate_limits=None, **MODEL_FABLE), ULTRA, data, NOW)
-    assert [(b.label, b.reached) for b in plan] == [("7d", True), ("Fable", False)]
-
-
-def test_full_window_with_credits_is_not_reached():
-    data = full_week(usage_fixture("ultra"))
-    plan = usage.plan_bars(make_session(rate_limits=None, **MODEL_OPUS), ULTRA, data, NOW)
-    assert plan[0].reached is False
-
-
-def test_full_window_with_credits_spent_is_reached():
-    data = full_week(usage_fixture("ultra"))
-    data["extra_usage"]["spend_limit_reached"] = True
-    plan = usage.plan_bars(make_session(rate_limits=None, **MODEL_OPUS), ULTRA, data, NOW)
-    assert plan[0].reached is True
-    data = full_week(usage_fixture("ultra"))
-    data["spend"].update(percent=100)
-    data["spend"]["used"]["amount_minor"] = 20000
-    plan = usage.plan_bars(make_session(rate_limits=None, **MODEL_OPUS), ULTRA, data, NOW)
-    assert [(b.label, b.reached) for b in plan] == [("7d", True), ("credits", False)]
+def test_full_window_is_just_full():
+    """At 100% a window is a full bar, credits or not: no blocked state to work out."""
+    for fixture in ("ultra", "ultra-credits-off"):
+        data = full_week(usage_fixture(fixture))
+        plan = usage.plan_bars(make_session(rate_limits=None, **MODEL_OPUS), ULTRA, data, NOW)
+        assert (plan[0].label, plan[0].percent) == ("7d", 100)
 
 
 def test_credits_past_100_keep_counting():
@@ -227,14 +211,14 @@ def test_credits_past_100_keep_counting():
     data["spend"].update(percent=130)
     data["spend"]["used"]["amount_minor"] = 26000
     plan = usage.plan_bars(make_session(rate_limits=None, **MODEL_OPUS), ULTRA, data, NOW)
-    assert (plan[-1].label, plan[-1].percent, plan[-1].reached) == ("credits", 130, False)
+    assert (plan[-1].label, plan[-1].percent) == ("credits", 130)
 
 
-def test_enterprise_cap_reached():
+def test_enterprise_cap_full():
     data = usage_fixture("enterprise")
     data["spend"]["percent"] = 100
     plan = usage.plan_bars(make_session(rate_limits=None), ENTERPRISE, data, NOW)
-    assert summary(plan) == [("month", 100, None, True)]
+    assert summary(plan) == [("month", 100, None)]
 
 
 # ---- gateway spend limit ----
@@ -248,7 +232,7 @@ def test_gateway_spend_limit_bar():
         }
     )
     plan = usage.plan_bars(session, Account("api", "Gateway"), None, NOW)
-    assert summary(plan) == [("month", 40, NOW + 86400, False)]
+    assert summary(plan) == [("month", 40, NOW + 86400)]
 
 
 @pytest.mark.parametrize(

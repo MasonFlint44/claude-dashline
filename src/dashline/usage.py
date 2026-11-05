@@ -367,12 +367,4 @@ def plan_bars(session, account, data: dict | None, now: float) -> list:
         gateway = session.spend_limit
         period = PERIODS.get((gateway.period or "").lower(), "month")
         caps.append(Bar(period, gateway.percent, gateway.resets_at))
-
-    # A full window blocks you unless credits pick up the overflow; a full cap always does.
-    spent_out = _dig(data, "extra_usage", "spend_limit_reached") is True
-    credits_left = enabled and not account.team and not spent_out
-    credits_left = credits_left and (percent is None or percent < 100)
-    for bar in caps + ([] if credits_left else windows):
-        bar.reached = bar.percent >= 100
-    out = windows + caps + credits
-    return out
+    return windows + caps + credits

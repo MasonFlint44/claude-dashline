@@ -30,8 +30,10 @@ def cells(line: str, label: str) -> int:
 
 def test_after_first_response_golden():
     assert lines_text(make_session(), make_ctx(120)) == [
-        "Sonnet 5.5 · high · $0.09 │ context ▆▆" + "▁" * 46 + " 4%",
-        "7d ▆▆▆▆" + "▁" * 20 + " 17%",
+        # Line 2: 116 usable - "7d" " 17%" (7) = 109 free; one bar gets a third, 36.
+        # Context: twice that, 72; line 1 has 77 left.
+        "Sonnet 5.5 · high · $0.09 │ context ▆▆▆" + "▁" * 69 + " 4%",
+        "7d " + "▆" * 6 + "▁" * 30 + " 17%",
     ]
 
 
@@ -41,8 +43,10 @@ def test_startup_has_no_bars():
 
 def test_busy_golden_120():
     assert lines_text(make_session(**BUSY), make_ctx(120)) == [
-        "Sonnet 5.5 · xhigh ↯ · @code-reviewer · $11.80 │ context " + "▆" * 20 + "▁" * 28 + " 41%",
-        "5h ▆▆▆▆▆" + "▁" * 19 + " 22%  7d " + "▆" * 18 + "▁" * 6 + " 74% (2d4h)",
+        # Line 2: 116 - 7 - 14 - 2 (gap) = 93 free, a third each = 31. Context would be 62,
+        # but line 1 has only 55 left.
+        "Sonnet 5.5 · xhigh ↯ · @code-reviewer · $11.80 │ context " + "▆" * 23 + "▁" * 32 + " 41%",
+        "5h " + "▆" * 7 + "▁" * 24 + " 22%  7d " + "▆" * 23 + "▁" * 8 + " 74% (2d4h)",
     ]
 
 
@@ -77,15 +81,37 @@ def test_plan_bars_share_a_width_and_context_is_double():
     assert cells(first, "context") == 32
 
 
-def test_widths_cap_at_24_and_48():
+def test_widths_scale_with_the_row():
     first, second = lines_text(make_session(**BUSY), make_ctx(200))
-    assert cells(second, "5h") == 24
-    assert cells(first, "context") == 48
+    third = (196 - 7 - 14 - 2) // 3  # usable, the two bars' text, the gap
+    assert cells(second, "5h") == cells(second, "7d") == third == 57
+    assert cells(first, "context") == 2 * third
 
 
-def test_context_alone_takes_up_to_48():
+def test_three_bars_fill_line_2():
+    plan = [Bar("5h", 30), Bar("7d", 50), Bar("Fable", 20)]
+    for columns in (90, 120, 160, 200):
+        second = lines_text(make_session(), make_ctx(columns), plan, "Ultra")[1]
+        assert columns - 4 - 2 <= len(second) <= columns - 4  # within the rounding
+
+
+def test_two_bars_take_a_third_each():
+    plan = [Bar("5h", 30), Bar("7d", 50)]
+    second = lines_text(make_session(), make_ctx(120), plan, "Pro")[1]
+    free = 116 - len("Pro │ ") - 7 - 7 - 2
+    assert cells(second, "5h") == cells(second, "7d") == free // 3
+
+
+def test_four_bars_share_the_row():
+    plan = [Bar("5h", 30), Bar("7d", 50), Bar("Fable", 20), Bar("credits", 40)]
+    second = lines_text(make_session(), make_ctx(160), plan, "Ultra")[1]
+    free = 156 - 8 - (7 + 7 + 10 + 12) - 6
+    assert {cells(second, b.label) for b in plan} == {free // 4}
+
+
+def test_context_alone_sizes_as_if_line_2_existed():
     s = make_session(rate_limits=None)
-    assert cells(lines_text(s, make_ctx(200), [])[0], "context") == 48
+    assert cells(lines_text(s, make_ctx(200), [])[0], "context") == 2 * (196 // 3)
     assert (
         cells(lines_text(s, make_ctx(70), [])[0], "context") == 66 - 25 - 3 - 11
     )  # text, separator, label and percent
@@ -205,8 +231,8 @@ def test_colors_come_from_the_theme():
     assert styles["max"] == "1;38;2;255;107;128"  # error, bold
     assert styles["↯"] == "38;2;255;120;20"  # fastMode
     assert styles[" · "] == "38;2;153;153;153"  # inactive
-    assert styles["▁" * 46] == "38;2;80;80;80"  # subtle
-    assert styles["▆▆"] == "38;2;78;186;101"  # 4%: success
+    assert styles["▁" * 73] == "38;2;80;80;80"  # subtle
+    assert styles["▆▆▆"] == "38;2;78;186;101"  # 4%: success
 
 
 def test_no_color_has_no_escapes():
@@ -214,52 +240,48 @@ def test_no_color_has_no_escapes():
     assert all("\x1b" not in line for line in out)
 
 
-# ---- limit reached and stale data (Phase 3) ----
+# ---- full bars and stale data (Phase 3) ----
 
 
-def reached(label, resets_at=None):
-    bar = Bar(label, 100, resets_at)
-    bar.reached = True
-    return bar
+def test_full_bar_at_100():
+    plan = [Bar("5h", 100, NOW + 72 * 60), Bar("7d", 71, NOW + 2 * 86400)]
+    second = lines_text(make_session(), make_ctx(120), plan, "Pro")[1]
+    n = cells(second, "5h")
+    assert second.startswith("Pro │ 5h " + "▆" * n + " 100% (1h12m)  7d ")
 
 
-def test_reached_bar_is_text():
-    plan = [Bar("5h", 30), reached("7d", NOW + 2 * 3600 + 600)]
-    lines = lines_text(make_session(), make_ctx(120), plan, "Ultra")
-    assert lines[1] == "Ultra │ 5h ▆▆▆▆▆▆▆" + "▁" * 17 + " 30%  7d limit · resets 2h10m"
+def test_hitting_100_fills_the_bar():
+    def line(percent):
+        plan = [Bar("5h", percent, NOW + 3600), Bar("7d", 50, NOW + 86400)]
+        return lines_text(make_session(), make_ctx(120), plan, "Pro")[1]
+
+    before, after = line(99), line(100)
+    assert "▁" in before.split("7d")[0]
+    assert "▁" not in after.split("7d")[0]
+    assert " 100% (1h)  7d " in after
+    # "100%" is one column wider than "99%"; here the shared width absorbs it.
+    assert cells(before, "5h") == cells(after, "5h") == 29
 
 
-def test_reached_bar_without_reset_time():
-    lines = lines_text(make_session(), make_ctx(120), [reached("month")], "Enterprise")
-    assert lines[1] == "Enterprise │ month limit"
+def test_full_cap_without_reset_time():
+    second = lines_text(make_session(), make_ctx(120), [Bar("month", 100)], "Enterprise")[1]
+    assert second == "Enterprise │ month " + "▆" * ((116 - 13 - 11) // 3) + " 100%"
 
 
-def test_reached_bar_drops_resets_when_narrow():
-    plan = [Bar("5h", 30), reached("7d", NOW + 7200), Bar("Fable", 80, NOW + 600)]
-    texts = [lines_text(make_session(), make_ctx(c), plan, "Ultra") for c in range(20, 60)]
-    assert any("7d limit · resets 2h" in t[-1] for t in texts)
-    assert any(t[-1].endswith("7d limit  Fable 80%") for t in texts)
-
-
-def test_reached_bar_is_coral():
+def test_full_bar_is_coral():
     ctx = make_ctx(120, color=True)
-    lines = layout.lay_out(make_session(), ctx, [reached("7d", NOW + 60)])
-    seg = next(s for s in lines[1] if s[0].startswith("limit"))
-    assert seg[1] == ctx.p.sgr("error")
-
-
-def test_reached_bars_leave_room_for_others():
-    """A reached bar has no cells, so it doesn't shrink the bars beside it."""
-    plain_widths = lines_text(make_session(), make_ctx(60), [Bar("5h", 30), Bar("7d", 50)])
-    with_reached = lines_text(make_session(), make_ctx(60), [Bar("5h", 30), reached("7d")])
-    assert cells(with_reached[1], "5h") > cells(plain_widths[1], "5h")
+    lines = layout.lay_out(make_session(), ctx, [Bar("7d", 100, NOW + 60)])
+    fill = next(seg for seg in lines[1] if seg[0].startswith("▆"))
+    assert fill[1] == ctx.p.sgr("error")
 
 
 def test_stale_tag_after_line_2():
     plan = [Bar("7d", 17)]
     lines = lines_text(make_session(), make_ctx(120), plan, "Ultra")
     stale = plain(layout.lay_out(make_session(), make_ctx(120), plan, "Ultra", stale=12 * 60))
-    assert stale[1] == lines[1] + " ·12m"
+    assert stale[1].endswith(" 17% ·12m")
+    # The tag takes its 5 columns from the bar's free space: 101 // 3 → 96 // 3.
+    assert (cells(lines[1], "7d"), cells(stale[1], "7d")) == (33, 32)
     ascii_line = plain(
         layout.lay_out(make_session(), make_ctx(120, "ascii"), plan, "Ultra", stale=3700)
     )[1]
@@ -273,7 +295,7 @@ def test_stale_tag_needs_line_2():
 
 
 @pytest.mark.parametrize("columns", range(10, 161, 3))
-def test_reached_and_stale_never_exceed_the_width(columns):
-    plan = [reached("5h", NOW + 3000), Bar("7d", 95, NOW + 86400), Bar("Fable", 24)]
+def test_full_and_stale_never_exceed_the_width(columns):
+    plan = [Bar("5h", 100, NOW + 3000), Bar("7d", 95, NOW + 86400), Bar("Fable", 24)]
     lines = plain(layout.lay_out(make_session(**BUSY), make_ctx(columns), plan, "Ultra", 900))
     assert all(len(line) <= columns - layout.RESERVE for line in lines)

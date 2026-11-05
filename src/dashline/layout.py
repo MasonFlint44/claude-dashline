@@ -17,8 +17,12 @@ from dashline import bars
 
 RESERVE = 4  # columns Claude Code keeps around the statusline (Phase 0, E5)
 DEFAULT_COLUMNS = 80
-PLAN_MAX, PLAN_MIN = 24, 8
-CONTEXT_MAX, CONTEXT_MIN = 48, 8
+# Plan bars share line 2's free space: 1/n each, but never more than 1/3, so three bars
+# fill the row. The context bar is at most twice a plan bar. Below the minimums, bars
+# move up to line 1 or turn into text.
+PLAN_SHARE = 3
+PLAN_MIN = 8
+CONTEXT_MIN = 8
 BAR_GAP = "  "
 EFFORT_TOKENS = {
     "low": ("inactive", False),
@@ -51,13 +55,12 @@ MISS_CAUSES = {
 
 
 class Bar:
-    """One bar. `reached`: the limit blocks you, so it draws as text, not cells."""
+    """One bar. At 100% it is simply full (and coral), countdown and all: no special case."""
 
     def __init__(self, label: str, percent: float, resets_at: float | None = None):
         self.label = label
         self.percent = percent
         self.resets_at = resets_at
-        self.reached = False
 
 
 class Ctx:
@@ -108,12 +111,6 @@ def truncate(line: list, limit: int, ellipsis: str, style: str) -> list:
 
 
 def bar_suffix(bar: Bar, ctx: Ctx, countdown: bool) -> list:
-    if bar.reached:
-        text = "limit"
-        left = (bar.resets_at - ctx.now) if bar.resets_at else 0
-        if countdown and left > 0:
-            text += f"{ctx.g['sep_item']}resets {bars.duration(left)}"
-        return [(" ", ""), ctx.seg(text, "error")]
     out = [(" ", ""), ctx.seg(bars.percent_text(bar.percent), "text")]
     if countdown and bar.resets_at and bar.percent >= bars.COUNTDOWN_FROM:
         left = bar.resets_at - ctx.now
@@ -124,20 +121,18 @@ def bar_suffix(bar: Bar, ctx: Ctx, countdown: bool) -> list:
 
 def bar_overhead(bar: Bar, ctx: Ctx, countdown: bool) -> int:
     """Columns a bar takes besides its cells."""
-    if bar.reached:
-        return len(bar.label) + width(bar_suffix(bar, ctx, countdown))
     return len(bar.label) + 1 + width(bar_suffix(bar, ctx, countdown))
 
 
 def bar_width(bar: Bar, ctx: Ctx, cells: int) -> int:
-    """Columns a bar takes drawn with this many cells (none when the limit is reached)."""
-    return bar_overhead(bar, ctx, True) + (0 if bar.reached else cells)
+    """Columns a bar takes drawn with this many cells."""
+    return bar_overhead(bar, ctx, True) + cells
 
 
 def draw_bar(bar: Bar, cells: int | None, ctx: Ctx, countdown: bool) -> list:
     """`label ▆▆▆▁▁▁ 41% (1h40m)`; with cells=None, text only: `label 41%`."""
     out = [ctx.seg(bar.label, "text")]
-    if cells is not None and not bar.reached:
+    if cells is not None:
         n = bars.filled(bar.percent, cells)
         out += [
             (" ", ""),
@@ -225,16 +220,24 @@ def fit(
     tail_w: what follows the bars on line 1 (the cache state, with its leading space);
     suffix_w: what follows the bars on line 2 (the stale-data age).
     At least one plan bar stays on line 2.
+
+    Line 2's free space is its width less everything but bar cells. Each plan bar gets
+    1/n of it, at most 1/3, so three bars fill the row. Bars moved up to line 1 keep that
+    width. The context bar gets up to twice it; with no plan bars, twice what a bar would
+    get on an empty line 2.
     """
     gap, sep = len(BAR_GAP), len(ctx.g["sep_group"])
     n = len(plan)
     for moved in range(max(1, n)):
         stay, up = plan[: n - moved], plan[n - moved :]
-        for p in range(PLAN_MAX, PLAN_MIN - 1, -1) if n else [None]:
-            if stay:
-                need2 = prefix_w + suffix_w + sum(bar_width(b, ctx, p) for b in stay)
-                if need2 + gap * (len(stay) - 1) > ctx.width:
-                    continue
+        if stay:
+            free = ctx.width - prefix_w - suffix_w - gap * (len(stay) - 1)
+            free -= sum(bar_overhead(b, ctx, True) for b in stay)
+            widest = free // max(PLAN_SHARE, len(stay))
+            widths = range(widest, PLAN_MIN - 1, -1)
+        else:
+            widths = [None]
+        for p in widths:
             count1 = len(up) + (1 if context else 0)
             used1 = text_w + tail_w + sum(bar_width(b, ctx, p) for b in up)
             used1 += ((sep if text_w else 0) + gap * (count1 - 1)) if count1 else 0
@@ -243,7 +246,8 @@ def fit(
                     return Fit(moved, p, None)
                 continue
             room = ctx.width - used1 - bar_overhead(context, ctx, True)
-            c = min(CONTEXT_MAX, 2 * p if p else CONTEXT_MAX, room)
+            share = p if p is not None else ctx.width // PLAN_SHARE
+            c = min(2 * share, room)
             if c >= CONTEXT_MIN:
                 return Fit(moved, p, c)
     return None
