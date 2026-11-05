@@ -694,6 +694,12 @@ in the pty harness: Claude Code doesn't wait for the detached child. With
 `refreshInterval: 2`, a statusline that left a 30 s detached child each run still
 refreshed every 2.0 s.
 **Phase 7** README + preview, 0.1.0, GitHub; claude-toolbox listing when ready.
+11/4: README, `docs/preview.svg` (hero: `ultra-fable`) and `docs/plans.svg` (gallery: pro,
+team, enterprise, api, limit, rebase, with captions), drawn at 100 columns in the dark
+theme. The icon font is a 5 KB subset of Symbols Nerd Font Mono v3.5.1 covering every
+icon in the nerd set, committed in `scripts/assets/` with the MIT (Nerd Fonts) and
+Apache 2.0 (Material Design Icons) licenses; fontTools is a dev dependency, used only to
+rebuild it. CI job `preview` runs `scripts/preview.py --check`. Version 0.1.0.
 
 **Later:** pace tick. (Retiring the earlier plugins is the author's own housekeeping,
 outside this repo. The compaction-point work does **not** move here.)
