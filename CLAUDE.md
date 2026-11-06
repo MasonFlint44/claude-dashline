@@ -41,6 +41,17 @@ on Python 3.9 and on macOS with Apple's `/usr/bin/python3`.
   `CHANGELOG.md` entry carry the same version; `tests/test_cli.py` checks it. Run
   `uv lock` after a bump so `uv.lock` follows.
 
+## Releasing
+
+1. Add a `## X.Y.Z — YYYY-MM-DD` section to `CHANGELOG.md` and set the version in the
+   four places above (`uv lock` after).
+2. Run the checks above, commit, push, and wait for CI to pass on that commit.
+3. `git tag -a vX.Y.Z -m "dashline X.Y.Z"` on it, push the tag, and
+   `gh release create vX.Y.Z` with the changelog section as the notes.
+4. Ship it: the marketplace (`~/git/claude-toolbox`) pins each plugin to a release tag
+   and its commit, so nothing reaches users until it's re-pinned. There, run
+   `scripts/pin.sh dashline vX.Y.Z`, then commit and push.
+
 ## Conventions
 
 - Commits end with a `Co-Authored-By: Claude <model> <noreply@anthropic.com>` line and
