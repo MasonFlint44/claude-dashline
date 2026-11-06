@@ -144,3 +144,22 @@ def test_palette_sgr():
 def test_no_color(home):
     assert theme.load(None, {"NO_COLOR": "1"}).color is False
     assert theme.load(None, {}).color is True
+
+
+@pytest.mark.parametrize("base", [["dark"], {"x": 1}, 7, None, "nope"])
+def test_custom_theme_with_an_odd_base_falls_back_to_dark(home, base):
+    (home / ".claude" / "themes").mkdir()
+    write(home / ".claude" / "themes" / "odd.json", {"base": base, "overrides": []})
+    assert theme.resolve("custom:odd", {}) == THEMES["dark"]
+
+
+def test_config_dir_follows_the_env_home(tmp_path):
+    env = {"HOME": str(tmp_path / "elsewhere")}
+    assert theme.config_dir(env) == str(tmp_path / "elsewhere" / ".claude")
+    assert theme.config_dir({**env, "CLAUDE_CONFIG_DIR": "/cfg"}) == "/cfg"
+
+
+def test_settings_with_a_bom(home):
+    path = home / ".claude" / "settings.json"
+    path.write_bytes(b"\xef\xbb\xbf" + b'{"theme": "light"}')
+    assert theme.theme_setting(None, {}) == "light"

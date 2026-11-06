@@ -3,18 +3,21 @@
 A line is a list of (text, sgr) segments, or (text, sgr, url) for an OSC 8 link, so
 widths can be measured without escape codes and a line can be cut short cleanly. Every
 glyph dashline draws is one column wide in Claude Code and in the terminal (Phase 0,
-E4), so a segment's width is its length.
+E4); outside text (names) is measured in columns by text.cols, so CJK counts double.
 
 Bar widths (PLAN §4 rules): plan bars share one width, a third of line 2's free space
 at most and 1/n of it with n bars, never under 8. The context bar matches it, limited by
 the room left on line 1. Line 1 is the session and line 2 the plan; bars never move
 between them. When line 2 is too narrow, its trailing bars turn into text (`label NN%`)
-one at a time; when line 1 is, the context bar does. Lines never wrap.
+one at a time. On line 1 the context bar keeps that width while the agent, the cache
+detail and the end of a long model name go; only then does it shrink, down to 8, and
+turn into text. Lines never wrap.
 """
 
 from __future__ import annotations
 
 from dashline import bars
+from dashline.text import cols, cut
 
 RESERVE = 4  # columns Claude Code keeps around the statusline (Phase 0, E5)
 DEFAULT_COLUMNS = 80
@@ -24,6 +27,9 @@ DEFAULT_COLUMNS = 80
 PLAN_SHARE = 3
 PLAN_MIN = 8
 CONTEXT_MIN = 8
+# A model name longer than this (a Bedrock ARN, say) is cut short, down to this many
+# columns, before line 1 gives up its cost or context bar.
+MODEL_MIN = 16
 BAR_GAP = "  "
 EFFORT_TOKENS = {
     "low": ("inactive", False),
@@ -78,7 +84,7 @@ class Ctx:
 
 
 def width(line: list) -> int:
-    return sum(len(seg[0]) for seg in line)
+    return sum(cols(seg[0]) for seg in line)
 
 
 def _seg_str(seg: tuple) -> str:
@@ -97,14 +103,15 @@ def truncate(line: list, limit: int, ellipsis: str, style: str) -> list:
     """Cut a line to `limit` columns, ending in an ellipsis."""
     if width(line) <= limit:
         return line
-    room = max(0, limit - len(ellipsis))
+    room = max(0, limit - cols(ellipsis))
     out = []
     for text, *rest in line:
         if room <= 0:
             break
-        out.append((text[:room], *rest))
-        room -= len(text[:room])
-    out.append((ellipsis[:limit], style))
+        part = cut(text, room)
+        out.append((part, *rest))
+        room -= cols(part)
+    out.append((cut(ellipsis, limit), style))
     return out
 
 
@@ -122,7 +129,7 @@ def bar_suffix(bar: Bar, ctx: Ctx, countdown: bool) -> list:
 
 def bar_overhead(bar: Bar, ctx: Ctx, countdown: bool) -> int:
     """Columns a bar takes besides its cells."""
-    return len(bar.label) + 1 + width(bar_suffix(bar, ctx, countdown))
+    return cols(bar.label) + 1 + width(bar_suffix(bar, ctx, countdown))
 
 
 def draw_bar(bar: Bar, cells: int | None, ctx: Ctx, countdown: bool) -> list:
@@ -163,11 +170,20 @@ def cache_state(session, ctx: Ctx, compact: bool) -> list:
     return [ctx.seg(text, "error")]
 
 
-def session_items(session, ctx: Ctx, plan_label: str | None, with_agent: bool) -> list:
-    """Line 1's text part: `model · effort fast · agent · plan · cost`."""
+def session_items(
+    session, ctx: Ctx, plan_label: str | None, with_agent: bool, model_max: int | None = None
+) -> list:
+    """Line 1's text part: `model · effort fast · agent · plan · cost`.
+
+    model_max: cut the model name to this many columns, ending in an ellipsis.
+    """
     items = []
     if session.model:
-        items.append([ctx.seg(session.model, "text", bold=True)])
+        model = session.model
+        if model_max is not None and cols(model) > model_max:
+            ell = ctx.g["ellipsis"]
+            model = cut(model, model_max - cols(ell)) + ell
+        items.append([ctx.seg(model, "text", bold=True)])
     fast = [ctx.seg(ctx.g["fast"], "fastMode")] if session.fast else []
     if session.effort:
         token, bold = EFFORT_TOKENS.get(session.effort, ("inactive", False))
@@ -228,7 +244,7 @@ def context_width(ctx: Ctx, text_w: int, tail_w: int, context: Bar, share: int) 
     text_w: line 1's text part; tail_w: the cache state after the bar. None if line 1
     can't fit it at 8.
     """
-    sep = len(ctx.g["sep_group"]) if text_w else 0
+    sep = cols(ctx.g["sep_group"]) if text_w else 0
     room = ctx.width - text_w - sep - tail_w - bar_overhead(context, ctx, True)
     c = min(share, room)
     return c if c >= CONTEXT_MIN else None
@@ -258,21 +274,55 @@ def line_2(plan: list, drawn: int, cells: int | None, prefix, suffix, ctx, count
 
 
 def fit_line_1(session, ctx: Ctx, context: Bar | None, share: int, label: str | None) -> list:
-    """Line 1, giving up the agent, then the cache text, then the context bar's cells."""
-    variants = [(True, False), (False, False), (False, True)]
-    for as_text in (False, True):
-        for with_agent, compact in variants:
-            text = session_items(session, ctx, label, with_agent)
-            tail = cache_state(session, ctx, compact)
-            tail = [(" ", ""), *tail] if tail else []
-            cells = None
-            if context and not as_text:
-                cells = context_width(ctx, width(text), width(tail), context, share)
-                if cells is None:
-                    continue
-            line = line_1(text, context, cells, tail, ctx)
-            if width(line) <= ctx.width:
-                return line
+    """Line 1. The context bar keeps the plan-bar width (`share`) while detail goes: the
+    agent, then the cache detail, then the end of a long model name. Only with all of it
+    gone does the bar shrink, down to 8; then it turns into text, and then the line is
+    cut short. So a wider terminal never shows a narrower bar.
+    """
+    # (with the agent, compact cache text, model name cut short), most detail first
+    variants = [(True, False, False), (False, False, False), (False, True, False)]
+    if not session.agent:
+        del variants[0]
+    variants.append((False, True, True))
+    model_w = cols(session.model or "")
+
+    def build(with_agent, compact, short, cells):
+        """(line, the bar's cells) for a variant, or None if it can't have a bar."""
+        tail = cache_state(session, ctx, compact)
+        tail = [(" ", ""), *tail] if tail else []
+        model_max = None
+        if short:
+            if model_w <= MODEL_MIN:
+                return None
+            # Cut just enough for the bar at `cells` (or the text) to fit.
+            full = line_1(session_items(session, ctx, label, with_agent), context, cells, tail, ctx)
+            model_max = max(MODEL_MIN, model_w - (width(full) - ctx.width))
+        text = session_items(session, ctx, label, with_agent, model_max)
+        if cells is not None:
+            cells = context_width(ctx, width(text), width(tail), context, cells)
+            if cells is None:
+                return None
+        return line_1(text, context, cells, tail, ctx), cells
+
+    if context:
+        best = None  # each variant leaves more room, so the last that fits is widest
+        for variant in variants:
+            built = build(*variant, share)
+            if built is None or width(built[0]) > ctx.width:
+                continue
+            if built[1] >= share:
+                return built[0]
+            best = built[0]
+        if best is not None:
+            return best
+    line = []
+    for variant in variants:  # the context bar as text, or no bar at all
+        built = build(*variant, None)
+        if built is None:
+            continue
+        line = built[0]
+        if width(line) <= ctx.width:
+            return line
     return truncate(line, ctx.width, ctx.g["ellipsis"], ctx.p.sgr("inactive"))
 
 
@@ -317,23 +367,13 @@ def lay_out(
     return [first, second] if second is not None else [first]
 
 
-def stdin_plan_bars(session) -> list:
-    """Plan bars from stdin alone: 5h and 7d."""
-    out = []
-    for key, label in (("five_hour", "5h"), ("seven_day", "7d")):
-        window = session.windows.get(key)
-        if window:
-            out.append(Bar(label, window.percent, window.resets_at))
-    return out
-
-
 def render(
     session,
     glyphs: dict,
     palette,
     columns: int | None,
     now: float,
-    plan: list | None = None,
+    plan: list = (),
     plan_label: str | None = None,
     stale: float | None = None,
     repo_state=None,
@@ -343,8 +383,6 @@ def render(
     from dashline import repo
 
     ctx = Ctx(glyphs, palette, columns or DEFAULT_COLUMNS, now)
-    if plan is None:
-        plan = stdin_plan_bars(session)
-    lines = lay_out(session, ctx, plan, plan_label, stale)
+    lines = lay_out(session, ctx, list(plan), plan_label, stale)
     lines.append(repo.draw(repo_state, ctx, home))
     return [to_str(line) for line in lines if line]

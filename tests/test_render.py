@@ -178,3 +178,41 @@ def test_empty_no_color_still_colors(isolated_home, spawned, value, colored):
     env = {"HOME": str(isolated_home), "COLUMNS": "120", "NO_COLOR": value}
     __main__.render(io.StringIO(json.dumps(stdin_data("startup"))), out, env=env, now=NOW)
     assert ("\x1b[" in out.getvalue()) == colored
+
+
+@pytest.mark.parametrize("columns", ["²", "١٢٠", "-5", "", "  "])
+def test_odd_columns_use_the_default(isolated_home, spawned, columns):
+    setup_home(isolated_home, ULTRA_ACCOUNT)
+    assert render(isolated_home, columns=columns) == render(isolated_home, columns=80)
+
+
+def test_huge_columns_are_capped(isolated_home, spawned):
+    setup_home(isolated_home, ULTRA_ACCOUNT)
+    lines = render(isolated_home, columns=10**9)
+    assert lines == render(isolated_home, columns=1000)
+    assert all(len(line) <= 1000 for line in lines)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"context_window": {"used_percentage": float("nan")}},
+        {"cost": {"total_cost_usd": float("inf")}},
+        {"model": {"display_name": "Opus\nInjected"}},
+    ],
+)
+def test_odd_stdin_never_breaks_the_lines(isolated_home, spawned, overrides):
+    setup_home(isolated_home, ULTRA_ACCOUNT)
+    lines = render(isolated_home, merge(stdin_data("after-first-response"), overrides))
+    assert not any("internal error" in line for line in lines)
+    assert len(lines) == 3
+
+
+def test_custom_theme_with_a_list_base_still_renders(isolated_home, spawned):
+    setup_home(isolated_home, ULTRA_ACCOUNT)
+    themes = isolated_home / ".claude" / "themes"
+    themes.mkdir(parents=True)
+    (themes / "odd.json").write_text(json.dumps({"base": ["dark"]}))
+    (isolated_home / ".claude" / "settings.json").write_text(json.dumps({"theme": "custom:odd"}))
+    lines = render(isolated_home)
+    assert not any("internal error" in line for line in lines)

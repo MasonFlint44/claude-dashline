@@ -20,23 +20,34 @@ RGB = re.compile(r"^rgb\(\s?(\d{1,3}),\s?(\d{1,3}),\s?(\d{1,3})\s?\)$")
 HEX = re.compile(r"^#([0-9a-fA-F]{6}|[0-9a-fA-F]{3})$")
 
 
+def home_dir(env) -> str:
+    """HOME from `env`, so a caller's env decides where ~ is, not the process's."""
+    return env.get("HOME") or os.path.expanduser("~")
+
+
 def config_dir(env) -> str:
-    return env.get("CLAUDE_CONFIG_DIR") or os.path.join(os.path.expanduser("~"), ".claude")
+    return env.get("CLAUDE_CONFIG_DIR") or os.path.join(home_dir(env), ".claude")
+
+
+# Where the CLI reads managed settings, by platform. Tests point MANAGED_SETTINGS elsewhere.
+MANAGED_DIRS = {
+    "darwin": "/Library/Application Support/ClaudeCode",
+    "win32": "C:\\Program Files\\ClaudeCode",
+}
+MANAGED_SETTINGS = os.path.join(
+    MANAGED_DIRS.get(sys.platform, "/etc/claude-code"), "managed-settings.json"
+)
 
 
 def managed_settings_path() -> str | None:
-    if sys.platform == "darwin":
-        return "/Library/Application Support/ClaudeCode/managed-settings.json"
-    if sys.platform.startswith("linux"):
-        return "/etc/claude-code/managed-settings.json"
-    return None
+    return MANAGED_SETTINGS
 
 
 def _read_json(path: str | None) -> dict:
     if not path:
         return {}
     try:
-        with open(path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8-sig") as f:  # -sig: a BOM some editors add
             data = json.load(f)
     except (OSError, ValueError):
         return {}
@@ -69,7 +80,7 @@ def theme_setting(project_dir: str | None, env) -> str:
         value = _read_json(path).get("theme")
         if isinstance(value, str) and value:
             return value
-    legacy_dir = env.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~")
+    legacy_dir = env.get("CLAUDE_CONFIG_DIR") or home_dir(env)
     legacy = _read_json(os.path.join(legacy_dir, ".claude.json")).get("theme")
     if isinstance(legacy, str) and legacy and legacy != "dark":
         return legacy
@@ -94,7 +105,7 @@ def resolve(setting: str, env) -> dict:
         slug = setting[len("custom:") :]
         custom = _read_json(os.path.join(config_dir(env), "themes", f"{slug}.json"))
         base = custom.get("base")
-        tokens = dict(THEMES[base if base in THEMES else "dark"])
+        tokens = dict(THEMES[base if isinstance(base, str) and base in THEMES else "dark"])
         overrides = custom.get("overrides")
         if isinstance(overrides, dict):
             for token, value in overrides.items():

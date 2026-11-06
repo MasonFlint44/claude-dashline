@@ -6,7 +6,9 @@ through `${CLAUDE_CONFIG_DIR:-$HOME/.claude}`, so it still resolves in a devcont
 mounts ~/.claude under another user.
 
 A statusLine that runs something else is never replaced without --replace: the skill
-shows it to the user and asks first.
+shows it to the user and asks first. Neither is a scripts/statusline/ folder that holds
+another tool's files. Everything is checked before anything is written, so an install
+that stops to ask has changed nothing.
 """
 
 from __future__ import annotations
@@ -16,15 +18,22 @@ import os
 import re
 import sys
 
-from dashline.theme import config_dir
+from dashline.theme import config_dir, home_dir
 
 COMMAND = 'python3 -I -S "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/statusline/statusline.py"'
-MARK = "scripts/statusline/statusline.py"  # in the command: it runs the installed copy
+# In a command: it runs the copy in the config dir. Other tools can use the same path, so
+# an entry is only dashline's if that folder holds dashline too (folder_state).
+MARK = "/scripts/statusline/statusline.py"
+CONFIG_PREFIXES = ("}", "/.claude")  # ${CLAUDE_CONFIG_DIR:-…}, ~/.claude, $HOME/.claude
 REFRESH = 60
-GLYPHS = re.compile(r"--glyphs(?:=|\s+)(\S+)")
+GLYPH_SETS = ("nerd", "unicode", "ascii")
+GLYPHS = re.compile(r"\s*--glyphs(?:=|\s+)(\S+)")
+LEFTOVER = re.compile(r"^statusline\.(?:new|old)-(\d+)$")
+LEFTOVER_AGE = 3600  # where a process can't be asked whether it's alive (Windows)
 
 # Exit codes beyond 0 and 1.
 NEEDS_REPLACE = 3
+NEEDS_DOWNGRADE = 4  # the installed copy is newer than this one
 
 
 class InstallError(Exception):
@@ -43,25 +52,46 @@ def command(glyphs: str) -> str:
     return COMMAND if glyphs == "unicode" else f"{COMMAND} --glyphs {glyphs}"
 
 
-def is_ours(entry) -> bool:
-    """A statusLine entry that runs the installed copy of dashline."""
+def runs_install_dir(entry, env=None) -> bool:
+    """A statusLine entry whose command runs statusline.py in the config dir."""
     if not isinstance(entry, dict):
         return False
     cmd = entry.get("command")
-    return isinstance(cmd, str) and MARK in cmd.replace("\\", "/")
+    if not isinstance(cmd, str):
+        return False
+    cmd = cmd.replace("\\", "/")
+    target = config_dir(os.environ if env is None else env).replace("\\", "/").rstrip("/")
+    prefixes = (*CONFIG_PREFIXES, target)
+    return any(prefix + MARK in cmd for prefix in prefixes)
+
+
+def is_ours(entry, env=None) -> bool:
+    """A statusLine entry that runs the installed copy of dashline.
+
+    The command must run the config dir's scripts/statusline/statusline.py, and that
+    folder must hold dashline or nothing yet: another statusline may live at that path.
+    """
+    env = os.environ if env is None else env
+    return runs_install_dir(entry, env) and folder_state(install_dir(env)) != "theirs"
 
 
 def glyphs_of(entry) -> str:
-    """The glyph set an entry's command asks for (unicode when it names none)."""
+    """The glyph set an entry's command asks for: unicode when it names none or a bad one."""
     cmd = entry.get("command") if isinstance(entry, dict) else None
     match = GLYPHS.search(cmd) if isinstance(cmd, str) else None
-    return match.group(1).strip("'\"") if match else "unicode"
+    value = match.group(1).strip("'\"") if match else "unicode"
+    return value if value in GLYPH_SETS else "unicode"
+
+
+def with_glyphs(cmd: str, glyphs: str) -> str:
+    """`cmd` asking for `glyphs`: any --glyphs flag replaced, the rest kept as written."""
+    bare = GLYPHS.sub("", cmd).rstrip()
+    return bare if glyphs == "unicode" else f"{bare} --glyphs {glyphs}"
 
 
 def home_short(path: str, env=None) -> str:
     """`/home/me/.claude/x` → `~/.claude/x`, for messages."""
-    home = (env or os.environ).get("HOME") or os.path.expanduser("~")
-    home = home.rstrip("/")
+    home = home_dir(os.environ if env is None else env).rstrip("/")
     if home and (path == home or path.startswith(home + os.sep)):
         return "~" + path[len(home) :]
     return path
@@ -130,6 +160,37 @@ def installed_version(env) -> str | None:
         return None
 
 
+def version_tuple(text: str | None) -> tuple | None:
+    """`0.1.6` → (0, 1, 6); None for anything else."""
+    if not text or not re.fullmatch(r"\d+(\.\d+)*", text):
+        return None
+    return tuple(int(part) for part in text.split("."))
+
+
+def newer_installed(env) -> str | None:
+    """The installed version, if it is newer than this copy."""
+    from dashline import __version__
+
+    installed = installed_version(env)
+    theirs, mine = version_tuple(installed), version_tuple(__version__)
+    return installed if theirs and mine and theirs > mine else None
+
+
+def folder_state(target: str) -> str:
+    """ "missing" (or empty), "ours" (holds the dashline package) or "theirs"."""
+    if not os.path.isdir(target):
+        return "theirs" if os.path.lexists(target) and not os.path.islink(target) else "missing"
+    try:
+        names = os.listdir(target)
+    except OSError:
+        return "theirs"
+    if not names:
+        return "missing"
+    if os.path.isfile(os.path.join(target, "dashline", "__init__.py")):
+        return "ours"
+    return "theirs"
+
+
 def _rmtree(path: str) -> None:
     import shutil
 
@@ -139,9 +200,60 @@ def _rmtree(path: str) -> None:
         shutil.rmtree(path, ignore_errors=True)
 
 
+def _alive(pid: int) -> bool | None:
+    """Whether a process runs; None where that can't be asked (Windows)."""
+    if os.name == "nt":
+        return None  # os.kill(pid, 0) sends Ctrl-C there
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True  # someone else's process
+    return True
+
+
+def clean_leftovers(parent: str, now: float) -> list:
+    """Remove statusline.new-PID / .old-PID folders an interrupted install left behind."""
+    removed = []
+    try:
+        names = os.listdir(parent)
+    except OSError:
+        return removed
+    for name in names:
+        match = LEFTOVER.match(name)
+        if not match or int(match.group(1)) == os.getpid():
+            continue
+        path = os.path.join(parent, name)
+        alive = _alive(int(match.group(1)))
+        if alive is None:
+            try:
+                alive = now - os.lstat(path).st_mtime < LEFTOVER_AGE
+            except OSError:
+                continue
+        if not alive:
+            _rmtree(path)
+            removed.append(name)
+    return removed
+
+
+def set_aside(target: str) -> str:
+    """Move another tool's folder out of the way: statusline.backup, .backup-2, …"""
+    n, aside = 1, f"{target}.backup"
+    while os.path.lexists(aside):
+        n += 1
+        aside = f"{target}.backup-{n}"
+    try:
+        os.rename(target, aside)
+    except OSError as e:
+        raise InstallError(f"couldn't move {target} aside: {e.strerror or e}") from e
+    return aside
+
+
 def copy(env) -> tuple:
     """Copy this package into the install dir. Returns (target, what happened)."""
     import shutil
+    import time
 
     from dashline import __version__
 
@@ -152,6 +264,7 @@ def copy(env) -> tuple:
     source = files(root, source_shim(root))
     if "statusline.py" not in source:
         raise InstallError(f"no statusline.py next to {root}")
+    clean_leftovers(os.path.dirname(target), time.time())
     if digest(source) == digest(installed_files(env)) and installed_version(env) == __version__:
         return target, "unchanged"
 
@@ -160,16 +273,22 @@ def copy(env) -> tuple:
     os.makedirs(os.path.dirname(target), exist_ok=True)
     new, old = f"{target}.new-{os.getpid()}", f"{target}.old-{os.getpid()}"
     _rmtree(new)
+    _rmtree(old)
+    had = os.path.lexists(target)
     try:
         os.makedirs(os.path.join(new, "dashline"))
         for rel, path in source.items():
             shutil.copyfile(path, os.path.join(new, *rel.split("/")))
         with open(os.path.join(new, "VERSION"), "w", encoding="utf-8") as f:
             f.write(__version__ + "\n")
-        had = os.path.lexists(target)
         if had:
             os.rename(target, old)
-        os.rename(new, target)
+        try:
+            os.rename(new, target)
+        except OSError:
+            if had:  # put the old copy back, so a render still finds one
+                os.rename(old, target)
+            raise
     except OSError as e:
         _rmtree(new)
         raise InstallError(f"couldn't copy to {target}: {e.strerror or e}") from e
@@ -180,15 +299,23 @@ def copy(env) -> tuple:
 # ---- settings.json ----
 
 
+BOM = "\ufeff"
+
+
 def read_settings(path: str) -> dict:
-    """The settings file as a dict ({} if missing). Raises InstallError if unreadable."""
+    """The settings file as a dict ({} if missing). Raises InstallError if unreadable.
+
+    A byte-order mark (some Windows editors add one) is read past.
+    """
     try:
-        with open(path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8-sig") as f:
             text = f.read()
     except FileNotFoundError:
         return {}
     except OSError as e:
         raise InstallError(f"can't read {path}: {e.strerror or e}") from e
+    except UnicodeDecodeError as e:
+        raise InstallError(f"{path} isn't UTF-8 text; fix it and run again") from e
     if not text.strip():
         return {}
     try:
@@ -200,18 +327,42 @@ def read_settings(path: str) -> dict:
     return data
 
 
+def has_bom(path: str) -> bool:
+    try:
+        with open(path, "rb") as f:
+            return f.read(3) == BOM.encode()
+    except OSError:
+        return False
+
+
+def check_writable(path: str) -> None:
+    """Raise InstallError if settings.json exists but is read-only: someone made it so."""
+    real = os.path.realpath(path)
+    try:
+        mode = os.stat(real).st_mode
+    except OSError:
+        return  # missing: it gets made
+    if not mode & 0o200 or not os.access(real, os.W_OK):
+        raise InstallError(
+            f"{path} is read-only, so it was left alone; make it writable, or add the "
+            "statusLine entry yourself, then run again"
+        )
+
+
 def write_settings(path: str, data: dict) -> None:
-    """Write atomically, through a symlink to the real file, keeping its permissions."""
+    """Write atomically, through a symlink to the real file, keeping its permissions
+    and a byte-order mark if it had one."""
     real = os.path.realpath(path)
     os.makedirs(os.path.dirname(real), exist_ok=True)
     try:
         mode = os.stat(real).st_mode & 0o777
     except OSError:
         mode = None
+    bom = BOM if has_bom(real) else ""
     tmp = f"{real}.dashline-{os.getpid()}.tmp"
     try:
         with open(tmp, "w", encoding="utf-8") as f:
-            f.write(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+            f.write(bom + json.dumps(data, indent=2, ensure_ascii=False) + "\n")
         if mode is not None:
             os.chmod(tmp, mode)
         os.replace(tmp, real)
@@ -220,38 +371,37 @@ def write_settings(path: str, data: dict) -> None:
             os.unlink(tmp)
 
 
-def plan_entry(current, glyphs: str | None, replace: bool) -> tuple:
-    """(new entry or None, glyphs used). None means: the entry is someone else's."""
-    if current is not None and not is_ours(current) and not replace:
+def plan_entry(current, glyphs: str | None, replace: bool, ours: bool) -> tuple:
+    """(new entry or None, glyphs used). None means: the entry is someone else's.
+
+    ours: `current` is dashline's (is_ours). It keeps its command as written (say, with
+    a full path to Python): only the --glyphs flag changes, and only when asked for
+    another set or when it names an unknown one.
+    """
+    if current is not None and not ours and not replace:
         return None, None
-    if is_ours(current):
+    if ours:
         entry = dict(current)
         glyphs = glyphs or glyphs_of(current)
+        cmd = current["command"]
+        match = GLYPHS.search(cmd)
+        if (match.group(1).strip("'\"") if match else "unicode") != glyphs:
+            cmd = with_glyphs(cmd, glyphs)
+        entry["command"] = cmd
     else:
-        entry = {}
         glyphs = glyphs or "unicode"
+        entry = {"type": "command", "command": command(glyphs)}
     entry["type"] = "command"
-    entry["command"] = command(glyphs)
     entry.setdefault("refreshInterval", REFRESH)
     return entry, glyphs
 
 
-def update_settings(env, glyphs: str | None, replace: bool) -> tuple:
-    """Point user settings at the installed copy: ("changed"|"unchanged"|"theirs", entry)."""
-    path = user_settings(env)
-    data = read_settings(path)
-    current = data.get("statusLine")
-    entry, _ = plan_entry(current, glyphs, replace)
-    if entry is None:
-        return "theirs", current
-    if entry == current:
-        return "unchanged", entry
+def write_entry(path: str, data: dict, entry: dict) -> None:
     data["statusLine"] = entry
     try:
         write_settings(path, data)
     except OSError as e:
         raise InstallError(f"couldn't write {path}: {e.strerror or e}") from e
-    return "changed", entry
 
 
 def overridden_by(env, project_dir: str | None) -> tuple | None:
@@ -264,8 +414,13 @@ def overridden_by(env, project_dir: str | None) -> tuple | None:
             return None
         entry = _read_json(path).get("statusLine")
         if entry is not None:
-            return None if is_ours(entry) else (path, entry)
+            return None if is_ours(entry, env) else (path, entry)
     return None
+
+
+def project_dir(env, cwd: str | None) -> str:
+    """The project whose settings may override the user's: Claude Code's, else cwd."""
+    return cwd if cwd is not None else env.get("CLAUDE_PROJECT_DIR") or os.getcwd()
 
 
 def describe(entry: dict) -> str:
@@ -277,35 +432,73 @@ def describe(entry: dict) -> str:
     return text
 
 
-def run(glyphs: str | None, replace: bool = False, env=None, out=None, cwd=None) -> int:
+def run(
+    glyphs: str | None,
+    replace: bool = False,
+    env=None,
+    out=None,
+    cwd=None,
+    downgrade: bool = False,
+) -> int:
+    """Copy dashline and point settings at it. Exit 3 (nothing changed) when either the
+    settings entry or the install folder belongs to something else and --replace wasn't
+    given; exit 4 (nothing changed) when the installed copy is newer and --downgrade
+    wasn't given."""
     from dashline import __version__
 
     env = os.environ if env is None else env
     out = out or sys.stdout
+    path = user_settings(env)
+    settings = home_short(path, env)
     try:
-        target, copied = copy(env)
+        # Everything that can stop the install is checked before anything is written.
+        data = read_settings(path)
+        current = data.get("statusLine")
+        target = install_dir(env)
         where = home_short(target, env)
+        theirs_folder = folder_state(target) == "theirs"
+        ours = runs_install_dir(current, env) and not theirs_folder
+        entry, _ = plan_entry(current, glyphs, replace, ours)
+        if not replace and (theirs_folder or entry is None):
+            if theirs_folder:
+                out.write(
+                    f"{where} holds files that aren't dashline's, so it was left alone. "
+                    f"--replace moves them to {where}.backup first.\n"
+                )
+            if entry is None:
+                shown = json.dumps(current, indent=2, ensure_ascii=False).replace("\n", "\n  ")
+                out.write(f"{settings} has a statusLine that runs something else:\n  {shown}\n")
+            out.write("Nothing was changed. Run again with --replace to use dashline instead.\n")
+            return NEEDS_REPLACE
+        newer = None if theirs_folder else newer_installed(env)
+        if newer and not downgrade:
+            out.write(
+                f"{where} has dashline {newer}, newer than this copy ({__version__}), "
+                "so it was left alone. Update the dashline plugin (/plugin) and install "
+                "from there, or run again with --downgrade to install this older copy.\n"
+                "Nothing was changed.\n"
+            )
+            return NEEDS_DOWNGRADE
+        if entry != current:
+            check_writable(path)
+        if theirs_folder:
+            aside = set_aside(target)
+            out.write(f"moved the files in {where} to {home_short(aside, env)}\n")
+        target, copied = copy(env)
         if copied == "unchanged":
             out.write(f"{where} already has dashline {__version__}\n")
         elif copied == "this is the installed copy":
             out.write(f"running from {where}: nothing to copy\n")
         else:
             out.write(f"{copied} dashline {__version__} in {where}\n")
-        state, entry = update_settings(env, glyphs, replace)
+        if entry != current:
+            write_entry(path, data, entry)
     except InstallError as e:
         sys.stderr.write(f"dashline: {e}\n")
         return 1
-    settings = home_short(user_settings(env), env)
-    if state == "theirs":
-        shown = json.dumps(entry, indent=2, ensure_ascii=False).replace("\n", "\n  ")
-        out.write(
-            f"{settings} has a statusLine that runs something else:\n  {shown}\n"
-            "settings.json was not changed. Run again with --replace to use dashline instead.\n"
-        )
-        return NEEDS_REPLACE
-    verb = "now runs" if state == "changed" else "already runs"
+    verb = "already runs" if entry == current else "now runs"
     out.write(f"{settings}: statusLine {verb} it with {describe(entry)}\n")
-    other = overridden_by(env, os.getcwd() if cwd is None else cwd)
+    other = overridden_by(env, project_dir(env, cwd))
     if other:
         out.write(
             f"note: {home_short(other[0], env)} sets its own statusLine, which wins over "

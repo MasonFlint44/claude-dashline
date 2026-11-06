@@ -2,13 +2,18 @@
 
 Every field is optional: keys come and go between CLI versions, and `rate_limits` /
 `prompt_cache` only appear after the first API response (PLAN §1, Phase 0 results).
-A field of the wrong type reads as missing, never as an error.
+A field of the wrong type, or a number that isn't finite, reads as missing, never as an
+error. Names that get displayed (model, effort, agent) have control characters replaced
+(text.clean), so a name can't split a line or start an escape sequence.
 """
 
 from __future__ import annotations
 
 import json
+import math
 import re
+
+from dashline.text import clean
 
 # ISO 8601 with any fraction length and Z or an offset; 3.9's fromisoformat takes neither.
 ISO = re.compile(r"^(\d{4}-\d\d-\d\d[T ]\d\d:\d\d:\d\d)(?:\.(\d+))?(Z|[+-]\d\d:?\d\d)?$")
@@ -32,9 +37,14 @@ def _dig(data, *keys):
 
 
 def _num(value) -> float | None:
+    """A finite number, or None. NaN, ±Infinity and ints too big for a float are None."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    return float(value)
+    try:
+        value = float(value)
+    except OverflowError:
+        return None
+    return value if math.isfinite(value) else None
 
 
 def _str(value) -> str | None:
@@ -84,18 +94,20 @@ class Cache:
         self.expires_at = _num(data.get("expires_at"))
         self.recache_tokens = _num(data.get("recache_tokens_if_cold"))
         causes = _dig(data, "last_miss_cause", "causes")
-        self.miss_cause = causes[0] if isinstance(causes, list) and causes else None
-        if not isinstance(self.miss_cause, str):
-            self.miss_cause = None
+        cause = causes[0] if isinstance(causes, list) and causes else None
+        self.miss_cause = clean(cause) if isinstance(cause, str) else None
 
 
 class Session:
     def __init__(self, data: dict):
-        self.model = _str(_dig(data, "model", "display_name")) or _str(_dig(data, "model", "id"))
+        model = _str(_dig(data, "model", "display_name")) or _str(_dig(data, "model", "id"))
+        self.model = clean(model) if model else None
         self.model_id = (_str(_dig(data, "model", "id")) or "").lower()
-        self.effort = _str(_dig(data, "effort", "level"))
+        effort = _str(_dig(data, "effort", "level"))
+        self.effort = clean(effort) if effort else None
         self.fast = data.get("fast_mode") is True
-        self.agent = _str(_dig(data, "agent", "name"))
+        agent = _str(_dig(data, "agent", "name"))
+        self.agent = clean(agent) if agent else None
         self.cost = _num(_dig(data, "cost", "total_cost_usd"))
         self.context_percent = _num(_dig(data, "context_window", "used_percentage"))
         self.project_dir = _str(_dig(data, "workspace", "project_dir")) or _str(data.get("cwd"))

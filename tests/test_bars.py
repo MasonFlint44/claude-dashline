@@ -53,6 +53,8 @@ def test_filled(percent, width, cells):
     ("percent", "text"),
     [
         (0, "0%"),
+        (-3, "0%"),
+        (0.2, "1%"),  # the bar shows a cell, so the text can't say 0%
         (41.4, "41%"),
         (41.5, "42%"),
         (42.5, "43%"),

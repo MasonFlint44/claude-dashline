@@ -33,20 +33,37 @@ uses `unicode`.
 - **Exit 0:** done. The output says where it copied the files and what settings.json
   now runs. Pass on any `note:` line: a project's own settings override the user
   entry there.
-- **Exit 3:** settings.json already runs a different statusline, and the output shows
-  that entry. Show it to the user and ask (AskUserQuestion) whether to replace it.
-  Only if they say yes, run `DASHLINE --install --replace`. If they say no, stop:
-  dashline is copied but not active.
-- **Exit 1:** relay the error, which is usually settings.json that isn't valid JSON.
-  Don't fix settings.json yourself unless the user asks.
+- **Exit 3:** nothing was changed, because something else is there. The output says
+  what: settings.json runs a different statusline (the entry is shown), or
+  `scripts/statusline/` holds another tool's files. Show it to the user and ask
+  (AskUserQuestion) whether to replace it. Only if they say yes, run
+  `DASHLINE --install --replace`; it moves another tool's files to
+  `scripts/statusline.backup` rather than deleting them. If they say no, stop.
+- **Exit 4:** nothing was changed, because the installed copy is newer than this
+  plugin's (the output gives both versions). This plugin is probably out of date. Ask
+  (AskUserQuestion) with updating the plugin as the recommended choice: `/plugin`,
+  then `/dashline:install` again. Only if the user wants the older version anyway,
+  run `DASHLINE --install --downgrade` (add `--replace` if exit 3 asked for it too).
+- **Exit 1:** relay the error: usually settings.json that isn't valid JSON, or is
+  read-only. Don't fix settings.json yourself unless the user asks.
 
-## 3. Glyph set
+An entry that is already dashline's keeps its command as written (for example a full
+path to Python); only the `--glyphs` flag changes.
+
+## 3. Check
+
+Run `DASHLINE --doctor` once (it fetches plan usage live, so don't repeat it) and tell
+the user the result in a sentence or two. If it isn't `All good.`, explain each `warn`
+and `fail` line and its `fix:`, using the doctor skill's guidance (`/dashline:doctor`).
+Keep its `font` line for the next step: it says whether this terminal probably shows
+Nerd Font icons (Ghostty and WezTerm bundle them; otherwise it looks for an installed
+Nerd Font) and which set is in use.
+
+## 4. Glyph set
 
 A terminal can't be asked which fonts it draws, so the user has to look.
 
-1. Run `DASHLINE --doctor` and read its `font` line. It says whether this terminal
-   probably shows Nerd Font icons (Ghostty and WezTerm bundle them; otherwise it
-   looks for an installed Nerd Font) and which set is in use.
+1. Read the `font` line from step 3's doctor output. Don't run doctor again.
 2. Ask the user to run this themselves, because only output from their own `!` command
    is certain to show in their terminal's font. Write it with the real path in place of
    `${CLAUDE_PLUGIN_ROOT}`:
@@ -76,11 +93,8 @@ A terminal can't be asked which fonts it draws, so the user has to look.
 If the user already named a set (e.g. "install with nerd fonts"), skip the preview and
 pass `--glyphs` in step 2.
 
-## 4. Check
-
-Run `DASHLINE --doctor` and tell the user the result in a sentence or two. If it isn't
-`All good.`, explain each `warn` and `fail` line and its `fix:`, using the doctor
-skill's guidance (`/dashline:doctor`).
+Switching the glyph set needs no second doctor run: `--install` prints what
+settings.json now runs.
 
 The plan bars appear after the first background fetch, within a minute. Never print the
 user's token or credentials.

@@ -1,6 +1,9 @@
 import copy
 import json
+import os
 import re
+import subprocess
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -54,8 +57,8 @@ def plain(lines) -> list:
 
 
 def lines_text(session, ctx, plan=None, plan_label=None) -> list:
-    if plan is None:
-        plan = layout.stdin_plan_bars(session)
+    if plan is None:  # stdin's windows alone, through the real path
+        plan = usage.plan_bars(session, None, None, NOW)
     return plain(layout.lay_out(session, ctx, plan, plan_label))
 
 
@@ -78,17 +81,70 @@ TOKEN_VARS = (
 )
 
 
+# Where a stray HTTPS request from a subprocess goes: a port nothing listens on.
+DEAD_PROXY = "http://127.0.0.1:9"
+NO_NETWORK = {"HTTPS_PROXY": DEAD_PROXY, "https_proxy": DEAD_PROXY}
+
+
+def _runs_python(args) -> bool:
+    """Whether a subprocess runs Python or a shell, either of which can run dashline."""
+    if isinstance(args, (str, bytes, os.PathLike)):
+        args = [args]
+    words = [os.fsdecode(a) for a in args]
+    if not words:
+        return False
+    program = Path(words[0]).name
+    return (
+        words[0] == sys.executable
+        or program.startswith("python")
+        or program in ("sh", "bash", "zsh", "dash")
+        or any(w.endswith("statusline.py") for w in words)
+    )
+
+
+@pytest.fixture(autouse=True)
+def no_network_in_subprocesses(monkeypatch):
+    """A subprocess that could run the statusline must get the dead proxy.
+
+    The statusline starts a real usage fetch when its cache is stale. In-process that's
+    caught by the fake spawn below, but a subprocess given its own env (as doctor's
+    `command` check does) would reach api.anthropic.com unless that env carries
+    NO_NETWORK. This fails the test that forgets it, even when the code under test
+    catches the error (doctor turns a broken check into a finding).
+    """
+    real_init = subprocess.Popen.__init__
+    leaks = []
+
+    def guarded(self, args, *rest, **kwargs):
+        env = kwargs.get("env")
+        safe = env is None or all(env.get(var) == DEAD_PROXY for var in NO_NETWORK)
+        if not safe and _runs_python(args):
+            leaks.append(args)
+            raise AssertionError(
+                f"a subprocess ({args!r}) got an env without the dead HTTPS_PROXY: "
+                "add conftest.NO_NETWORK to it"
+            )
+        real_init(self, args, *rest, **kwargs)
+
+    monkeypatch.setattr(subprocess.Popen, "__init__", guarded)
+    yield
+    assert not leaks, f"subprocesses without conftest.NO_NETWORK in their env: {leaks}"
+
+
 @pytest.fixture(autouse=True)
 def isolated_home(tmp_path, monkeypatch):
-    """No test sees the real ~/.claude, a real login, or starts a real fetch."""
+    """No test sees the real ~/.claude, a real login, real managed settings, or starts a
+    real fetch."""
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
     for var in TOKEN_VARS:
         monkeypatch.delenv(var, raising=False)
     # Belt and braces for subprocesses: a stray HTTPS request goes to a dead port.
-    for var in ("HTTPS_PROXY", "https_proxy"):
-        monkeypatch.setenv(var, "http://127.0.0.1:9")
+    for var in NO_NETWORK:
+        monkeypatch.setenv(var, DEAD_PROXY)
+    # Managed settings would win over everything a test writes.
+    monkeypatch.setattr(theme, "MANAGED_SETTINGS", str(tmp_path / "managed-settings.json"))
     for var in ("NO_PROXY", "no_proxy", "TERM_PROGRAM", "NO_COLOR", "COLORFGBG"):
         monkeypatch.delenv(var, raising=False)
 
@@ -100,7 +156,7 @@ def isolated_home(tmp_path, monkeypatch):
 
 
 def env_for(home):
-    return {"HOME": str(home)}
+    return {"HOME": str(home), **NO_NETWORK}
 
 
 # ---- a local stand-in for the usage endpoint ----

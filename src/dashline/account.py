@@ -1,9 +1,12 @@
 """Who is signed in: subscription or API, the plan label, and the OAuth token (PLAN §1).
 
 The label comes from what Claude Code already caches in `.claude.json` (`oauthAccount`,
-refreshed by the CLI from /api/oauth/profile), so a render reads one local file and never
-calls the profile endpoint. The token is read only by the background fetch, never by a
-render, and never leaves the process.
+refreshed by the CLI from /api/oauth/profile), so a render never calls the profile
+endpoint. When that has no plan, a render falls back to the credentials file's
+`subscriptionType`, but it never takes the token from it: only the background fetch and
+doctor do (`find_token`). A `CLAUDE_CODE_OAUTH_TOKEN` is in a render's environment
+anyway; a hash of it tags the cache, since it may belong to another login than
+`.claude.json`. The token itself is only ever sent to api.anthropic.com.
 """
 
 from __future__ import annotations
@@ -14,6 +17,7 @@ import os
 import sys
 
 from dashline.stdin import _num, iso_time
+from dashline.text import clean
 from dashline.theme import config_dir
 
 # Third-party providers: no plan, no usage endpoint.
@@ -59,6 +63,11 @@ def credentials_path(env) -> str:
     return os.path.join(config_dir(env), ".credentials.json")
 
 
+def _key(value) -> str | None:
+    """A string to look up in a table, or None: an odd JSON type can't be a dict key."""
+    return value if isinstance(value, str) else None
+
+
 def _tier_label(base: str, tier) -> str:
     """Max on the 20x rate tier is sold as Ultra."""
     if base == "Max" and isinstance(tier, str) and "20x" in tier:
@@ -84,7 +93,8 @@ class Account:
 
 def _api_key_approved(key: str, claude_json: dict) -> bool:
     """The CLI uses ANTHROPIC_API_KEY once the user approves it; it stores the last 20 chars."""
-    approved = (claude_json.get("customApiKeyResponses") or {}).get("approved")
+    responses = claude_json.get("customApiKeyResponses")
+    approved = responses.get("approved") if isinstance(responses, dict) else None
     return isinstance(approved, list) and key[-20:] in approved
 
 
@@ -120,11 +130,20 @@ def load(env, session=None) -> Account:
 
 
 def fingerprint(oauth: dict, env) -> str | None:
-    """Which login the cached usage belongs to: a hash of the account and org ids."""
+    """Which login the cached usage belongs to: a hash of the account and org ids.
+
+    A `CLAUDE_CODE_OAUTH_TOKEN` wins over the stored login (the fetch uses it), and it
+    may be another account's, so its own hash tags the cache instead. 64 bits of a
+    salted SHA-256 can't be turned back into the token.
+    """
+    token = env.get("CLAUDE_CODE_OAUTH_TOKEN")
+    if token:
+        digest = hashlib.sha256(b"dashline-cache-tag:" + token.encode("utf-8", "replace"))
+        return "env-" + digest.hexdigest()[:16]
     ids = (oauth.get("accountUuid"), oauth.get("organizationUuid"))
     if all(isinstance(x, str) and x for x in ids):
-        return hashlib.sha256(":".join(ids).encode()).hexdigest()[:16]
-    return "env" if env.get("CLAUDE_CODE_OAUTH_TOKEN") else None
+        return hashlib.sha256(":".join(ids).encode("utf-8", "replace")).hexdigest()[:16]
+    return None
 
 
 def identity(env) -> str | None:
@@ -137,13 +156,13 @@ def plan_label(oauth: dict, env) -> str | None:
     """plan_display_name → organization type → the credentials' subscription type."""
     name = oauth.get("planDisplayName")
     if isinstance(name, str) and name.strip():
-        return name.strip()
-    org = ORG_TYPES.get(oauth.get("organizationType"))
+        return clean(name.strip())
+    org = ORG_TYPES.get(_key(oauth.get("organizationType")))
     if org:
         return _tier_label(org, oauth.get("organizationRateLimitTier"))
     creds = _read_json(credentials_path(env)).get("claudeAiOauth")
     if isinstance(creds, dict):
-        sub = SUBSCRIPTIONS.get(creds.get("subscriptionType"))
+        sub = SUBSCRIPTIONS.get(_key(creds.get("subscriptionType")))
         if sub:
             return _tier_label(sub, creds.get("rateLimitTier"))
     return None

@@ -104,3 +104,41 @@ def test_gateway_spend_limit():
 def test_model_id_lowercased():
     assert stdin.Session({"model": {"id": "Claude-Fable-5-1"}}).model_id == "claude-fable-5-1"
     assert stdin.Session({}).model_id == ""
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf"), 10**400])
+def test_numbers_that_are_not_finite_read_as_missing(value):
+    s = stdin.Session(
+        {
+            "cost": {"total_cost_usd": value},
+            "context_window": {"used_percentage": value},
+            "rate_limits": {"five_hour": {"used_percentage": value}},
+        }
+    )
+    assert s.cost is None
+    assert s.context_percent is None
+    assert s.windows == {}
+
+
+def test_nan_from_json_text_reads_as_missing():
+    s = stdin.load(
+        '{"model": {"display_name": "Opus"}, "context_window": {"used_percentage": NaN}}'
+    )
+    assert s.model == "Opus"
+    assert s.context_percent is None
+
+
+def test_displayed_names_lose_control_characters():
+    s = stdin.Session(
+        {
+            "model": {"id": "claude-opus-5-5", "display_name": "Opus\nInjected\x1b[31m"},
+            "effort": {"level": "high\r"},
+            "agent": {"name": "rev\u202eiewer\x07"},
+            "prompt_cache": {"last_miss_cause": {"causes": ["odd\x1b]8;;x\x1b\\cause"]}},
+        }
+    )
+    assert s.model == "Opus?Injected?[31m"
+    assert s.effort == "high?"
+    assert s.agent == "rev?iewer?"
+    assert "\x1b" not in s.cache.miss_cause
+    assert s.model_id == "claude-opus-5-5"

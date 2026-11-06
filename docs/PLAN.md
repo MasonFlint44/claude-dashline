@@ -1,6 +1,7 @@
 # dashline — plan
 
-Status: draft 4, 2026-11-04. Nothing built yet.
+Status: built; 0.1.6 on 2026-11-05. Draft 4 (2026-11-04) was the design the build followed;
+later changes are marked with their date.
 
 Repo `~/git/claude-dashline`; plugin `dashline` (skills `/dashline:install`,
 `/dashline:doctor`); Python package `dashline`.
@@ -145,13 +146,20 @@ ${CLAUDE_CONFIG_DIR:-~/.claude}/cache/statusline/
 
 Fetching (Phase 3): a render that finds `usage.json` missing or ≥ 3 min old, and no
 `fetch.hold` in force for this login, takes `fetch.lock` (O_EXCL; a lock ≥ 60 s old
-belongs to a dead child) and, after printing, starts a detached `python3 -I -S` child
+belongs to a dead child; only one process at a time may break it, through
+`fetch.lock.break`, and a child releases only the lock it took, by nonce) and, after printing, starts a detached `python3 -I -S` child
 (new session, stdio on /dev/null, no token in argv). The child fetches once and writes
 `usage.json` `{fetched_at, account, data}` or `fetch.hold` `{until, reason, failures,
 account}`. `account` is a hash of the account and org ids, so a different login never
 sees another's numbers. Holds: no login 10 min, expired token / 401 5 min, 403 1 h,
-404 6 h; anything else backs off 1, 2, 4 … 30 min (`Retry-After` honored on 429).
-Data older than a day is dropped. Files are 0600 in a 0700 directory (0700 when dashline creates it; a folder another
+404 6 h; anything else backs off 1, 2, 4 … 30 min, or longer when the server's
+`Retry-After` (seconds or a date) asks for it, up to a day (0.1.6, asked by the
+author). Redirects are refused, so the token only goes to `api.anthropic.com`; any
+failure, even one the code didn't foresee, writes a hold. Times more than a minute
+ahead of the clock (it was set back: an NTP step, a restored VM; daylight saving
+doesn't move epoch time) count as unknown: the cache refetches, and a lock or hold
+from the future is ignored. With `CLAUDE_CODE_OAUTH_TOKEN` the `account` tag is a
+salted hash of that token. Data older than a day is dropped. Files are 0600 in a 0700 directory (0700 when dashline creates it; a folder another
 tool made is left as it is, since its files stay 0600), written
 atomically.
 
@@ -271,9 +279,14 @@ how a new meter shows up without a release.
      Otherwise the last bar drawn turns into `label NN%` (text only), then the one
      before it, until the rest fit at ≥ 8 (`credits` first, since it's last). If
      none do, every plan bar is text.
-  2. Line 1: `context` takes the plan-bar width, limited by line 1's room, after the
-     drop order below. If it can't fit at 8, it turns into `context NN%`. When line 2
-     has plan bars but they're all text, `context` is 8 cells.
+  2. Line 1: `context` keeps the plan-bar width while line 1 gives up detail in the
+     drop order below; only with all of it gone does the bar shrink, down to 8, and
+     then turn into `context NN%`. So a wider terminal never shows a narrower bar
+     (changed 11/5 by the author for 0.1.6; until then the first drop step that left 8
+     cells won, so a cold cache gave 13 cells at 81 columns, 8 at 82, 13 again at 87).
+     When line 2 has plan bars but they're all text, `context` is 8 cells. A model name
+     longer than 16 columns (a Bedrock ARN, say) is cut with `…`, down to 16, so cost
+     and context stay on the line (0.1.6, asked by the author).
   3. Extremely narrow (line 2's text still doesn't fit): drop reset countdowns, then
      cut the line short with `…`. Line 1 is cut short once its context is text.
   Bars resizing when line-1 text changes (e.g. the cache warning) is fine
@@ -300,13 +313,16 @@ how a new meter shows up without a release.
 - **Both sources (Phase 3):** `5h` / `7d` come from the endpoint and from stdin. stdin
   arrives with every API response, so it is often fresher: for the same window
   (`resets_at` within 60 s) the higher percent wins, otherwise the later window. A
-  cached row whose `resets_at` has passed reads 0%.
+  cached row, or a stdin window, whose `resets_at` has passed reads 0% (stdin since
+  0.1.6: Claude Code resends the last response's window while you're idle).
 - Past 100% (credits, gateway spend): the bar stays full and the percent keeps counting.
 
 ### Narrow terminals
 
-Line 1 drop order: agent → cache text (glyph stays). Model, effort, cost and
-the context bar never drop (it turns into text last). Bars follow the overflow rule
+Line 1 drop order: agent → cache text (glyph stays) → the end of a long model name
+(down to 16 columns) → the context bar's cells, down to 8 → the bar (it turns into
+text, and the dropped detail comes back if it fits beside the text). Effort, cost and
+context never drop; only an extremely narrow line is cut short. Bars follow the overflow rule
 above. They never wrap to a fourth line.
 
 ---
@@ -409,13 +425,23 @@ Details:
 
 - A zero side is hidden (`+12`, not `+12 −0`). `+` green, `−` coral, pencil gold.
 - Narrow terminals: line counts drop first (the pencil stays), then the cwd drift
-  (Phase 4), then the branch truncates with `…` (down to 4 characters), then the
-  worktree name; then the row is cut short. Operation, conflicts and sync never drop.
+  (Phase 4), then the branch (or tag) shortens with `…` (down to 4 characters), then
+  the worktree name goes, then the subpath shrinks to `/…/last` and then goes; each
+  step gives the branch back the room it frees (0.1.6). Then the row is cut short.
+  Operation, conflicts and sync never drop.
 - Built in Phase 4 (11/4): never pushed (`local`) shows only when the repo has a remote;
   during a rebase the row shows the branch being rebased (from `rebase-merge/head-name`),
   not the detached commit; conflict markers count in the uncommitted lines; a repo with
   no commits yet diffs the index against the empty tree. git gets 1 s in total; past
   that, or with no git installed, the row shows the project alone.
+- Hardened 0.1.6: git runs in its own process group, killed at the timeout along with
+  any hook it started; with `-c core.fsmonitor=false` and `--ignore-submodules=dirty`;
+  without the inherited variables that point it at another repo or index (`GIT_DIR`,
+  `GIT_INDEX_FILE`, …; `GIT_CONFIG*` are the user's and stay). The project is found by
+  its real path, so a symlink works and shows no false drift. Mid-rebase, the branch's
+  configured upstream decides "never pushed". An interrupted cherry-pick or revert
+  sequence (`sequencer/todo`) shows. Displayed names have control characters replaced,
+  and a link is attached only to a printable-ASCII URL.
 - Nerd glyphs (all Material Design `md-`, codepoints checked against
   `glyphnames.json`):
 
@@ -446,7 +472,8 @@ Details:
 
 - `git status --porcelain=v2 --branch -z` gives the branch, oid, upstream,
   ahead/behind, per-file states, untracked files and conflicts in one call.
-- `git diff --numstat HEAD` only when tracked files are dirty.
+- `git diff --numstat HEAD` runs alongside status, not after it, so the row costs one
+  round trip; its output is used only when status shows tracked changes.
 - Operation state is read from `.git` files (`rebase-merge/`, `MERGE_HEAD`, …).
   The tag lookup runs only when detached.
 - All with `--no-optional-locks`. Budget: 20 ms on a mid-size repo.
@@ -459,7 +486,9 @@ terminator, colors intact, `file://` links included (checked 11/4).
 on a `github.com` / `github.*` remote: `…/compare/<default>...<branch>`, or
 `…/tree/<branch>` when it is the default branch (from `refs/remotes/<remote>/HEAD`) or
 the default is unknown. Unpushed branches, other hosts, tags and detached commits get no
-link. Known limit: over SSH or in a devcontainer the folder link names the remote machine.
+link. A remote written with a `url.<base>.insteadOf` shorthand (`gh:owner/repo`) is
+expanded as git does, longest prefix first, from the repo, global and system config
+(0.1.6; read only when there is a branch to link, and `[include]` isn't followed). Known limit: over SSH or in a devcontainer the folder link names the remote machine.
 
 ---
 
@@ -487,9 +516,15 @@ of them live in one table in `glyphs.py`. Color is independent of the set: `NO_C
 color off in any set, and every set still reads without color, since fill and empty
 bar characters have different shapes.
 
+Widths are counted in terminal columns (0.1.6, asked by the author): East Asian Wide
+and Fullwidth characters (CJK, most emoji) count 2, combining marks and format
+characters 0, everything else 1, including the ambiguous-width ones below and Nerd
+icons. ASCII text skips the lookup, so a normal render costs nothing extra. Before
+0.1.6 a CJK branch or model name overflowed its line.
+
 Rules for the unicode set: nothing emoji-capable (⚠ ❄ ☁ ⚡ ✖ ✔ ✏ can render two
-columns wide) and nothing Nerd Font. The block, box and dot characters `▆ ▁ │ ·` are
-"ambiguous width" in Unicode. They're drawn 1 column almost everywhere, and a CJK
+columns wide) and nothing Nerd Font. The block, box, dot and ellipsis characters `▆ ▁ │ · …`
+are "ambiguous width" in Unicode. They're drawn 1 column almost everywhere, and a CJK
 terminal set to draw ambiguous characters wide should use `ascii`.
 
 Settled 11/4. Ascii items use ` / `, groups use ` | `:
@@ -569,7 +604,9 @@ writes. If hiding elements ever earns its keep, a file goes in
 - `--doctor`: one line per check (`ok` / `warn` / `fail` / `info`, a `fix:` line under
   problems), exit 1 on any `fail`. Checks: python, install (installed copy vs the
   running one, by file hash), settings (the winning `statusLine` across managed /
-  project-local / project / user, `disableAllHooks`, `refreshInterval`), login (mode,
+  project-local / project / user, `disableAllHooks` as the first file by precedence
+  that sets it, `refreshInterval`; a fix names the file to edit when it isn't the
+  user's), login (mode,
   label, token source and expiry, never the token), usage (one foreground fetch via
   the same `refresh` the child runs, so it also renews the cache or sets the hold),
   cache (writable, dashline's files 0600 (0.1.1: not the folder), last fetch, lock), command (runs the settings command through
@@ -584,6 +621,16 @@ writes. If hiding elements ever earns its keep, a file goes in
   `--glyphs` is given, and a dashline entry's own fields (`padding`,
   `refreshInterval`). A statusLine that isn't dashline's is left alone: exit 3 with the
   entry printed, and `--replace` overwrites it. Notes a project statusLine that wins.
+  Since 0.1.6: an entry is dashline's when its command runs the config dir's
+  `scripts/statusline/statusline.py` and that folder holds the `dashline` package (or
+  nothing). Install checks the settings entry, the folder, and that settings.json is
+  writable before writing anything, so exit 3 changes nothing; `--replace` moves
+  another tool's folder to `statusline.backup`. dashline's own entry keeps its command
+  as written (e.g. a full path to Python); only `--glyphs` changes. A failed swap puts
+  the old copy back; folders left by an interrupted install are removed. A BOM in
+  settings.json is kept. An installed copy newer than this one is left alone: exit 4,
+  and the skill asks (updating the plugin is the recommended answer) before
+  `--downgrade` installs the older copy (0.1.6, asked by the author).
 - `--glyphs all` (preview only) prints each set in turn, for the install skill.
 - `--preview [SCENARIO|all]`: built-in scenarios with fake data at a fixed clock:
   `pro-trial`, `pro`, `ultra-fable`, `team`, `enterprise`, `api`, `limit`, `rebase`,
@@ -610,8 +657,10 @@ Skills (model-invocable, so a plain-language request like "fix my statusline" tr
   4. Re-running `install` after setting up a font re-previews and switches to `--glyphs nerd`.
   Default without any of this: `unicode`. If settings.json already has a `statusLine`
   entry, show it and ask before replacing it.
-- `doctor`: run `--doctor`, explain each line, fix what's safe (re-copy
-  stale install, re-point settings, clear a wedged lock/hold).
+- `doctor`: run `--doctor`, explain each line, and fix what's safe. A stale install is
+  re-copied without asking; re-pointing settings at dashline and tightening a cache
+  file's mode happen only after the user says yes. Locks and holds clear themselves
+  (above), so there is nothing to clear by hand.
 
 
 ---
@@ -644,6 +693,7 @@ src/dashline/
   glyphs.py     nerd / unicode / ascii
   theme.py      which Claude Code theme is active; tokens → SGR
   colors.py     theme tokens, generated by scripts/sync_theme.py
+  text.py       outside text made safe to print (control characters → `?`)
   doctor.py  install.py  preview.py
 statusline.py   entry shim (what gets copied)
 scripts/preview.py
@@ -655,7 +705,9 @@ pyproject.toml  README.md  CHANGELOG.md  LICENSE (MIT)  CLAUDE.md
 Tests: pure functions take `now` and `columns` as arguments (no libfaketime); git
 tests build throwaway repos in `tmp_path`; fetch tests hit a local
 `http.server`; golden tests compare full rendered lines per scenario; one
-fixture set per plan (the old plan→bar table becomes these expectations).
+fixture set per plan (the old plan→bar table becomes these expectations). No test reaches a real
+endpoint: every subprocess a test starts gets a dead-port `HTTPS_PROXY`, and an autouse
+check fails any test that starts one without it (0.1.6).
 
 ---
 
@@ -726,5 +778,6 @@ outside this repo. The compaction-point work does **not** move here.)
 
 ## 13. Open questions
 
-None on design as of 11/4: layout, bars, colors, icons, separators and glyph sets are
-settled. Next: commit this plan, then Phase 0 (E1–E8), then the build.
+None on design as of 11/5; wide characters and the context-bar rule were settled for
+0.1.6 (§4, §7).
+- Later: pace tick; tag + GitHub release.

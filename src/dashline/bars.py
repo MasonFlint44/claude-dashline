@@ -50,10 +50,13 @@ def filled(percent: float, width: int) -> int:
 
 
 def percent_text(percent: float) -> str:
-    """`41%`. Rounds, but never shows 100% before the limit is actually reached."""
+    """`41%`. Rounds, but never shows 100% before the limit is reached, or 0% once any
+    of it is used (the bar fills a cell from the first use)."""
     shown = round_half_up(percent)
     if percent < 100:
         shown = min(shown, 99)
+    if percent > 0:
+        shown = max(shown, 1)
     return f"{max(shown, 0)}%"
 
 

@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import FIXTURES, NOW, ROOT, read_json
+from conftest import FIXTURES, NO_NETWORK, NOW, ROOT, read_json
 from dashline import doctor, install, usage
 
 CLOSED = "http://127.0.0.1:9"  # nothing listens here
@@ -22,7 +22,7 @@ def usage_fixture(name):
 @pytest.fixture
 def env(isolated_home):
     (isolated_home / ".claude").mkdir(exist_ok=True)
-    return {"HOME": str(isolated_home), "PATH": os.environ.get("PATH", "")}
+    return {"HOME": str(isolated_home), "PATH": os.environ.get("PATH", ""), **NO_NETWORK}
 
 
 @pytest.fixture
@@ -142,6 +142,25 @@ def test_install_older_version(installed, isolated_home, tmp_path):
     assert "0.0.0-old; this copy is" in text
 
 
+def test_install_newer_than_this_copy(installed, isolated_home, tmp_path):
+    """An older plugin's doctor mustn't push its own version over a newer install."""
+    target = isolated_home / ".claude" / "scripts" / "statusline"
+    (target / "VERSION").write_text("99.0.0\n")
+    (target / "dashline" / "layout.py").write_text("# newer\n")
+    status, text, fix = check(installed, "install", tmp_path)
+    assert status == "warn"
+    assert "99.0.0 is newer than this copy" in text
+    assert fix.startswith("update the dashline plugin")
+
+
+@pytest.mark.parametrize(
+    ("text", "parsed"),
+    [("0.1.6", (0, 1, 6)), ("1", (1,)), ("unknown version", None), ("0.1.6rc1", None), ("", None)],
+)
+def test_version_tuple(text, parsed):
+    assert doctor.version_tuple(text) == parsed
+
+
 def test_doctor_from_the_installed_copy(installed, isolated_home):
     shim = isolated_home / ".claude" / "scripts" / "statusline" / "statusline.py"
     r = subprocess.run(
@@ -197,9 +216,42 @@ def test_project_settings_win(installed, tmp_path):
     (tmp_path / ".claude" / "settings.local.json").write_text(
         json.dumps({"statusLine": {"type": "command", "command": "echo local"}})
     )
-    status, text, _ = check(installed, "settings", tmp_path)
+    status, text, fix = check(installed, "settings", tmp_path)
     assert status == "fail"
     assert "settings.local.json runs another statusline: echo local" in text
+    # /dashline:install only writes user settings, so it can't fix this one.
+    assert "/dashline:install" not in fix
+    assert "settings.local.json wins over your user settings here" in fix
+
+
+def test_managed_settings_win(installed, tmp_path, monkeypatch):
+    from dashline import theme
+
+    managed = tmp_path / "managed-settings.json"
+    managed.write_text(json.dumps({"statusLine": {"type": "command", "command": "corp"}}))
+    monkeypatch.setattr(theme, "MANAGED_SETTINGS", str(managed))
+    status, text, fix = check(installed, "settings", tmp_path)
+    assert status == "fail"
+    assert text.endswith("runs another statusline: corp")
+    assert "set by an administrator" in fix
+
+
+def test_project_dashline_without_refresh(installed, tmp_path):
+    entry = dict(get_settings(installed)["statusLine"])
+    del entry["refreshInterval"]
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude" / "settings.json").write_text(json.dumps({"statusLine": entry}))
+    status, _, fix = check(installed, "settings", tmp_path)
+    assert status == "warn"
+    assert fix.endswith("add one to " + str(tmp_path / ".claude" / "settings.json"))
+
+
+def test_someone_elses_folder(installed, isolated_home, tmp_path):
+    target = isolated_home / ".claude" / "scripts" / "statusline"
+    (target / "dashline" / "__init__.py").unlink()
+    status, text, _ = check(installed, "settings", tmp_path)
+    assert status == "fail"
+    assert "runs another statusline" in text
 
 
 def test_disable_all_hooks(installed, tmp_path):
@@ -210,6 +262,24 @@ def test_disable_all_hooks(installed, tmp_path):
     assert status == "fail"
     assert "disableAllHooks is on" in text
     assert "your call" in fix
+
+
+def test_disable_all_hooks_follows_precedence(installed, tmp_path):
+    """The CLI merges settings files: the first one that sets the key decides."""
+    data = get_settings(installed)
+    data["disableAllHooks"] = True
+    set_settings(installed, data)
+    (tmp_path / ".claude").mkdir()
+    project = tmp_path / ".claude" / "settings.json"
+    project.write_text(json.dumps({"disableAllHooks": False}))
+    assert check(installed, "settings", tmp_path)[0] == "ok"
+
+    data["disableAllHooks"] = False
+    set_settings(installed, data)
+    project.write_text(json.dumps({"disableAllHooks": True}))
+    status, text, _ = check(installed, "settings", tmp_path)
+    assert status == "fail"
+    assert f"disableAllHooks is on in {project}" in text
 
 
 def test_no_refresh_interval(installed, tmp_path):
@@ -354,6 +424,29 @@ def test_cache_file_readable_by_others(sub, tmp_path):
     assert fix == "chmod 600 ~/.claude/cache/statusline/usage.json"
 
 
+def test_chmod_fix_is_quoted(sub, isolated_home, tmp_path):
+    conf = isolated_home / "My Claude"
+    env = dict(sub, CLAUDE_CONFIG_DIR=str(conf))
+    cache = conf / "cache" / "statusline"
+    cache.mkdir(parents=True)
+    (cache / "usage.json").write_text(json.dumps({"fetched_at": NOW - 60, "data": {}}))
+    (cache / "usage.json").chmod(0o644)
+    _, _, fix = check(env, "cache", tmp_path)
+    assert fix == "chmod 600 ~/'My Claude/cache/statusline/usage.json'"
+
+
+def test_chmod_fix_outside_home(sub, tmp_path):
+    conf = tmp_path / "other place"
+    env = dict(sub, CLAUDE_CONFIG_DIR=str(conf))
+    cache = conf / "cache" / "statusline"
+    cache.mkdir(parents=True)
+    (cache / "fetch.hold").write_text("{}")
+    (cache / "fetch.hold").chmod(0o640)
+    status, _, fix = check(env, "cache", tmp_path)
+    assert status == "warn"
+    assert fix == f"chmod 600 '{cache / 'fetch.hold'}'"
+
+
 def test_cache_not_writable(sub, tmp_path):
     cache_path(sub).mkdir(parents=True)
     cache_path(sub).chmod(0o500)
@@ -378,6 +471,42 @@ def test_cache_stale_lock(sub, server, tmp_path):
     assert "a stale fetch.lock (the next render clears it)" in text
 
 
+@pytest.mark.parametrize(
+    ("at", "note"),
+    [
+        (NOW - 10, "a fetch is running"),
+        (NOW - 600, "a stale fetch.lock (the next render clears it)"),
+        (NOW + 3600, "a stale fetch.lock (the next render clears it)"),  # clock set back
+    ],
+)
+def test_cache_lock_uses_its_time(sub, server, tmp_path, at, note):
+    server.reply(200, json.dumps(usage_fixture("ultra")))
+    cache_path(sub).mkdir(mode=0o700, parents=True)
+    lock = cache_path(sub) / "fetch.lock"
+    lock.write_text(json.dumps({"at": at, "pid": 1, "nonce": "n"}))
+    lock.chmod(0o600)
+    (cache_path(sub) / "fetch.lock.break").write_text("")
+    status, text, _ = check(sub, "cache", tmp_path, server.url)
+    assert status == "ok"
+    assert note in text
+    assert "break" not in text
+
+
+@pytest.mark.parametrize(
+    ("reason", "fix"),
+    [
+        ("redirect refused (HTTP 302)", "check HTTPS_PROXY"),
+        ("fetch failed (IncompleteRead)", "report it if it keeps happening"),
+    ],
+)
+def test_usage_new_reasons(sub, tmp_path, monkeypatch, reason, fix):
+    monkeypatch.setattr(usage, "refresh", lambda *args: reason)
+    status, text, got = check(sub, "usage", tmp_path)
+    assert status == "fail"
+    assert text.startswith(reason)
+    assert fix in got
+
+
 # ---- command, git, theme, font ----
 
 
@@ -390,7 +519,31 @@ def test_command_broken_python(installed, tmp_path):
     status, text, fix = check(installed, "command", tmp_path)
     assert status == "fail"
     assert "not found" in text
-    assert "PATH" in fix
+    assert fix == "no-such-python3 must be on the PATH Claude Code sees, or use a full path"
+
+
+def test_command_script_missing(installed, isolated_home, tmp_path):
+    (isolated_home / ".claude" / "scripts" / "statusline" / "statusline.py").unlink()
+    status, text, fix = check(installed, "command", tmp_path)
+    assert status == "fail"
+    assert "can't open file" in text
+    assert fix == "the command's statusline.py is missing: run /dashline:install"
+
+
+def test_first_word():
+    assert doctor.first_word('"/opt/my py/python3" -I x.py') == "/opt/my py/python3"
+    assert doctor.first_word("python3 'unbalanced") == "python3"
+    assert doctor.first_word("") == "python3"
+
+
+def test_project_dir_from_claude(installed, tmp_path):
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude" / "settings.json").write_text(
+        json.dumps({"statusLine": {"type": "command", "command": "echo project"}})
+    )
+    out = io.StringIO()
+    doctor.run(dict(installed, CLAUDE_PROJECT_DIR=str(tmp_path)), out, None, CLOSED, now=NOW)
+    assert "runs another statusline: echo project" in out.getvalue()
 
 
 def test_command_internal_error(installed, isolated_home, tmp_path):
@@ -461,6 +614,9 @@ def test_font_macos(tmp_path, monkeypatch):
     (fonts / "SymbolsNerdFontMono-Regular.ttf").write_text("")
     monkeypatch.setenv("HOME", str(tmp_path))
     assert doctor.font_guess({}, "darwin") == (True, "found SymbolsNerdFontMono-Regular.ttf")
+    monkeypatch.setenv("HOME", "/nonexistent")
+    found = doctor.font_guess({"HOME": str(tmp_path)}, "darwin")  # the env's HOME wins
+    assert found == (True, "found SymbolsNerdFontMono-Regular.ttf")
 
 
 def test_shim_doctor_exit_code(isolated_home):

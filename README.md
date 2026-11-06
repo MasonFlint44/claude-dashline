@@ -17,7 +17,8 @@ where you are in git, in three lines that fit the terminal's width.
 
 `/dashline:install` checks for Python, copies dashline to
 `~/.claude/scripts/statusline/` (or under `$CLAUDE_CONFIG_DIR`), and points the
-`statusLine` setting at it. It asks first if you already have a statusline. Then it
+`statusLine` setting at it. It asks first if you already have a statusline, or if
+that folder holds another tool's files. Then it
 shows you dashline in each glyph set so you can pick the one your terminal draws
 correctly.
 
@@ -49,12 +50,15 @@ commits ahead of or behind the upstream, a branch that was never pushed or whose
 is gone, a rebase, merge, cherry-pick, revert, bisect or `am` in progress, and
 conflicts. It also shows where Claude's shell has moved to if that's outside the
 project. In terminals that support links, the project name opens its folder, and a
-branch pushed to GitHub opens its compare page.
+branch pushed to GitHub opens its compare page (`insteadOf` shorthands like
+`gh:owner/repo` included).
 
 When the terminal is narrow, detail goes in a fixed order. Bars stay on their own
 line: plan bars turn into text from the last one back (`credits 12%`), then all of
-them (`5h 81%`); the context bar does once line 1 has no room. Line 3 drops line counts
-before names. Nothing wraps.
+them (`5h 81%`). Line 1 keeps the context bar as wide as the plan bars while it drops
+the agent and the cache detail and cuts a long model name short with `…`; only then
+does the bar shrink, and it turns into text last. Line 3 drops line counts before
+names. Nothing wraps.
 
 ## Glyph sets
 
@@ -88,11 +92,14 @@ Keychain, or `~/.claude/.credentials.json`.
 - The request runs in a background process after the statusline has printed, so it
   never slows the statusline.
 - At most one request every 3 minutes, shared by all your Claude Code sessions, with
-  backoff on errors.
-- The token goes only to `api.anthropic.com`. It is never written anywhere, passed on a
-  command line or put in an environment variable.
+  backoff on errors. When the server asks for a longer wait (`Retry-After`), dashline
+  waits that long, up to a day.
+- The token goes only to `api.anthropic.com`: redirects are refused, so it can't follow
+  one elsewhere. It is never written anywhere, passed on a command line or put in an
+  environment variable.
 - The answer is cached in `~/.claude/cache/statusline/` (files only you can read) and tagged
-  with your account, so switching logins never shows someone else's numbers.
+  with your account (or, with `CLAUDE_CODE_OAUTH_TOKEN`, a hash of that token), so
+  switching logins never shows someone else's numbers.
 
 The endpoint isn't documented. If it changes, the affected bars disappear until
 dashline catches up; the rest of the statusline keeps working.
@@ -100,8 +107,10 @@ dashline catches up; the rest of the statusline keeps working.
 ## Uninstall
 
 Remove the `statusLine` entry from `~/.claude/settings.json`, delete
-`~/.claude/scripts/statusline/` and `~/.claude/cache/statusline/`, then
-`/plugin uninstall dashline@claude-toolbox`.
+`~/.claude/scripts/statusline/`, then `/plugin uninstall dashline@claude-toolbox`.
+dashline's cache is `usage.json`, `fetch.hold` and `fetch.lock*` in
+`~/.claude/cache/statusline/`. Delete those files, and the folder only if nothing else
+uses it.
 
 ## Development
 

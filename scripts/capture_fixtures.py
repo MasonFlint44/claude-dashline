@@ -2,7 +2,8 @@
 
 Usage: python3 capture_fixtures.py PLAN      (PLAN: free, pro, max5x, ultra, team, enterprise)
 
-Reads the Claude Code OAuth token (credentials file, or the macOS Keychain), calls
+Reads the Claude Code OAuth token the way the statusline does (CLAUDE_CODE_OAUTH_TOKEN,
+the macOS Keychain, or the credentials file), calls
 /api/oauth/usage and /api/oauth/profile once each, removes names, emails, ids and URLs,
 and writes fixture-PLAN.json in the current directory. The token stays in this process.
 Read the output before sharing it; anything personal left in it is a bug here.
@@ -12,7 +13,6 @@ import contextlib
 import json
 import os
 import re
-import subprocess
 import sys
 import urllib.error
 import urllib.request
@@ -36,19 +36,17 @@ KEEP_UNDER = {"model", "rows", "application"}  # display names here are product 
 
 
 def token():
-    config = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
-    path = config / ".credentials.json"
-    if path.exists():
-        return json.loads(path.read_text())["claudeAiOauth"]["accessToken"]
-    if sys.platform == "darwin":
-        out = subprocess.run(
-            ["security", "find-generic-password", "-s", "Claude Code-credentials", "-w"],
-            capture_output=True,
-            text=True,
-            check=True,
-        ).stdout
-        return json.loads(out)["claudeAiOauth"]["accessToken"]
-    sys.exit("no Claude Code credentials found; log in with /login first")
+    """The token the statusline would use: the same lookup, so the Keychain item for a
+    CLAUDE_CONFIG_DIR and the env token are found too."""
+    import time
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+    from dashline import account
+
+    tok, why = account.read_token(os.environ, time.time())
+    if tok is None:
+        sys.exit(f"no usable Claude Code login ({why}); log in with /login first")
+    return tok
 
 
 def get(path, tok):

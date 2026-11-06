@@ -322,3 +322,98 @@ def test_full_and_stale_never_exceed_the_width(columns):
     plan = [Bar("5h", 100, NOW + 3000), Bar("7d", 95, NOW + 86400), Bar("Fable", 24)]
     lines = plain(layout.lay_out(make_session(**BUSY), make_ctx(columns), plan, "Ultra", 900))
     assert all(len(line) <= columns - layout.RESERVE for line in lines)
+
+
+# ---- long model names ----
+
+ARN = "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/a1b2c3d4e5f6"
+
+
+def test_long_model_name_is_cut_before_cost_or_context():
+    s = make_session(model={"id": ARN, "display_name": ARN}, **BUSY)
+    first = lines_text(s, make_ctx(100))[0]
+    assert len(first) <= 96
+    assert first.startswith("arn:aws:bedrock:")
+    assert "… · xhigh ↯ · $11.80 │ context ▆" in first  # the bar is kept at 8 or more
+    assert cells(first, "context") >= layout.CONTEXT_MIN
+    assert "code-reviewer" not in first  # the agent went first
+
+
+def test_long_model_name_keeps_sixteen_columns_then_the_bar_turns_into_text():
+    s = make_session(model={"id": ARN, "display_name": ARN}, **BUSY)
+    first = lines_text(s, make_ctx(53))[0]
+    assert first == "arn:aws:bedrock… · xhigh ↯ · $11.80 │ context 41%"
+
+
+def test_short_model_names_are_never_cut():
+    for columns in range(20, 90):
+        first = lines_text(make_session(**BUSY), make_ctx(columns))[0]
+        assert "Sonnet 5.5 · " in first or first.startswith("Sonnet 5.5"), (columns, first)
+
+
+# ---- wide characters ----
+
+
+@pytest.mark.parametrize("columns", [120, 80, 60, 45, 30])
+def test_wide_model_and_agent_names_fit(columns):
+    from dashline.text import cols
+
+    s = make_session(model={"id": "x", "display_name": "模型名称很长的模型名称"}, **BUSY)
+    s.agent = "代码审查员"
+    for line in lines_text(s, make_ctx(columns)):
+        assert cols(line) <= columns - 4, line
+
+
+def test_wide_model_name_is_cut_by_columns():
+    from dashline.text import cols
+
+    s = make_session(model={"id": "x", "display_name": "模型" * 20}, **BUSY)
+    first = lines_text(s, make_ctx(70))[0]
+    assert first.split(" · ")[0].endswith("…")
+    assert cols(first) <= 66
+    assert "$11.80 │ context ▆" in first
+
+
+# ---- the context bar never narrows as the terminal widens ----
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {
+            "prompt_cache": {
+                "caching_observed": True,
+                "warm": False,
+                "recache_tokens_if_cold": 38000,
+                "last_miss_cause": {"causes": ["tools_changed"]},
+            }
+        },
+        BUSY,
+    ],
+)
+def test_context_bar_never_narrows_as_the_terminal_widens(overrides):
+    s = make_session(**overrides)
+    # Two plan bars: their width only grows with the terminal. (With four, it steps
+    # down where credits turns back into a bar, and the context bar follows; PLAN §4.)
+    plan = [Bar("5h", 22), Bar("7d", 48)]
+    previous = 0
+    for columns in range(50, 160):
+        first = lines_text(s, make_ctx(columns), plan, "Ultra")[0]
+        n = cells(first, "context") if "context ▆" in first or "context ▁" in first else 0
+        assert n >= previous, (columns, first)
+        previous = n
+
+
+def test_context_bar_keeps_the_plan_width_before_the_cache_detail():
+    cold = {
+        "caching_observed": True,
+        "warm": False,
+        "recache_tokens_if_cold": 38000,
+        "last_miss_cause": {"causes": ["tools_changed"]},
+    }
+    s = make_session(prompt_cache=cold, context_window={"used_percentage": 57})
+    plan = [Bar("5h", 100, NOW + 72 * 60), Bar("7d", 71, NOW + 2 * 86400)]
+    lines = lines_text(s, make_ctx(82), plan, "Pro")
+    first, second = lines
+    assert first.endswith("57% cache cold")  # the detail went, not the bar's cells
+    assert cells(first, "context") == cells(second, "5h")

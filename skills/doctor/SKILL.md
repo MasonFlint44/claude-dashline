@@ -42,16 +42,26 @@ What the checks mean:
 ## 3. Fix what's safe
 
 Do these without asking, then run doctor again:
-- `install` warns that the copy is old or differs: run `DASHLINE --install`. It keeps
-  the glyph set and only rewrites settings.json when the entry is already dashline's.
+- `install` warns that the copy is old or differs, or `command` says its statusline.py
+  is missing: run `DASHLINE --install`. It keeps the glyph set and the command as
+  written, and only touches settings.json when the entry is already dashline's.
+  Not when `install` says the installed copy is newer than this one: that means this
+  plugin is out of date, so tell the user to update it (`/plugin`) instead.
 
 Ask first (AskUserQuestion), and act only on a yes:
-- `settings` says no statusLine, or one that runs another statusline: run
-  `DASHLINE --install`. If it exits 3, show the existing entry from its output and ask
-  before `DASHLINE --install --replace`.
+- `settings` says your user settings.json has no statusLine, or one that runs another
+  statusline: run `DASHLINE --install`. If it exits 3, show what its output says is
+  there (the existing entry, or another tool's files in `scripts/statusline/`) and ask
+  before `DASHLINE --install --replace`. If it exits 4, the installed copy is newer than
+  this plugin: recommend updating the plugin (`/plugin`), and only on an explicit yes
+  run `DASHLINE --install --downgrade`.
 - `cache` says other users can read one of its files: run the `chmod 600` in its `fix:` line.
 
 Explain, and leave to the user:
+- `settings` says a project file (`.claude/settings.json`, `settings.local.json`) or
+  managed settings wins: `--install` only writes user settings, so it can't help, and
+  doctor's `fix:` line says what can. A project's statusLine is the user's to remove;
+  managed settings only an administrator can change.
 - `disableAllHooks`: it turns off hooks too, so removing it is the user's decision.
 - `login` / `usage` asking for `/login`: only the user can sign in. A 403 with
   `CLAUDE_CODE_OAUTH_TOKEN` set means a `claude setup-token` token, which can't read
@@ -59,11 +69,16 @@ Explain, and leave to the user:
 - `usage` network failures: the statusline keeps the last numbers (marked with their
   age) and retries on its own. Point at proxy settings (`HTTPS_PROXY`) only if the user
   is behind one.
+- `usage` says `redirect refused`: api.anthropic.com doesn't redirect, so a proxy or
+  network is rewriting the request; dashline won't follow it with the token. Point at
+  `HTTPS_PROXY` or the network.
+- `usage` says `fetch failed (…)`: the answer broke off or was malformed. It retries on
+  its own; worth reporting only if it keeps happening.
 - An expired token (`warn`): Claude Code renews it on its next request. No action
   needed.
 - `command` failing with `python3` not found: Claude Code's PATH lacks `python3`. The
   user can install Python (see `/dashline:install` step 1) or edit the command to use
-  a full path to Python 3.9+.
+  a full path to Python 3.9+; `--install` keeps that edit.
 - `command` slow: usually a large git repo or slow disk. Mention it, nothing to fix.
 - Icons showing as boxes or `?`, or the user wants icons: run the glyph step of
   `/dashline:install`.

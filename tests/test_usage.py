@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import FIXTURES, NOW, REAL_SPAWN, env_for, make_session, read_json
+from conftest import FIXTURES, NOW, REAL_SPAWN, Server, env_for, make_session, read_json
 from dashline import account, usage
 from dashline.account import Account
 
@@ -149,6 +149,43 @@ def test_odd_rows_are_skipped(row):
     assert usage.plan_bars(make_session(rate_limits=None), ULTRA, data, NOW) == []
 
 
+def test_endpoint_labels_are_cleaned():
+    data = {
+        "limits": [
+            {"kind": "odd\x1b]8;;x", "percent": 5},
+            {"kind": "weekly_scoped", "percent": 5, "scope": {"model": {"display_name": "F\na"}}},
+        ]
+    }
+    plan = usage.plan_bars(make_session(rate_limits=None), ULTRA, data, NOW)
+    assert labels(plan) == ["odd?]8;;x", "F?a"]
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), 1e400])
+def test_non_finite_numbers_hide_the_bar(bad):
+    data = json.loads(
+        json.dumps(
+            {
+                "limits": [{"kind": "weekly_all", "percent": bad}],
+                "spend": {"enabled": True, "percent": bad, "used": {"amount_minor": 5}},
+            }
+        )
+    )
+    assert usage.plan_bars(make_session(rate_limits=None), ULTRA, data, NOW) == []
+
+
+@pytest.mark.parametrize("exponent", [400, -400, 1e300, "2"])
+def test_odd_money_exponent_is_missing(exponent):
+    data = {
+        "spend": {
+            "enabled": True,
+            "used": {"amount_minor": 500, "exponent": exponent},
+            "limit": {"amount_minor": 1000, "exponent": exponent},
+        }
+    }
+    plan = usage.plan_bars(make_session(rate_limits=None), ULTRA, data, NOW)
+    assert all(b.label != "credits" or b.percent == 50 for b in plan)
+
+
 @pytest.mark.parametrize("data", [None, {}, {"limits": "x", "spend": []}, {"spend": {"x": 1}}])
 def test_odd_shapes_fall_back_to_stdin(data):
     plan = usage.plan_bars(make_session(), ULTRA, data, NOW)
@@ -189,6 +226,37 @@ def test_newer_window_wins():
     )
     plan = usage.plan_bars(session, ULTRA, usage_fixture("ultra"), NOW)
     assert (plan[0].percent, plan[0].resets_at) == (2, next_week)
+
+
+def test_passed_stdin_window_reads_zero():
+    """Claude Code resends the last window it saw; once it has reset, it's 0%, not 95%."""
+    session = make_session(
+        rate_limits={
+            "five_hour": {"used_percentage": 95, "resets_at": NOW - 10},
+            "seven_day": {"used_percentage": 99, "resets_at": NOW - 10},
+        },
+        **MODEL_OPUS,
+    )
+    data = usage_fixture("ultra")  # has a live 7d row at 17%, no 5h row
+    assert summary(usage.plan_bars(session, ULTRA, data, NOW))[:2] == [
+        ("5h", 0, None),
+        ("7d", 17, pytest.approx(ULTRA_7D_RESET)),
+    ]
+    assert summary(usage.plan_bars(session, None, None, NOW)) == [("5h", 0, None), ("7d", 0, None)]
+
+
+def test_passed_gateway_spend_limit_reads_zero():
+    session = make_session(
+        rate_limits={"spend_limit": {"used_percentage": 90, "resets_at": NOW - 1, "period": "day"}}
+    )
+    assert summary(usage.plan_bars(session, None, None, NOW))[-1] == ("month", 0, None)
+
+
+def test_stdin_only_bars_without_an_account():
+    session = make_session(
+        rate_limits={"five_hour": {"used_percentage": 30, "resets_at": NOW + 600}}, **MODEL_OPUS
+    )
+    assert summary(usage.plan_bars(session, None, None, NOW))[0] == ("5h", 30, NOW + 600)
 
 
 def test_stdin_window_missing_from_endpoint_kept():
@@ -311,9 +379,29 @@ def test_load_drops_day_old_data(isolated_home):
     assert usage.load(env_for(isolated_home), ULTRA, NOW).data is None
 
 
-def test_load_future_timestamp_is_age_zero(isolated_home):
-    write_cache(isolated_home, fetched_at=NOW + 100)
-    assert usage.load(env_for(isolated_home), ULTRA, NOW).age == 0
+def test_load_slightly_future_timestamp_is_age_zero(isolated_home):
+    write_cache(isolated_home, fetched_at=NOW + usage.CLOCK_SLACK)
+    state = usage.load(env_for(isolated_home), ULTRA, NOW)
+    assert (state.age, state.fetch) == (0, False)
+
+
+def test_load_after_the_clock_was_set_back_refetches(isolated_home):
+    """Data fetched an hour "from now" would otherwise stay fresh for an hour."""
+    write_cache(isolated_home, fetched_at=NOW + 3600)
+    state = usage.load(env_for(isolated_home), ULTRA, NOW)
+    assert state.data and state.fetch
+    assert (state.age, state.stale_age) == (None, None)
+
+
+@pytest.mark.parametrize("value", ["NaN", "Infinity", "1e400"])
+def test_load_non_finite_fetch_time_is_broken(isolated_home, value):
+    path = isolated_home / ".claude" / "cache" / "statusline"
+    path.mkdir(parents=True)
+    (path / "usage.json").write_text(
+        '{"fetched_at": ' + value + ', "account": "abc", "data": {"limits": []}}'
+    )
+    state = usage.load(env_for(isolated_home), ULTRA, NOW)
+    assert (state.data, state.fetch) == (None, True)
 
 
 @pytest.mark.parametrize("text", ["", "{", "[]", '{"fetched_at": "x", "data": {}}'])
@@ -334,6 +422,27 @@ def test_hold_blocks_fetch_until_it_ends(isolated_home):
 def test_hold_for_another_login_is_ignored(isolated_home):
     write_hold(isolated_home, until=NOW + 60, who="other")
     assert usage.load(env_for(isolated_home), ULTRA, NOW).fetch is True
+
+
+def test_hold_written_after_now_is_ignored(isolated_home):
+    """The clock was set back: a 60 s hold written "later" must not last an hour."""
+    write_hold(isolated_home, until=NOW + 3660, at=NOW + 3600)
+    assert usage.load(env_for(isolated_home), ULTRA, NOW).fetch is True
+
+
+def test_hold_longer_than_any_dashline_writes_is_ignored(isolated_home):
+    write_hold(isolated_home, until=NOW + usage.RETRY_MAX + 3600)
+    assert usage.load(env_for(isolated_home), ULTRA, NOW).fetch is True
+    write_hold(isolated_home, until=NOW + usage.RETRY_MAX)
+    assert usage.load(env_for(isolated_home), ULTRA, NOW).fetch is False
+
+
+@pytest.mark.parametrize("until", ["soon", None, float("nan")])
+def test_odd_hold_is_no_hold(isolated_home, until):
+    path = isolated_home / ".claude" / "cache" / "statusline"
+    path.mkdir(parents=True)
+    (path / "fetch.hold").write_text(json.dumps({"until": until, "account": "abc"}))
+    assert usage.hold(env_for(isolated_home), "abc", NOW) is None
 
 
 def test_config_dir_cache_path(tmp_path):
@@ -363,17 +472,86 @@ def test_lock_without_content_uses_mtime(isolated_home):
     assert usage.take_lock(env, now + usage.LOCK_STALE + 5)
 
 
-def test_lock_race_one_winner(isolated_home):
-    env = env_for(isolated_home)
+def lock_race(env, now, n=8):
     results = []
     threads = [
-        threading.Thread(target=lambda: results.append(usage.take_lock(env, NOW))) for _ in range(8)
+        threading.Thread(target=lambda: results.append(usage.take_lock(env, now))) for _ in range(n)
     ]
     for t in threads:
         t.start()
     for t in threads:
         t.join()
-    assert results.count(True) == 1
+    return [r for r in results if r]
+
+
+def test_lock_race_one_winner(isolated_home):
+    """On the real clock: a lock still being written is judged by its mtime, and a fake
+    `now` hours before that would make it look like one from the future."""
+    import time
+
+    for _ in range(30):
+        env = env_for(isolated_home)
+        assert len(lock_race(env, time.time())) == 1
+        usage._remove(usage._path(env, "fetch.lock"))
+
+
+def test_stale_lock_race_one_winner(isolated_home):
+    """Several renders find the same dead child's lock: only one may break it and fetch.
+
+    On the real clock, since a lock being written is judged by its mtime."""
+    import time
+
+    env = env_for(isolated_home)
+    for _ in range(30):
+        now = time.time()
+        assert usage.take_lock(env, now - usage.LOCK_STALE)
+        assert len(lock_race(env, now)) == 1
+        usage._remove(usage._path(env, "fetch.lock"))
+    assert sorted(p.name for p in Path(usage.cache_dir(env)).iterdir()) == []
+
+
+def test_breaking_a_stale_lock_leaves_a_newer_one(isolated_home):
+    """Another render broke the stale lock first and took a new one (maybe on the same
+    inode): that one stays."""
+    env = env_for(isolated_home)
+    path = usage._path(env, "fetch.lock")
+    usage.take_lock(env, NOW)
+    stale = usage._lock_id(path)[0]
+    Path(path).unlink()
+    live = usage.take_lock(env, NOW + usage.LOCK_STALE)  # the other render's lock
+    usage._break_lock(path, stale, NOW + usage.LOCK_STALE)
+    assert json.loads(Path(path).read_text())["nonce"] == live
+    assert sorted(p.name for p in Path(path).parent.iterdir()) == ["fetch.lock"]
+
+
+def test_breaker_that_died_doesnt_block_forever(isolated_home):
+    import os
+
+    env = env_for(isolated_home)
+    usage.take_lock(env, NOW)
+    guard = Path(usage._path(env, "fetch.lock.break"))
+    guard.write_text("")
+    os.utime(guard, (NOW + 30, NOW + 30))
+    assert not usage.take_lock(env, NOW + usage.LOCK_STALE)  # a breaker is at work
+    assert usage.take_lock(env, NOW + 30 + usage.LOCK_STALE)  # it died: guard and lock go
+    assert not guard.exists()
+
+
+def test_lock_from_after_now_is_stale(isolated_home):
+    """The clock was set back an hour: the lock must not block fetches for that hour."""
+    env = env_for(isolated_home)
+    assert usage.take_lock(env, NOW + 3600)
+    assert usage.take_lock(env, NOW)
+
+
+def test_release_only_removes_its_own_lock(isolated_home):
+    env = env_for(isolated_home)
+    old = usage.take_lock(env, NOW)
+    new = usage.take_lock(env, NOW + usage.LOCK_STALE)  # old's child took too long
+    usage.release(env, old)
+    assert json.loads(Path(usage._path(env, "fetch.lock")).read_text())["nonce"] == new
+    usage.release(env, new)
+    assert not Path(usage._path(env, "fetch.lock")).exists()
 
 
 def test_spawn_starts_a_detached_child_without_the_token(isolated_home, monkeypatch):
@@ -391,17 +569,71 @@ def test_spawn_starts_a_detached_child_without_the_token(isolated_home, monkeypa
     assert REAL_SPAWN(env, NOW)
     assert not any("secret-token" in a for a in seen["argv"])
     assert seen["argv"][1:4] == ["-I", "-S", "-c"]
+    nonce = json.loads(Path(usage._path(env, "fetch.lock")).read_text())["nonce"]
+    assert seen["argv"][-1] == nonce
     assert seen["kwargs"]["stdout"] is subprocess.DEVNULL
     assert seen["kwargs"]["start_new_session"] is True
     assert not REAL_SPAWN(env, NOW + 1)  # the lock is held until the child ends
 
 
-def test_child_releases_the_lock(isolated_home, monkeypatch):
+def test_child_releases_the_lock_and_holds_on_a_surprise(isolated_home, monkeypatch):
+    """A failure refresh didn't foresee still backs off: no refetch on every render."""
+    import os
+    import time
+
     monkeypatch.setattr(usage, "refresh", lambda env, now: 1 / 0)
+    monkeypatch.setattr(os, "environ", env_for(isolated_home))
     env = env_for(isolated_home)
-    assert usage.take_lock(env, NOW)
-    usage.child()
-    assert usage.take_lock(env, NOW + 1)
+    nonce = usage.take_lock(env, time.time())
+    usage.child(nonce)
+    assert not Path(usage._path(env, "fetch.lock")).exists()
+    held = usage.hold(env, None)
+    assert held["reason"] == "fetch failed (ZeroDivisionError)"
+    acct = Account("subscription", fingerprint=None)
+    assert usage.load(env, acct, time.time()).fetch is False
+
+
+def fresh_credentials(env):
+    """A token valid on the real clock, for code that reads time.time()."""
+    import time
+
+    creds = {"claudeAiOauth": {"accessToken": "tok-123", "expiresAt": (time.time() + 86400) * 1000}}
+    (Path(env["HOME"]) / ".claude" / ".credentials.json").write_text(json.dumps(creds))
+
+
+def test_child_fetches_and_writes_the_cache(server, logged_in, monkeypatch):
+    """child() as the spawned process runs it, against the local server."""
+    import os
+    import time
+
+    monkeypatch.setattr(usage, "API_URL", server.url)
+    monkeypatch.setattr(os, "environ", logged_in)
+    fresh_credentials(logged_in)
+    server.reply(200, json.dumps(usage_fixture("ultra")))
+    nonce = usage.take_lock(logged_in, time.time())
+    usage.child(nonce)
+    assert cache_files(logged_in)["usage.json"]["data"] == usage_fixture("ultra")
+    assert not Path(usage._path(logged_in, "fetch.lock")).exists()
+
+
+def test_spawned_child_runs_and_backs_off(logged_in):
+    """The real detached process: no network here (the proxy is a dead port), so it
+    writes a hold and releases the lock."""
+    import os
+    import time
+
+    fresh_credentials(logged_in)
+    env = dict(logged_in, HTTPS_PROXY="http://127.0.0.1:9", https_proxy="http://127.0.0.1:9")
+    env["PATH"] = os.environ.get("PATH", "")
+    assert REAL_SPAWN(env, time.time())
+    lock = Path(usage._path(env, "fetch.lock"))
+    deadline = time.time() + 20
+    while lock.exists() and time.time() < deadline:
+        time.sleep(0.05)
+    assert not lock.exists()
+    held = usage.hold(env, account.identity(env))
+    assert held["reason"] == "no answer (network)"
+    assert cache_files(env)["usage.json"] is None
 
 
 # ---- fetching against a local server ----
@@ -487,6 +719,81 @@ def test_rate_limited_honors_retry_after(server, logged_in):
     server.reply(429, "", **{"Retry-After": "900"})
     usage.refresh(logged_in, NOW, server.url, "linux")
     assert cache_files(logged_in)["fetch.hold"]["until"] == NOW + 900
+
+
+@pytest.mark.parametrize(
+    ("status", "header", "wait"),
+    [
+        (429, "7200", 7200),  # past the 30 min backoff cap: still honored
+        (429, "9" * 5000, 86400),  # nonsense: capped at a day
+        (503, "600", 600),
+        (429, "soon", 60),  # unreadable: normal backoff
+        (429, "²", 60),
+    ],
+)
+def test_retry_after_seconds(server, logged_in, status, header, wait):
+    server.reply(status, "", **{"Retry-After": header})
+    usage.refresh(logged_in, NOW, server.url, "linux")
+    assert cache_files(logged_in)["fetch.hold"]["until"] == NOW + wait
+
+
+def test_retry_after_http_date(server, logged_in):
+    from email.utils import formatdate
+
+    server.reply(429, "", **{"Retry-After": formatdate(NOW + 5400, usegmt=True)})
+    usage.refresh(logged_in, NOW, server.url, "linux")
+    assert cache_files(logged_in)["fetch.hold"]["until"] == NOW + 5400
+
+
+@pytest.mark.parametrize(
+    ("value", "seconds"),
+    [
+        ("120", 120),
+        (" 0 ", 0),
+        ("Thu, 05 Nov 2026 01:00:00 GMT", 3600),
+        ("Wed, 04 Nov 2026 23:00:00 GMT", 0),  # already past
+        ("", None),
+        (None, None),
+        ("-5", None),
+        ("Thu, 99 Nov 2026 01:00:00 GMT", None),
+    ],
+)
+def test_retry_after_parsing(value, seconds):
+    assert usage.retry_after(value, NOW) == seconds
+
+
+def test_cut_off_answer_backs_off(server, logged_in):
+    """A connection that ends mid-answer raises IncompleteRead, not an OSError."""
+    server.reply(200, "a\r\n{}", **{"Transfer-Encoding": "chunked"})
+    assert usage.refresh(logged_in, NOW, server.url, "linux") == "no answer (network)"
+    assert cache_files(logged_in)["fetch.hold"]["until"] == NOW + 60
+
+
+def test_redirect_is_refused_and_keeps_the_token(server, logged_in):
+    other = Server()
+    try:
+        server.reply(302, "", Location=other.url + "/steal")
+        other.reply(200, "{}")
+        reason = usage.refresh(logged_in, NOW, server.url, "linux")
+        assert reason == "redirect refused (HTTP 302)"
+        assert other.requests == []
+        assert cache_files(logged_in)["fetch.hold"]["until"] == NOW + 60
+    finally:
+        other.httpd.shutdown()
+        other.httpd.server_close()
+
+
+def test_oversized_answer_is_unreadable(server, logged_in):
+    server.reply(200, '{"x": "' + "a" * usage.MAX_BODY + '"}')
+    assert usage.refresh(logged_in, NOW, server.url, "linux") == "unreadable answer"
+
+
+def test_huge_failure_count_is_clamped(server, logged_in):
+    who = account.identity(logged_in)
+    write_hold(logged_in_home(logged_in), until=NOW - 1, who=who, failures=1e300)
+    server.reply(503)
+    usage.refresh(logged_in, NOW, server.url, "linux")
+    assert cache_files(logged_in)["fetch.hold"]["until"] == NOW + usage.BACKOFF_MAX
 
 
 @pytest.mark.parametrize("body", ["not json", "[1]", ""])

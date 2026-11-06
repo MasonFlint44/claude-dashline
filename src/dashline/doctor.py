@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import sys
 import time
 
@@ -68,6 +69,18 @@ def summarize(data: dict) -> str:
     return " · ".join(parts) or "no limits on this plan"
 
 
+def first_word(cmd: str) -> str:
+    """The program a shell command runs: `python3` in `python3 -I -S x.py`."""
+    try:
+        words = shlex.split(cmd)
+    except ValueError:
+        words = cmd.split()
+    return words[0] if words else "python3"
+
+
+version_tuple = install.version_tuple
+
+
 def font_guess(env, platform: str) -> tuple:
     """(True if a Nerd Font is likely to render, what was found)."""
     term = (env.get("TERM_PROGRAM") or "").lower()
@@ -90,7 +103,9 @@ def font_guess(env, platform: str) -> tuple:
     elif platform == "darwin":
         import glob
 
-        dirs = [os.path.expanduser("~/Library/Fonts"), "/Library/Fonts"]
+        from dashline.theme import home_dir
+
+        dirs = [os.path.join(home_dir(env), "Library", "Fonts"), "/Library/Fonts"]
         found = [p for d in dirs for p in glob.glob(os.path.join(d, "*Nerd*"))]
         if found:
             return True, f"found {os.path.basename(sorted(found)[0])}"
@@ -113,6 +128,13 @@ class Doctor:
 
     def short(self, path: str) -> str:
         return install.home_short(path, self.env)
+
+    def shell_path(self, path: str) -> str:
+        """A path to paste into a shell: `~/` kept for short, the rest quoted."""
+        short = self.short(path)
+        if short.startswith("~/"):
+            return "~/" + shlex.quote(short[2:])
+        return shlex.quote(path)
 
     def run(self) -> list:
         names = ("python", "installed", "settings", "login", "usage", "cache", "command")
@@ -157,13 +179,24 @@ class Doctor:
             text = f"{where}: {version}, but its files differ from this copy"
         else:
             text = f"{where}: {version}; this copy is {__version__}"
+        theirs, mine = version_tuple(version), version_tuple(__version__)
+        if theirs and mine and theirs > mine:
+            self.add(
+                WARN,
+                "install",
+                f"{where}: {version} is newer than this copy ({__version__})",
+                "update the dashline plugin (/plugin), then run /dashline:install",
+            )
+            return
         self.add(WARN, "install", text, "run /dashline:install to update it")
 
     def settings(self):
         from dashline.theme import _read_json, settings_files
 
         sources = [(p, _read_json(p)) for p in settings_files(self.cwd, self.env)]
-        disabled = [p for p, data in sources if data.get("disableAllHooks") is True]
+        user = os.path.realpath(install.user_settings(self.env))
+        # The CLI merges the files, so the first one that sets a key decides it.
+        hooks = next(((p, d) for p, d in sources if "disableAllHooks" in d), None)
         winner = next(((p, d["statusLine"]) for p, d in sources if "statusLine" in d), None)
         if winner is None:
             where = self.short(install.user_settings(self.env))
@@ -171,14 +204,12 @@ class Doctor:
             return
         path, entry = winner
         where = self.short(path)
-        if not install.is_ours(entry):
+        is_user = os.path.realpath(path) == user
+        if not install.is_ours(entry, self.env):
             cmd = entry.get("command") if isinstance(entry, dict) else None
             shown = f": {cmd}" if isinstance(cmd, str) else ""
             self.add(
-                FAIL,
-                "settings",
-                f"{where} runs another statusline{shown}",
-                "run /dashline:install (it asks before replacing it)",
+                FAIL, "settings", f"{where} runs another statusline{shown}", self.fix_for(path)
             )
             return
         self.entry = entry
@@ -187,14 +218,14 @@ class Doctor:
                 FAIL,
                 "settings",
                 f'{where}: statusLine type isn\'t "command"',
-                "run /dashline:install",
+                "run /dashline:install" if is_user else self.fix_for(path),
             )
             return
-        if disabled:
+        if hooks is not None and hooks[1]["disableAllHooks"] is True:
             self.add(
                 FAIL,
                 "settings",
-                f"disableAllHooks is on in {self.short(disabled[0])}, which also turns off "
+                f"disableAllHooks is on in {self.short(hooks[0])}, which also turns off "
                 "the statusline",
                 "remove disableAllHooks (it turns off hooks too, so that's your call)",
             )
@@ -205,10 +236,26 @@ class Doctor:
                 WARN,
                 "settings",
                 text + "; no refreshInterval",
-                "plan bars only move when Claude Code redraws; /dashline:install sets 60",
+                "plan bars only move when Claude Code redraws; "
+                + ("/dashline:install sets 60" if is_user else f"add one to {where}"),
             )
             return
         self.add(OK, "settings", text)
+
+    def fix_for(self, path: str) -> str:
+        """How to get dashline's statusLine used when `path` sets the one that wins."""
+        from dashline.theme import managed_settings_path
+
+        where = self.short(path)
+        if os.path.realpath(path) == os.path.realpath(install.user_settings(self.env)):
+            return "run /dashline:install (it asks before replacing it)"
+        managed = managed_settings_path()
+        if managed and os.path.realpath(path) == os.path.realpath(managed):
+            return f"{where} is managed settings, set by an administrator; only they can change it"
+        return (
+            f"{where} wins over your user settings here: remove its statusLine to use "
+            "dashline, or leave it for this project"
+        )
 
     def login(self):
         from dashline import account
@@ -273,7 +320,13 @@ class Doctor:
         if result.startswith("token expired"):
             self.add(WARN, "usage", result + wait)
             return
-        self.add(FAIL, "usage", result + wait, fixes.get(result, "run doctor again later"))
+        fix = fixes.get(result, "run doctor again later")
+        if result.startswith("redirect refused"):
+            # api.anthropic.com doesn't redirect: a proxy or network is rewriting traffic.
+            fix = "something between here and api.anthropic.com redirects it: check HTTPS_PROXY"
+        elif result.startswith("fetch failed"):
+            fix = "run doctor again later; report it if it keeps happening"
+        self.add(FAIL, "usage", result + wait, fix)
 
     def cache(self):
         from dashline import usage
@@ -299,13 +352,16 @@ class Doctor:
         fetched = cache.get("fetched_at")
         if isinstance(fetched, (int, float)):
             notes.append(f"fetched {_ago(self.now - fetched)}")
-        lock = os.path.join(path, "fetch.lock")
-        if os.path.exists(lock):
-            age = self.now - os.stat(lock).st_mtime
-            if age >= usage.LOCK_STALE:
-                notes.append("a stale fetch.lock (the next render clears it)")
-            else:
+        # The lock says when it was taken (`at`), else its mtime does. One from the
+        # future means the clock was set back; either way the next render breaks it.
+        # fetch.lock.break is a breaker's guard for a moment: not worth a note.
+        found = usage._lock_id(os.path.join(path, "fetch.lock"))
+        if found is not None:
+            _, at, mtime = found
+            if usage._lock_live(self.now - (at if at is not None else mtime)):
                 notes.append("a fetch is running")
+            else:
+                notes.append("a stale fetch.lock (the next render clears it)")
         # dashline's own files, not the folder: it may be shared with other tools, and a
         # folder others can list only shows them file names.
         exposed = []
@@ -320,7 +376,7 @@ class Doctor:
         if exposed:
             status = WARN
             notes.append(f"other users can read {', '.join(exposed)}")
-            fix = "chmod 600 " + " ".join(f"{where}/{name}" for name in exposed)
+            fix = "chmod 600 " + " ".join(self.shell_path(os.path.join(path, n)) for n in exposed)
         text = f"{where}" + (f": {', '.join(notes)}" if notes else "")
         self.add(status, "cache", text, fix)
 
@@ -365,8 +421,11 @@ class Doctor:
         if r.returncode != 0 or not lines or "internal error" in r.stdout:
             why = err[-1] if err else f"exit {r.returncode}, {len(lines)} lines"
             fix = "run /dashline:install"
-            if "No such file" in why or "not found" in why:
-                fix = "python3 must be on the PATH Claude Code sees; then /dashline:install"
+            if "can't open file" in why:
+                fix = "the command's statusline.py is missing: run /dashline:install"
+            elif "No such file" in why or "not found" in why:
+                program = first_word(self.entry["command"])
+                fix = f"{program} must be on the PATH Claude Code sees, or use a full path"
             self.add(FAIL, "command", why, fix)
             return
         text = f"printed {len(lines)} line{'s' if len(lines) != 1 else ''} in {ms:.0f} ms"
@@ -447,7 +506,7 @@ def run(env=None, out=None, cwd=None, base_url: str = API_URL, now=None) -> int:
 
     env = os.environ if env is None else env
     out = out or sys.stdout
-    cwd = cwd or os.getcwd()
+    cwd = cwd or env.get("CLAUDE_PROJECT_DIR") or os.getcwd()
     doctor = Doctor(env, time.time() if now is None else now, cwd, base_url)
     results = doctor.run()
     palette = None

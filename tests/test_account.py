@@ -110,7 +110,46 @@ def test_api_key_counts_only_once_approved(isolated_home):
 def test_env_oauth_token_without_account_is_subscription(isolated_home):
     env = env_for(isolated_home, CLAUDE_CODE_OAUTH_TOKEN="t")
     acct = account.load(env, make_session("startup"))
-    assert (acct.mode, acct.label, acct.fingerprint) == ("subscription", None, "env")
+    assert (acct.mode, acct.label) == ("subscription", None)
+    assert acct.fingerprint.startswith("env-")
+
+
+def test_env_token_tags_the_cache_by_itself(isolated_home):
+    """The env token wins over the stored login and may be another account's."""
+    write_claude_json(isolated_home, ULTRA)
+    stored = account.load(env_for(isolated_home), make_session()).fingerprint
+    one = account.load(env_for(isolated_home, CLAUDE_CODE_OAUTH_TOKEN="tok-one"), make_session())
+    two = account.load(env_for(isolated_home, CLAUDE_CODE_OAUTH_TOKEN="tok-two"), make_session())
+    assert len({stored, one.fingerprint, two.fingerprint}) == 3
+    assert "tok-one" not in one.fingerprint
+    assert account.identity(env_for(isolated_home, CLAUDE_CODE_OAUTH_TOKEN="tok-one")) == (
+        one.fingerprint
+    )
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"oauthAccount": {"organizationType": ["claude_max"], "accountUuid": {}}},
+        {"oauthAccount": {"planDisplayName": ["Ultra"], "organizationType": {"a": 1}}},
+        {"oauthAccount": [], "customApiKeyResponses": ["x"]},
+        {"oauthAccount": {"accountUuid": "a", "organizationUuid": "o"}, "customApiKeyResponses": 3},
+        {"customApiKeyResponses": {"approved": {"x": 1}}},
+    ],
+)
+def test_odd_types_in_claude_json_read_as_missing(isolated_home, extra):
+    (isolated_home / ".claude.json").write_text(json.dumps(extra))
+    write_credentials(isolated_home, subscriptionType=["max"], rateLimitTier={"x": 1})
+    env = env_for(isolated_home, ANTHROPIC_API_KEY="sk-ant-api03-" + "a" * 40)
+    for session in (make_session(), make_session("startup")):
+        acct = account.load(env, session)  # no TypeError / AttributeError
+        assert acct.label in (None, "API")  # no plan to name; API when nothing says otherwise
+        assert acct.org_type is None
+
+
+def test_plan_name_control_characters_are_replaced(isolated_home):
+    write_claude_json(isolated_home, dict(ULTRA, planDisplayName="Ul\x1b[31mtra\nX"))
+    assert account.load(env_for(isolated_home), make_session()).label == "Ul?[31mtra?X"
 
 
 def test_config_dir_holds_claude_json(tmp_path):

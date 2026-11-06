@@ -1,7 +1,9 @@
 """The directory row (repo.py), against throwaway git repos."""
 
+import contextlib
 import os
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -293,7 +295,9 @@ def test_narrow_drop_order(busy):
     assert row(busy, w - 20, current=busy / "src") == (
         "work ⑂ wt-feature  ⎇ feature/a-very-long-…  ✎ ?  ⇡1"
     )
-    assert row(busy, 30, current=busy / "src") == "work  ⎇ feat…  ✎ ?  ⇡1"
+    # Past the worktree name, the branch gets back the room it frees.
+    assert row(busy, 30, current=busy / "src") == "work  ⎇ feature/…  ✎ ?  ⇡1"
+    assert row(busy, 26, current=busy / "src") == "work  ⎇ feat…  ✎ ?  ⇡1"
 
 
 @pytest.mark.parametrize("glyph_set", ["nerd", "unicode", "ascii"])
@@ -463,3 +467,393 @@ def test_worktree_of_a_bare_repo(tmp_path, project):
     wt = tmp_path / "wt-x"
     git(bare, "worktree", "add", "-q", str(wt), "main")
     assert row(wt) == "tool ⑂ wt-x  ⎇ main  local"  # the clone has origin, no upstream
+
+
+# ---- hardening (0.1.6) ----
+
+
+def test_hung_hook_is_killed_with_git(project, monkeypatch, tmp_path):
+    """A hook that outlives git used to hold the pipe open and the render with it."""
+    monkeypatch.setattr(repo, "GIT_TIMEOUT", 0.2)
+    pidfile = tmp_path / "pid"
+    real_start = repo._start
+
+    def hung(args, cwd, env):
+        alias = f"alias.hang=!echo $$ > {pidfile}; exec sleep 30"
+        return real_start(["-c", alias, "hang"], cwd, env)
+
+    monkeypatch.setattr(repo, "_start", hung)
+    import time
+
+    began = time.monotonic()
+    assert row(project) == "proj"
+    assert time.monotonic() - began < 1.5
+    pid = int(pidfile.read_text())
+    stat = Path(f"/proc/{pid}/stat")
+    for _ in range(300):  # killed, and reaped once its parent is gone (slow under load)
+        try:
+            os.kill(pid, 0)
+            if ") Z " in stat.read_text():
+                break  # a zombie: dead, waiting to be reaped
+        except (ProcessLookupError, FileNotFoundError):
+            break
+        time.sleep(0.01)
+    else:
+        with contextlib.suppress(OSError):
+            if b"sleep" in Path(f"/proc/{pid}/cmdline").read_bytes():
+                os.kill(pid, 9)  # only our hook, never a reused pid
+        raise AssertionError("the hook's sleep outlived the timeout")
+
+
+def test_kill_survives_a_pipe_held_open(monkeypatch):
+    """When something outside the group holds the pipe, give up instead of waiting."""
+    import subprocess
+    import time
+
+    proc = subprocess.Popen(
+        ["sh", "-c", "sleep 30"], stdout=subprocess.PIPE, start_new_session=True
+    )
+    monkeypatch.setattr(repo, "_kill", lambda p: None)  # pretend the kill missed
+    began = time.monotonic()
+    assert repo._finish(proc, time.monotonic()) is None
+    assert time.monotonic() - began < 1
+    proc.kill()
+    proc.wait()
+
+
+def test_names_cannot_inject_escapes():
+    state = repo.RepoState("/x/pro\x1b[31mj\nnext", "/elsewhere/\x1b]8;;evil\x07")
+    state.root = "/x/root"
+    state.repo_name = "re\x1bpo"
+    state.worktree = "wt\n2"
+    state.branch = "feat\u202eevil"
+    text = plain([repo.draw(state, make_ctx(200))])[0]
+    assert "\x1b" not in text and "\n" not in text and "\u202e" not in text
+    assert text.startswith("re?po ⑂ wt?2  ↳ /elsewhere/?]8;;evil?  ⎇ feat?evil")
+    folder = repo.RepoState("/x/a\x1bb")
+    assert plain([repo.draw(folder, make_ctx())]) == ["/x/a?b"]
+    tagged = repo.RepoState("/x")
+    tagged.root, tagged.repo_name, tagged.tag = "/x", "x", "v1\x1b"
+    assert plain([repo.draw(tagged, make_ctx())]) == ["x  tag:v1?"]
+
+
+def test_folder_with_control_characters(tmp_path):
+    path = tmp_path / "a\x1bb\nc"
+    path.mkdir()
+    git(path, "init", "-q")
+    assert row(path) == "a?b?c  ⎇ main"
+
+
+def test_links_never_carry_control_characters():
+    ctx = make_ctx()
+    assert repo._link(ctx.seg("x"), "https://github.com/o/r\x1b\\") == ctx.seg("x")
+    assert repo._link(ctx.seg("x"), "file://hôst/x") == ctx.seg("x")
+    assert repo._link(ctx.seg("x"), "https://github.com/o/r") == (
+        *ctx.seg("x"),
+        "https://github.com/o/r",
+    )
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "git@github.com:o/r\x1b]8;;https://evil\x1b\\.git",
+        "https://github.com/o/r q",
+        "https://github.com/o\x07/r",
+        "git@github.co\x1bm:o/r.git",
+    ],
+)
+def test_github_web_rejects_odd_names(url):
+    assert repo.github_web(url) is None
+
+
+def test_parse_config_syntax():
+    config = (
+        "# a comment\n"
+        '[Remote "origin"]\n'
+        '\tURL = "git@github.com:o/r.git" ; inline comment\n'
+        "\turl = git@github.com:o/second.git\n"
+        '[remote "fork"] url = https://github.com/f/r # same line as the header\n'
+        "[remote.Old]\n"
+        "\turl = https://github.com/old/\\\n"
+        "r.git\n"
+        '[remote "quoted \\"name\\""]\n'
+        "\turl = https://github.com/q/r\n"
+        '[remote "empty"]\n'
+        "\turl\n"
+        '[branch "feat"]\n\tremote = origin\n\tmerge = refs/heads/feat\n'
+    )
+    assert repo.parse_remotes(config) == {
+        "origin": "git@github.com:o/r.git",
+        "fork": "https://github.com/f/r",
+        "old": "https://github.com/old/r.git",
+        'quoted "name"': "https://github.com/q/r",
+    }
+    entries = repo.parse_config(config)
+    assert ("branch", "feat", "merge", "refs/heads/feat") in entries
+
+
+def test_rebase_of_a_pushed_branch_is_not_local(cloned):
+    git(cloned, "switch", "-q", "-c", "feat")
+    commit(cloned, text="feat\n")
+    git(cloned, "push", "-q", "-u", "origin", "feat")
+    git(cloned, "switch", "-q", "main")
+    commit(cloned, text="main\n")
+    git(cloned, "switch", "-q", "feat")
+    git(cloned, "rebase", "-q", "main", check=False)
+    assert row(cloned) == "work  ⎇ feat  rebasing 1/1  ✗ 1  ✎ +4"
+    github_origin(cloned)
+    assert links(row(cloned, color=True))["⎇ feat"] == (
+        "https://github.com/o/r/compare/main...feat"
+    )
+    git(cloned, "update-ref", "-d", "refs/remotes/origin/feat")
+    assert row(cloned).endswith("✎ +4  gone")
+
+
+def test_rebase_of_a_local_branch_is_still_local(cloned):
+    git(cloned, "switch", "-q", "-c", "feat")
+    commit(cloned, text="feat\n")
+    git(cloned, "switch", "-q", "main")
+    commit(cloned, text="main\n")
+    git(cloned, "switch", "-q", "feat")
+    git(cloned, "rebase", "-q", "main", check=False)
+    assert row(cloned).endswith("✎ +4  local")
+
+
+def test_configured_upstream_packed_and_local(tmp_path):
+    common = tmp_path / "git"
+    (common / "refs" / "heads").mkdir(parents=True)
+    (common / "packed-refs").write_text("# pack-refs\nabc refs/remotes/up/feat\n")
+    entries = repo.parse_config(
+        '[branch "feat"]\n remote = up\n merge = refs/heads/feat\n'
+        '[branch "loc"]\n remote = .\n merge = refs/heads/main\n'
+        '[branch "odd"]\n remote = up\n merge = feat\n'
+    )
+    assert repo.configured_upstream(entries, "feat", str(common)) == ("up/feat", False)
+    assert repo.configured_upstream(entries, "loc", str(common)) == ("main", True)
+    (common / "refs" / "heads" / "main").write_text("abc\n")
+    assert repo.configured_upstream(entries, "loc", str(common)) == ("main", False)
+    assert repo.configured_upstream(entries, "odd", str(common)) == (None, False)
+    assert repo.configured_upstream(entries, "none", str(common)) == (None, False)
+
+
+def test_git_location_variables_are_ignored(project, tmp_path):
+    env = dict(os.environ)
+    env.update(
+        GIT_INDEX_FILE=str(tmp_path / "other-index"),
+        GIT_DIR=str(tmp_path / "nowhere"),
+        GIT_OBJECT_DIRECTORY=str(tmp_path / "objects"),
+        GIT_COMMON_DIR=str(tmp_path / "common"),
+    )
+    state = repo.inspect(str(project), str(project), env)
+    assert plain([repo.draw(state, make_ctx())]) == ["proj  ⎇ main"]
+
+
+def test_symlink_into_a_repo(project, tmp_path):
+    sub = project / "services" / "api"
+    sub.mkdir(parents=True)
+    link = tmp_path / "api-link"
+    link.symlink_to(sub)
+    assert row(link) == "proj/services/api  ⎇ main"
+
+
+def test_symlinked_project_has_no_false_drift(project, tmp_path):
+    link = tmp_path / "proj-link"
+    link.symlink_to(project)
+    assert row(link, current=project) == "proj  ⎇ main"
+    (project / "src").mkdir()
+    assert row(link, current=project / "src") == "proj  ↳ src  ⎇ main"
+    assert row(project, current=link) == "proj  ⎇ main"
+
+
+def test_fsmonitor_hook_never_runs(project, tmp_path):
+    marker = tmp_path / "ran"
+    hook = tmp_path / "hook.sh"
+    hook.write_text(f"#!/bin/sh\ntouch {marker}\n")
+    hook.chmod(0o755)
+    git(project, "config", "core.fsmonitor", str(hook))
+    git(project, "status", check=False)
+    assert marker.exists()  # git would run it
+    marker.unlink()
+    assert row(project) == "proj  ⎇ main"
+    assert not marker.exists()
+
+
+def test_submodule_edits_are_its_own(project, tmp_path):
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    git(lib, "init", "-q")
+    commit(lib, "l.txt", "l\n")
+    git(project, "-c", "protocol.file.allow=always", "submodule", "add", "-q", str(lib), "lib")
+    git(project, "commit", "-q", "-m", "add lib")
+    (project / "lib" / "l.txt").write_text("edited\n")
+    (project / "lib" / "new.txt").write_text("n\n")
+    assert row(project) == "proj  ⎇ main"
+    commit(project / "lib", "l.txt", "moved on\n")  # a new commit is a change here
+    assert row(project) == "proj  ⎇ main  ✎ +1 −1"
+
+
+def test_no_commits_yet_in_a_sha256_repo(tmp_path):
+    path = tmp_path / "fresh"
+    path.mkdir()
+    git(path, "init", "-q", "--object-format=sha256")
+    (path / "a.txt").write_text("a\nb\n")
+    git(path, "add", "a.txt")
+    assert row(path) == "fresh  ⎇ main  ✎ +2"
+
+
+@pytest.mark.parametrize(
+    ("path", "home", "shown"),
+    [
+        ("/home/me/x", "/home/me", "~/x"),
+        ("/home/me/x", "/home/me/", "~/x"),
+        ("/home/me", "/home/me/", "~"),
+        ("/home/meow", "/home/me", "/home/meow"),
+        ("/etc/x", "/", "/etc/x"),
+        ("/etc/x", "", "/etc/x"),
+        ("/etc/x", None, "/etc/x"),
+    ],
+)
+def test_collapse_home(path, home, shown):
+    assert repo.collapse_home(path, home) == shown
+
+
+def test_interrupted_pick_sequence(project):
+    git(project, "switch", "-q", "-c", "side")
+    commit(project, text="side\n")
+    commit(project, "g.txt", "g\n")
+    git(project, "switch", "-q", "main")
+    commit(project, text="main\n")
+    git(project, "cherry-pick", "side~1", "side", check=False)
+    git(project, "checkout", "--theirs", "f.txt")
+    git(project, "add", "f.txt")
+    git(project, "commit", "-q", "--no-edit")  # resolved, but the sequence waits
+    assert not (project / ".git" / "CHERRY_PICK_HEAD").exists()
+    assert row(project) == "proj  ⎇ main  cherry-picking"
+    git(project, "cherry-pick", "--quit")
+    assert row(project) == "proj  ⎇ main"
+
+
+def test_interrupted_revert_sequence(project):
+    commit(project, text="two\n")
+    commit(project, text="three\n")
+    git(project, "revert", "--no-edit", "HEAD~1", "HEAD", check=False)  # stops at once
+    (project / "f.txt").write_text("one\n")
+    git(project, "add", "f.txt")
+    git(project, "commit", "-q", "--no-edit")
+    assert not (project / ".git" / "REVERT_HEAD").exists()
+    assert row(project) == "proj  ⎇ main  reverting"
+
+
+def test_long_subpath_gives_way(project):
+    sub = project / "services" / "billing-and-invoicing" / "api"
+    sub.mkdir(parents=True)
+    git(project, "switch", "-q", "-c", "feature/long-branch-name")
+    full = row(sub)
+    assert full == "proj/services/billing-and-invoicing/api  ⎇ feature/long-branch-name"
+    # The branch shortens first; when it can't, the subpath keeps its last folder, and
+    # the branch gets the room that frees. Then the subpath goes.
+    assert row(sub, 46) == "proj/…/api  ⎇ feature/long-branch-name"
+    assert row(sub, 29) == "proj/…/api  ⎇ feature/lo…"
+    assert row(sub, 23) == "proj/…/api  ⎇ feat…"
+    assert row(sub, 22) == "proj  ⎇ feature/l…"
+    assert row(sub, 17) == "proj  ⎇ feat…"
+
+
+def test_long_tag_shortens(project):
+    commit(project, "g.txt", "x\n")
+    git(project, "checkout", "-q", "--detach")
+    git(project, "tag", "release-2026-11-05-candidate")
+    assert row(project, 32) == "proj  tag:release-2026-11-0…"
+
+
+def test_tag_lookup_is_skipped_after_the_timeout(project, monkeypatch):
+    """Once git has used up its time, the tag lookup isn't started."""
+    git(project, "checkout", "-q", "--detach")
+    calls = []
+    real_start = repo._start
+
+    def counting(args, cwd, env):
+        calls.append(args[0])
+        return real_start(args, cwd, env)
+
+    monkeypatch.setattr(repo, "_start", counting)
+    import time
+
+    real_monotonic = time.monotonic
+
+    def clock():
+        # After status and numstat start, jump past the deadline.
+        return real_monotonic() + (10 if len(calls) >= 2 else 0)
+
+    monkeypatch.setattr(time, "monotonic", clock)
+    row(project)
+    assert "describe" not in calls
+
+
+def test_wide_branch_names_shorten_by_columns(project):
+    from dashline.text import cols
+
+    git(project, "checkout", "-q", "-b", "功能/很长的分支名称用于测试")
+    for columns in (60, 40, 30, 24):
+        line = row(project, columns)
+        assert cols(line) <= columns - 4, (columns, line)
+    assert "…" in row(project, 30)
+
+
+# ---- insteadOf shorthands ----
+
+
+@pytest.mark.parametrize(
+    ("url", "expanded"),
+    [
+        ("gh:o/r", "https://github.com/o/r"),
+        ("gh:o/r.git", "https://github.com/o/r.git"),
+        ("ghs:o/r", "git@github.com:o/r"),  # the longest matching prefix wins
+        ("https://example.com/x", "https://example.com/x"),
+    ],
+)
+def test_rewrite_url(url, expanded):
+    rules = [("gh:", "https://github.com/"), ("ghs:", "git@github.com:"), ("g", "nope:")]
+    assert repo.rewrite_url(url, rules) == expanded
+
+
+def test_url_rewrites_from_config():
+    entries = repo.parse_config(
+        '[url "https://github.com/"]\n\tinsteadOf = gh:\n\tpushInsteadOf = ghp:\n'
+        '[URL "git@github.com:"]\n\tInsteadOf = ghs:\n'
+    )
+    assert repo.url_rewrites(entries) == [
+        ("gh:", "https://github.com/"),
+        ("ghs:", "git@github.com:"),
+    ]
+
+
+def test_config_files(tmp_path):
+    home = str(tmp_path)
+    assert repo.config_files({"HOME": home}) == [
+        "/etc/gitconfig",
+        f"{home}/.config/git/config",
+        f"{home}/.gitconfig",
+    ]
+    assert repo.config_files(
+        {"HOME": home, "GIT_CONFIG_NOSYSTEM": "1", "XDG_CONFIG_HOME": "/x"}
+    ) == ["/x/git/config", f"{home}/.gitconfig"]
+    assert repo.config_files({"GIT_CONFIG_GLOBAL": "/g", "GIT_CONFIG_SYSTEM": "/s"}) == [
+        "/s",
+        "/g",
+    ]
+
+
+@pytest.mark.parametrize("where", ["global", "repo"])
+def test_shorthand_remote_links_to_github(cloned, isolated_home, where):
+    rule = '[url "git@github.com:"]\n\tinsteadOf = gh:\n'
+    if where == "global":
+        with (isolated_home / ".gitconfig").open("a") as f:
+            f.write(rule)
+    else:
+        with (cloned / ".git" / "config").open("a") as f:
+            f.write(rule)
+    # Git itself must not see the shorthand while the test pushes to the local remote.
+    git(cloned, "remote", "set-url", "origin", "gh:o/r")
+    assert links(row(cloned, color=True))["⎇ main"] == "https://github.com/o/r/tree/main"
