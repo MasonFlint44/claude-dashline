@@ -113,11 +113,11 @@ def parse_args(argv: list[str]) -> dict:
 
 
 def _utf8_pipes() -> None:
-    """On Windows, write UTF-8 to a pipe as everywhere else.
+    """On Windows, write UTF-8 to a pipe or file as everywhere else.
 
-    Python there encodes for the ANSI code page, which has no `→` or `…`: doctor run by
-    the skill (its output piped to Claude Code) would fail on them. A console takes
-    Unicode as it is.
+    Python there encodes for the ANSI code page, which has no `→` or `│`: doctor run by
+    the skill (its output piped to Claude Code) would fail on them. A console is UTF-8
+    already. Not decided by isatty(): NUL (`> /dev/null` in Git Bash) says it's a tty.
     """
     import os
 
@@ -125,7 +125,7 @@ def _utf8_pipes() -> None:
         return
     for stream in (sys.stdout, sys.stderr):
         try:
-            if not stream.isatty():
+            if (stream.encoding or "").lower().replace("-", "") != "utf8":
                 stream.reconfigure(encoding="utf-8", errors="replace")
         except (AttributeError, OSError, ValueError):
             pass
