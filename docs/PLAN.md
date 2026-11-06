@@ -1,6 +1,6 @@
 # dashline — plan
 
-Status: built; 0.1.8 on 2026-11-06. Draft 4 (2026-11-04) was the design the build followed;
+Status: built; 0.1.9 on 2026-11-06. Draft 4 (2026-11-04) was the design the build followed;
 later changes are marked with their date.
 
 Repo `~/git/claude-dashline`; plugin `dashline` (skills `/dashline:install`,
@@ -724,7 +724,7 @@ render and preview alike; more than 4 significant digits reads as 1000 without p
   user settings.json (since 0.1.8; a project's or managed entry being ok isn't
   enough), because otherwise it would turn on a statusline the user may have removed.
   An unknown glyph set goes through the glyph step, never a reset to unicode.
-- `--glyphs all` (preview only) prints each set in turn, for the install skill.
+- `--glyphs all` (preview only) prints each set in turn, for comparing them.
 - `--preview [SCENARIO|all]`: built-in scenarios with fake data at a fixed clock:
   `pro-trial`, `pro`, `ultra-fable`, `team`, `enterprise`, `api`, `limit`, `rebase`,
   `narrow` (80 columns: `credits` turns into text), `tiny` (64 columns: text-only plan
@@ -740,14 +740,20 @@ Skills (model-invocable, so a plain-language request like "fix my statusline" tr
   1. **Guess:** Ghostty and WezTerm bundle Nerd Font symbols (`$TERM_PROGRAM`);
      otherwise look for an installed Nerd Font (`fc-list` on Linux, font dirs on macOS).
      Kitty and others: verify before claiming.
-  2. **Show:** print `--preview` in all three sets and ask which renders correctly.
-     That's the real test, since a font can be installed but not selected.
+  2. **Ask** (changed 11/6 by the author for 0.1.9; until then the skill had the user
+     run `--preview --glyphs all` and pick): offer the three sets in words, with the
+     guess as the recommendation, install the pick, and say what to look for in the
+     live statusline (nerd: the git or folder icon on line 3; every icon is from one
+     font, so that one decides). The live statusline is the real test, since a font
+     can be installed but not selected. The side-by-side preview stays as a "compare
+     them first" option. Asked on a first install or when the user brings it up; a
+     plain update keeps the set.
   3. **Suggest, don't install** (settled 11/4) when nerd doesn't render: print a short note
      on what a Nerd Font adds, a link to the Symbols Nerd Font ("Symbols Only"), and the
      one-line install for the OS (Linux: `~/.local/share/fonts` + `fc-cache`; macOS:
      `brew install --cask font-symbols-only-nerd-font`; Windows Terminal: pick a Nerd Font
      as the face). The skill never installs fonts or edits terminal config.
-  4. Re-running `install` after setting up a font re-previews and switches to `--glyphs nerd`.
+  4. Re-running `install` after setting up a font can switch to `--glyphs nerd`.
   Default without any of this: `unicode`. If settings.json already has a `statusLine`
   entry, show it and ask before replacing it.
 - `doctor`: run `--doctor`, explain each line, and fix what's safe. A stale install is

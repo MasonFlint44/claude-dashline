@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.9 — 2026-11-06
+
+**Install**
+- Picking a glyph set no longer needs a preview command. On a first install,
+  `/dashline:install` offers nerd, unicode and ascii with a one-line description each,
+  recommends one from what your terminal has, and tells you what to look for in the
+  statusline itself (with nerd, the git or folder icon on line 3). A plain update keeps
+  your set without asking. The side-by-side preview is still there if you want to
+  compare first.
+
 ## 0.1.8 — 2026-11-06
 
 Fixes from a third review, mostly of 0.1.7's new code.

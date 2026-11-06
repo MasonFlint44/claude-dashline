@@ -19,9 +19,9 @@ where you are in git, in three lines that fit the terminal's width.
 `~/.claude/scripts/statusline/` (or under `$CLAUDE_CONFIG_DIR`), and points the
 `statusLine` setting at it. It asks first if you already have a statusline, if
 that folder holds another tool's files, or if a newer dashline is already installed
-there. Updates keep any files of your own you put in that folder. Then it
-shows you dashline in each glyph set so you can pick the one your terminal draws
-correctly.
+there. Updates keep any files of your own you put in that folder. On a first install
+it asks which glyph set you want, recommending one from what your terminal has, and
+tells you what to look for in the statusline to confirm it draws correctly.
 
 Needs Python 3.9 or newer as `python3`. macOS's command-line tools are enough. git is
 optional (2.15 or newer); without it the third line shows just the folder. Built on Linux with Claude

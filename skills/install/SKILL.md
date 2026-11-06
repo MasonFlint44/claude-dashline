@@ -72,37 +72,54 @@ Nerd Font) and which set is in use.
 
 ## 4. Glyph set
 
-A terminal can't be asked which fonts it draws, so the user has to look.
-
-1. Read the `font` line from step 3's doctor output. Don't run doctor again for it.
-2. Ask the user to run this themselves, because only output from their own `!` command
-   is certain to show in their terminal's font. Write it with the real path in place of
-   `${CLAUDE_PLUGIN_ROOT}`:
-
-   ```
-   ! python3 -I -S "${CLAUDE_PLUGIN_ROOT}/statusline.py" --preview ultra-fable --glyphs all
-   ```
-
-   It prints the same statusline in `nerd`, `unicode` and `ascii`. Ask them to reply
-   with the first set whose icons all look right (no empty boxes, question marks or
-   overlapping characters). Say which one you expect, based on the `font` line. End
-   your turn here and wait for their answer.
-3. Once they pick:
-   - Run `DASHLINE --install --glyphs <set>`, unless that set is already in use.
-   - If they chose `unicode` or `ascii` and want icons, explain briefly that a Nerd
-     Font adds icons for the branch, commits, tags and fast mode. Only the "Symbols
-     Only" font is needed: <https://github.com/ryanoasis/nerd-fonts/releases/latest>
-     (`NerdFontsSymbolsOnly`). Give the one-line install for their OS:
-     - Linux: `mkdir -p ~/.local/share/fonts && curl -fsSL https://github.com/ryanoasis/nerd-fonts/releases/latest/download/NerdFontsSymbolsOnly.tar.xz | tar -xJ -C ~/.local/share/fonts && fc-cache -f`
-     - macOS: `brew install --cask font-symbols-only-nerd-font`
-     - Windows Terminal: install any Nerd Font and choose it as the profile's font face.
-
-     Some terminals need the font picked in their settings, or a restart. Afterwards,
-     running `/dashline:install` again re-checks and switches to `nerd`. Never install
-     fonts or edit terminal settings yourself.
-
-If the user already named a set (e.g. "install with nerd fonts"), skip the preview and
+Ask which glyph set to use when this was a first install (step 2's output said
+`installed`, not `updated` or `already has`), when the user asked about icons, boxes or
+question marks, or when doctor's `settings` line says the command names an unknown glyph
+set. On a plain update, keep the set in use and don't ask; if doctor's `font` line ends
+`(/dashline:install can switch to nerd)`, mention in one line that icons are available.
+If the user already named a set (e.g. "install with nerd fonts"), skip the question and
 pass `--glyphs` in step 2.
+
+1. **Recommend from doctor's `font` line** (step 3; don't run doctor again for it):
+   `nerd` when it says a terminal bundles Nerd Font symbols or `found …` a Nerd Font,
+   otherwise `unicode`.
+2. **Ask** (AskUserQuestion, header "Glyphs"), with the recommended set first and marked
+   "(Recommended)". Describe the sets in words; don't print sample icons, since the
+   reply may not be drawn in the terminal's font:
+   - `nerd`: icons for git, branches, tags and fast mode. Needs a Nerd Font; Ghostty
+     and WezTerm include one.
+   - `unicode`: simple symbols such as ⎇ for the branch and ✎ for changes, which any
+     modern font draws.
+   - `ascii`: plain text only, such as `(main)` and `* +12`. Works in any terminal.
+   - "Compare them first": ask the user to run this themselves, with the real path in
+     place of `${CLAUDE_PLUGIN_ROOT}`, then end your turn and wait for their pick:
+
+     ```
+     ! python3 -I -S "${CLAUDE_PLUGIN_ROOT}/statusline.py" --preview ultra-fable --glyphs all
+     ```
+3. **Install the pick:** `DASHLINE --install --glyphs <set>`, unless that set is already
+   in use.
+4. **Tell the user what to check**, since the statusline itself is the real test (a font
+   can be installed but not picked in the terminal). It changes within a minute, or
+   after their next message.
+   - `nerd`: line 3 starts with a git logo (in a repo) or a folder icon before the
+     project name. Every icon comes from the same font, so if that one draws, they all
+     do. If it's an empty box or `?`, run `/dashline:install` again and choose
+     `unicode`.
+   - `unicode`: in a git repo the branch shows as `⎇ main`. If that's a box, choose
+     `ascii`.
+5. **Icons wanted without a Nerd Font:** if the user chose `unicode` or `ascii` but
+   wants icons, explain briefly that a Nerd Font adds icons for the branch, commits,
+   tags and fast mode. Only the "Symbols Only" font is needed:
+   <https://github.com/ryanoasis/nerd-fonts/releases/latest> (`NerdFontsSymbolsOnly`).
+   Give the one-line install for their OS:
+   - Linux: `mkdir -p ~/.local/share/fonts && curl -fsSL https://github.com/ryanoasis/nerd-fonts/releases/latest/download/NerdFontsSymbolsOnly.tar.xz | tar -xJ -C ~/.local/share/fonts && fc-cache -f`
+   - macOS: `brew install --cask font-symbols-only-nerd-font`
+   - Windows Terminal: install any Nerd Font and choose it as the profile's font face.
+
+   Some terminals need the font picked in their settings, or a restart. Afterwards,
+   `/dashline:install` can switch to `nerd`. Never install fonts or edit terminal
+   settings yourself.
 
 Switching the glyph set needs no second doctor run: `--install` prints what
 settings.json now runs.
