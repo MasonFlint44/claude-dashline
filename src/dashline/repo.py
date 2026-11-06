@@ -23,7 +23,7 @@ from __future__ import annotations
 import os
 import re
 
-from dashline.text import clean, cols, cut
+from dashline.text import clean, collapse_home, cols, cut
 
 GIT_TIMEOUT = 1.0  # seconds; a slower repo shows the project without git state
 KILL_WAIT = 0.05  # seconds to collect a killed git before giving up on it
@@ -291,14 +291,20 @@ def config_files(env) -> list:
 
     `[include]` and `[includeIf]` aren't followed: only the link reads these, for
     `url.<base>.insteadOf` shorthands like `gh:owner/repo`.
+
+    On Windows the system file is in Git's own folder, which isn't looked for: only an
+    explicit GIT_CONFIG_SYSTEM counts. Home is HOME, else USERPROFILE, as git has it.
     """
+    windows = os.name == "nt"
     paths = []
     if not _env_bool(env.get("GIT_CONFIG_NOSYSTEM")):
-        paths.append(env.get("GIT_CONFIG_SYSTEM") or "/etc/gitconfig")
+        system = env.get("GIT_CONFIG_SYSTEM") or (None if windows else "/etc/gitconfig")
+        if system:
+            paths.append(system)
     if env.get("GIT_CONFIG_GLOBAL"):
         paths.append(env["GIT_CONFIG_GLOBAL"])
     else:
-        home = env.get("HOME") or ""
+        home = env.get("HOME") or (env.get("USERPROFILE") if windows else "") or ""
         xdg = env.get("XDG_CONFIG_HOME") or (os.path.join(home, ".config") if home else "")
         if xdg:
             paths.append(os.path.join(xdg, "git", "config"))
@@ -438,10 +444,11 @@ def folder_url(path: str, env=None) -> str | None:
             return None
     host = os.uname().nodename if hasattr(os, "uname") else ""
     path = path.replace(os.sep, "/")
-    if not path.startswith("/"):
-        path = "/" + path  # C:/x on Windows
+    drive = ""
+    if re.match(r"^[A-Za-z]:/", path):  # Windows: file:///C:/x, the colon as it is
+        drive, path = "/" + path[:2], path[2:]
     try:
-        return f"file://{host}{quote(path)}"
+        return f"file://{host}{drive}{quote(path)}"
     except UnicodeEncodeError:
         return None
 
@@ -548,6 +555,22 @@ def _kill(proc) -> None:
     import contextlib
     import signal
 
+    if os.name == "nt":
+        # No process groups: taskkill /T ends git's whole tree (git for Windows runs
+        # hooks through its own sh, which can hold the pipe open after git is gone).
+        import subprocess
+
+        with contextlib.suppress(OSError, subprocess.SubprocessError):
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=KILL_WAIT * 20,
+            )
+        with contextlib.suppress(OSError):
+            proc.kill()
+        return
     try:
         os.killpg(proc.pid, signal.SIGKILL)
     except (AttributeError, OSError):  # no process groups here, or git already gone
@@ -727,14 +750,6 @@ def _inspect(state: RepoState, env) -> None:
 # ---- drawing ----
 
 
-def collapse_home(path: str, home: str | None) -> str:
-    """`/home/me/x` → `~/x`. A home of `/` (or none) collapses nothing."""
-    home = (home or "").rstrip(os.sep)
-    if home and (path == home or path.startswith(home + os.sep)):
-        return "~" + path[len(home) :]
-    return path
-
-
 def _inside(path: str, parent: str) -> str | None:
     """`path` relative to `parent` when it is strictly inside it, else None."""
     prefix = parent if parent.endswith(os.sep) else parent + os.sep
@@ -752,6 +767,8 @@ def _drift(state: RepoState, ctx, home: str | None) -> list:
     if real_cur == real_proj:
         return []
     rel = _inside(real_cur, real_proj)
+    if rel and os.sep != "/":
+        rel = rel.replace(os.sep, "/")
     text = (ctx.g["drift_inside"] + rel) if rel else collapse_home(cur, home)
     return [ctx.seg(ctx.g["drift"] + clean(text), "inactive")]
 

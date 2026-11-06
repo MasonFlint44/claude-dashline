@@ -101,6 +101,27 @@ def summarize(data: dict) -> str:
     return " · ".join(parts) or "no limits on this plan"
 
 
+def windows_shell(env, which=None) -> tuple:
+    """(argv before the command, name): the shell Claude Code runs a statusLine command
+    in on Windows. Git Bash when there is one (CLAUDE_CODE_GIT_BASH_PATH, else next to
+    git on PATH), otherwise PowerShell.
+    """
+    import shutil
+
+    which = which or shutil.which
+    bash = env.get("CLAUDE_CODE_GIT_BASH_PATH")
+    if not (bash and os.path.isfile(bash)):
+        git = which("git")
+        # Git for Windows keeps git.exe in <root>\cmd (or \bin) and bash.exe in <root>\bin.
+        found = (
+            os.path.join(os.path.dirname(os.path.dirname(git)), "bin", "bash.exe") if git else ""
+        )
+        bash = found if found and os.path.isfile(found) else None
+    if bash:
+        return [bash, "-c"], "Git Bash"
+    return ["powershell", "-NoProfile", "-NonInteractive", "-Command"], "PowerShell"
+
+
 def first_word(cmd: str) -> str:
     """The program a shell command runs: `python3` in `python3 -I -S x.py`."""
     try:
@@ -516,9 +537,10 @@ class Doctor:
                 notes.append("a stale fetch.lock (the next render clears it)")
         # dashline's own files, not the folder: it may be shared with other tools, and a
         # folder others can list only shows them file names.
+        # Windows has no such mode bits (files inherit the profile folder's access).
         exposed = []
         try:
-            names = usage.own_files(os.listdir(path), path)
+            names = [] if os.name == "nt" else usage.own_files(os.listdir(path), path)
         except OSError:
             names = []
         for name in names:
@@ -543,9 +565,9 @@ class Doctor:
         if self.entry is None:
             self.add(INFO, "command", "not run: settings don't run dashline")
             return
+        shell, shell_name = ["sh", "-c"], "sh"
         if os.name == "nt":
-            self.add(INFO, "command", "not run on Windows")
-            return
+            shell, shell_name = windows_shell(self.env)
         sample = {
             "session_id": "dashline-doctor",
             "model": {"id": "claude-sonnet-5-5", "display_name": "Sonnet 5.5"},
@@ -557,10 +579,11 @@ class Doctor:
         start = time.monotonic()
         try:
             r = subprocess.run(
-                ["sh", "-c", self.entry["command"]],
+                [*shell, self.entry["command"]],
                 input=json.dumps(sample),
                 capture_output=True,
-                text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=10,
                 env=dict(self.env),
                 cwd=self.cwd,
@@ -569,7 +592,7 @@ class Doctor:
             self.add(FAIL, "command", "took over 10 s", "run /dashline:doctor again; report it")
             return
         except OSError as e:
-            self.add(FAIL, "command", f"couldn't run sh: {e}")
+            self.add(FAIL, "command", f"couldn't run {shell_name}: {e}")
             return
         ms = (time.monotonic() - start) * 1000
         lines = [line for line in r.stdout.splitlines() if line.strip()]
@@ -579,12 +602,14 @@ class Doctor:
             fix = "run /dashline:install"
             if "can't open file" in why:
                 fix = "the command's statusline.py is missing: run /dashline:install"
-            elif "No such file" in why or "not found" in why:
+            elif any(s in why for s in ("No such file", "not found", "is not recognized")):
                 program = first_word(self.entry["command"])
                 fix = f"{program} must be on the PATH Claude Code sees, or use a full path"
             self.add(FAIL, "command", why, fix)
             return
         text = f"printed {len(lines)} line{'s' if len(lines) != 1 else ''} in {ms:.0f} ms"
+        if os.name == "nt":
+            text += f" ({shell_name})"
         if ms > SLOW_MS:
             self.add(WARN, "command", text + " (slow)", "a slow git repo or disk; see the git line")
             return

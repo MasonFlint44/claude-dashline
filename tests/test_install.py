@@ -9,7 +9,7 @@ import time
 
 import pytest
 
-from conftest import NO_NETWORK, ROOT
+from conftest import NO_NETWORK, ROOT, env_for, posix_only
 from dashline import __version__, install
 
 NOW_REAL = time.time()  # leftover folders are judged by their real mtime
@@ -25,21 +25,29 @@ def conf(isolated_home):
 
 @pytest.fixture
 def env(isolated_home):
-    return {"HOME": str(isolated_home), **NO_NETWORK}
+    return env_for(isolated_home)
 
 
 def settings(conf):
-    return json.loads((conf / "settings.json").read_text())
+    return json.loads((conf / "settings.json").read_text(encoding="utf-8"))
 
 
 def write_settings(conf, data):
-    (conf / "settings.json").write_text(json.dumps(data, indent=2) + "\n")
+    (conf / "settings.json").write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 
 
 def run(env, glyphs=None, replace=False, cwd=None, downgrade=False):
     out = io.StringIO()
+    # The POSIX entry on every platform: what these tests check is the same there.
+    # Windows' own entry has tests of its own (test_windows_*).
     code = install.run(
-        glyphs, replace=replace, env=env, out=out, cwd=cwd or "/", downgrade=downgrade
+        glyphs,
+        replace=replace,
+        env=env,
+        out=out,
+        cwd=cwd or "/",
+        downgrade=downgrade,
+        windows=False,
     )
     return code, out.getvalue()
 
@@ -103,7 +111,7 @@ def test_update_keeps_the_users_own_files(conf, env):
     assert (target / "notes.txt").read_text() == "mine\n"
     assert (target / "wrap" / "run.sh").read_text() == "#!/bin/sh\n"
     assert str((target / "link").readlink()) == "notes.txt"
-    assert (target / "dashline" / "layout.py").read_text() != "# old\n"
+    assert (target / "dashline" / "layout.py").read_text(encoding="utf-8") != "# old\n"
     assert not [p for p in target.parent.iterdir() if p.name != "statusline"]
 
 
@@ -249,8 +257,9 @@ def test_symlinked_settings_stay_a_link(conf, env, tmp_path):
     (conf / "settings.json").symlink_to(real)
     assert run(env)[0] == 0
     assert (conf / "settings.json").is_symlink()
-    assert json.loads(real.read_text())["statusLine"]["command"] == ENTRY_CMD
-    assert real.stat().st_mode & 0o777 == 0o640
+    assert json.loads(real.read_text(encoding="utf-8"))["statusLine"]["command"] == ENTRY_CMD
+    if os.name != "nt":  # no such modes there
+        assert real.stat().st_mode & 0o777 == 0o640
     assert [p.name for p in real.parent.iterdir()] == ["settings.json"]
 
 
@@ -596,6 +605,7 @@ def test_new_settings_folder_is_checked_where_it_will_be_made(isolated_home, tmp
     assert "statusLine" in settings(custom)
 
 
+@posix_only
 def test_settings_temp_file_is_private_until_written(conf, env, monkeypatch):
     write_settings(conf, {"env": {"SECRET": "x"}})
     (conf / "settings.json").chmod(0o600)
@@ -613,6 +623,7 @@ def test_settings_temp_file_is_private_until_written(conf, env, monkeypatch):
     assert (conf / "settings.json").stat().st_mode & 0o777 == 0o600
 
 
+@posix_only
 def test_settings_keep_a_wider_mode(conf, env):
     write_settings(conf, {"theme": "dark"})
     (conf / "settings.json").chmod(0o640)
@@ -644,7 +655,7 @@ def test_project_dir_from_claude(conf, env, tmp_path):
     )
     out = io.StringIO()
     env = dict(env, CLAUDE_PROJECT_DIR=str(project))
-    assert install.run(None, env=env, out=out) == 0
+    assert install.run(None, env=env, out=out, windows=False) == 0
     assert "sets its own statusLine" in out.getvalue()
 
 
@@ -864,7 +875,7 @@ def test_a_tail_flag_isnt_dashlines():
 
 
 def test_settings_with_a_lone_surrogate_escape(conf, env):
-    (conf / "settings.json").write_text('{"note": "\\ud83d", "name": "café"}\n')
+    (conf / "settings.json").write_text('{"note": "\\ud83d", "name": "café"}\n', encoding="utf-8")
     code, _ = run(env)
     assert code == 0
     data = settings(conf)
@@ -924,7 +935,7 @@ def test_ctrl_c_during_replace_puts_their_folder_back(conf, env, monkeypatch):
 
     monkeypatch.setattr(shutil, "copyfile", interrupted)
     with pytest.raises(KeyboardInterrupt):
-        install.run(None, replace=True, env=env, out=io.StringIO(), cwd="/")
+        install.run(None, replace=True, env=env, out=io.StringIO(), cwd="/", windows=False)
     assert (other / "statusline.py").read_text() == "print('mine')\n"
     assert sorted(p.name for p in other.parent.iterdir()) == ["statusline"]
     assert settings(conf)["statusLine"]["command"] == "echo theirs"
@@ -1068,7 +1079,7 @@ def test_ctrl_c_before_the_swap_moves_the_users_files_back(conf, env, monkeypatc
 
     monkeypatch.setattr(os, "rename", rename)
     with pytest.raises(KeyboardInterrupt):
-        install.run(None, env=env, out=io.StringIO(), cwd="/")
+        install.run(None, env=env, out=io.StringIO(), cwd="/", windows=False)
     assert (target / "notes.txt").read_text() == "mine\n"
     assert sorted(p.name for p in target.parent.iterdir()) == ["statusline"]
 
@@ -1089,3 +1100,78 @@ def test_users_files_that_cant_go_back_are_kept(conf, env, monkeypatch, capsys):
     assert run(env)[0] == 1
     kept = conf / "scripts" / "statusline.kept"
     assert (kept / "notes.txt").read_text() == "mine\n"
+
+
+# ---- the Windows entry ----
+
+
+def test_windows_command_names_the_copy_in_forward_slashes(env, isolated_home):
+    cmd = install.windows_command({"HOME": "C:\\Users\\Pat Lee"}, "py -3")
+    assert cmd == 'py -3 -I -S "C:/Users/Pat Lee/.claude/scripts/statusline/statusline.py"'
+
+
+def test_windows_python_takes_the_first_that_runs_3_9(monkeypatch):
+    found = {"py": None, "python": "C:/py/python.exe", "python3": "C:/apps/python3.exe"}
+    ran = []
+
+    def run(argv, **kwargs):
+        ran.append(argv)
+        ok = argv[0] == "C:/apps/python3.exe"  # python.exe here is too old
+        return subprocess.CompletedProcess(argv, 0, "True\n" if ok else "False\n", "")
+
+    assert install.windows_python(found.get, run) == "python3"
+    assert ran[0][:4] == ["C:/py/python.exe", "-I", "-S", "-c"]
+
+    def store_stub(argv, **kwargs):  # the Store's python3.exe with no Python installed
+        return subprocess.CompletedProcess(argv, 9009, "", "")
+
+    assert install.windows_python(found.get, store_stub) is None
+
+    def broken(argv, **kwargs):
+        raise OSError("not a program")
+
+    assert install.windows_python(found.get, broken) is None
+    py = {"py": "C:/Windows/py.exe"}
+    seen = []
+
+    def launcher(argv, **kwargs):
+        seen.append(argv)
+        return subprocess.CompletedProcess(argv, 0, "True\n", "")
+
+    assert install.windows_python(py.get, launcher) == "py -3"
+    assert seen[0][:2] == ["C:/Windows/py.exe", "-3"]
+
+
+def test_windows_install_writes_a_command_both_shells_run(conf, env):
+    out = io.StringIO()
+    code = install.run("nerd", env=env, out=out, cwd="/", windows=True, python=lambda: "python")
+    assert code == 0, out.getvalue()
+    cmd = settings(conf)["statusLine"]["command"]
+    target = (conf / "scripts" / "statusline" / "statusline.py").as_posix()
+    assert cmd == f'python -I -S "{target}" --glyphs nerd'
+    assert install.is_ours(settings(conf)["statusLine"], env)
+    # An update keeps it, and changing the glyph set edits only the flag.
+    assert install.run("ascii", env=env, out=io.StringIO(), cwd="/", windows=True) == 0
+    assert settings(conf)["statusLine"]["command"] == f'python -I -S "{target}" --glyphs ascii'
+
+
+def test_windows_install_without_python_changes_nothing(conf, env, capsys):
+    code = install.run(None, env=env, out=io.StringIO(), cwd="/", windows=True, python=lambda: None)
+    assert code == 1
+    assert "no Python 3.9 or newer runs as py -3, python or python3" in capsys.readouterr().err
+    assert not (conf / "settings.json").exists()
+    assert not (conf / "scripts").exists()
+
+
+def test_windows_install_keeps_a_posix_entry(conf, env):
+    """An entry already dashline's (say, written in Git Bash by hand) is kept as written."""
+    assert run(env)[0] == 0
+    before = settings(conf)["statusLine"]["command"]
+
+    def no_python():
+        raise AssertionError("not needed: the entry is already dashline's")
+
+    assert (
+        install.run(None, env=env, out=io.StringIO(), cwd="/", windows=True, python=no_python) == 0
+    )
+    assert settings(conf)["statusLine"]["command"] == before

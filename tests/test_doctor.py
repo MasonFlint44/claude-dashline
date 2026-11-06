@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import FIXTURES, NO_NETWORK, NOW, ROOT, read_json
+from conftest import FIXTURES, NOW, ROOT, env_for, posix_only, read_json
 from dashline import account, doctor, install, usage
 
 CLOSED = "http://127.0.0.1:9"  # nothing listens here
@@ -28,7 +28,7 @@ def no_lock_wait(monkeypatch):
 @pytest.fixture
 def env(isolated_home):
     (isolated_home / ".claude").mkdir(exist_ok=True)
-    return {"HOME": str(isolated_home), "PATH": os.environ.get("PATH", ""), **NO_NETWORK}
+    return env_for(isolated_home, PATH=os.environ.get("PATH", ""))
 
 
 @pytest.fixture
@@ -421,9 +421,11 @@ def test_shared_cache_folder_is_fine(sub, server, tmp_path):
     cache_path(sub).chmod(0o775)
     status, text, fix = check(sub, "cache", tmp_path, server.url)
     assert (status, text, fix) == ("ok", "~/.claude/cache/statusline: fetched just now", None)
-    assert cache_file(sub).stat().st_mode & 0o777 == 0o600
+    if os.name != "nt":
+        assert cache_file(sub).stat().st_mode & 0o777 == 0o600
 
 
+@posix_only
 def test_cache_file_readable_by_others(sub, tmp_path):
     cache_path(sub).mkdir(mode=0o700, parents=True)
     cached = cache_file(sub)
@@ -435,6 +437,7 @@ def test_cache_file_readable_by_others(sub, tmp_path):
     assert fix == f"chmod 600 ~/.claude/cache/statusline/{cached.name}"
 
 
+@posix_only
 def test_cache_checks_every_file_of_dashline_and_no_other(sub, tmp_path):
     cache_path(sub).mkdir(mode=0o700, parents=True)
     for name in (
@@ -453,6 +456,7 @@ def test_cache_checks_every_file_of_dashline_and_no_other(sub, tmp_path):
     )
 
 
+@posix_only
 def test_chmod_fix_is_quoted(sub, isolated_home, tmp_path):
     conf = isolated_home / "My Claude"
     env = dict(sub, CLAUDE_CONFIG_DIR=str(conf))
@@ -543,9 +547,8 @@ def test_usage_new_reasons(sub, tmp_path, monkeypatch, reason, fix):
 
 def test_command_broken_python(installed, tmp_path):
     data = get_settings(installed)
-    data["statusLine"]["command"] = data["statusLine"]["command"].replace(
-        "python3", "no-such-python3"
-    )
+    command = data["statusLine"]["command"]  # `python3 …`; on Windows `py -3 …` or `python …`
+    data["statusLine"]["command"] = "no-such-python3" + command[command.index(" ") :]
     set_settings(installed, data)
     status, text, fix = check(installed, "command", tmp_path)
     assert status == "fail"
@@ -653,8 +656,10 @@ def test_font_macos(tmp_path, monkeypatch):
     fonts.mkdir(parents=True)
     (fonts / "SymbolsNerdFontMono-Regular.ttf").write_text("")
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))  # home on Windows
     assert doctor.font_guess({}, "darwin") == (True, "found SymbolsNerdFontMono-Regular.ttf")
     monkeypatch.setenv("HOME", "/nonexistent")
+    monkeypatch.setenv("USERPROFILE", "/nonexistent")
     found = doctor.font_guess({"HOME": str(tmp_path)}, "darwin")  # the env's HOME wins
     assert found == (True, "found SymbolsNerdFontMono-Regular.ttf")
 
@@ -954,6 +959,13 @@ def test_command_with_stderr_sent_away(installed, tmp_path):
 # ---- the command and git checks when things go wrong ----
 
 
+# The shell doctor runs the command in, as fake_run matches it, and its name.
+SHELL, SHELL_NAME = ("sh", "sh") if os.name != "nt" else (None, None)
+if os.name == "nt":
+    _argv, SHELL_NAME = doctor.windows_shell(os.environ)
+    SHELL = _argv[0]
+
+
 def fake_run(monkeypatch, program, error=None, stdout=""):
     """subprocess.run, with `program` faked: it raises `error` or prints `stdout`."""
     real = subprocess.run
@@ -974,16 +986,16 @@ def fake_run(monkeypatch, program, error=None, stdout=""):
 
 
 def test_command_timeout(installed, tmp_path, monkeypatch):
-    fake_run(monkeypatch, "sh", error=subprocess.TimeoutExpired("sh", 10))
+    fake_run(monkeypatch, SHELL, error=subprocess.TimeoutExpired(SHELL, 10))
     status, text, _ = check(installed, "command", tmp_path)
     assert (status, text) == ("fail", "took over 10 s")
 
 
 def test_command_without_sh(installed, tmp_path, monkeypatch):
-    fake_run(monkeypatch, "sh", error=FileNotFoundError("sh"))
+    fake_run(monkeypatch, SHELL, error=FileNotFoundError(SHELL))
     status, text, _ = check(installed, "command", tmp_path)
     assert status == "fail"
-    assert text.startswith("couldn't run sh:")
+    assert text.startswith(f"couldn't run {SHELL_NAME}:")
 
 
 def test_command_slow(installed, tmp_path, monkeypatch):
@@ -1016,3 +1028,43 @@ def test_statusline_type_not_command(installed, tmp_path):
     assert status == "fail"
     assert text == '~/.claude/settings.json: statusLine type isn\'t "command"'
     assert fix == "run /dashline:install"
+
+
+def test_windows_shell_prefers_git_bash(tmp_path):
+    git_root = tmp_path / "Git"
+    (git_root / "cmd").mkdir(parents=True)
+    (git_root / "bin").mkdir()
+    (git_root / "bin" / "bash.exe").write_text("")
+    which = {"git": str(git_root / "cmd" / "git.exe")}.get
+    assert doctor.windows_shell({}, which) == (
+        [str(git_root / "bin" / "bash.exe"), "-c"],
+        "Git Bash",
+    )
+    own = tmp_path / "my-bash.exe"
+    own.write_text("")
+    env = {"CLAUDE_CODE_GIT_BASH_PATH": str(own)}
+    assert doctor.windows_shell(env, which) == ([str(own), "-c"], "Git Bash")
+    powershell = ["powershell", "-NoProfile", "-NonInteractive", "-Command"]
+    assert doctor.windows_shell({}, {}.get) == (powershell, "PowerShell")
+    gone = {"CLAUDE_CODE_GIT_BASH_PATH": str(tmp_path / "nope.exe")}
+    assert doctor.windows_shell(gone, {}.get) == (powershell, "PowerShell")
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows' shells")
+@pytest.mark.parametrize("shell", ["Git Bash", "PowerShell"])
+def test_windows_command_runs_in_either_shell(installed, tmp_path, monkeypatch, shell):
+    """Claude Code runs the command in Git Bash, or in PowerShell without one."""
+    if shell == "PowerShell":
+        monkeypatch.setattr(
+            doctor,
+            "windows_shell",
+            lambda env, which=None: (
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command"],
+                "PowerShell",
+            ),
+        )
+    elif doctor.windows_shell(os.environ)[1] != "Git Bash":
+        pytest.skip("no Git Bash here")
+    status, text, fix = check(installed, "command", tmp_path)
+    assert (status, fix) == ("ok", None), text
+    assert text.endswith(f"({shell})")

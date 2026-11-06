@@ -25,6 +25,21 @@ VS16 = "\ufe0f"
 BIDI = frozenset("\u061c\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069")
 
 
+def collapse_home(path: str, home: str | None) -> str:
+    """`/home/me/x` → `~/x`. A home of `/` (or none) collapses nothing.
+
+    On Windows the match ignores case and the result uses `/`: Git Bash and PowerShell
+    both read that, and a path in a message may be pasted into either.
+    """
+    import os
+
+    home = (home or "").rstrip("/" + os.sep)
+    near, base = os.path.normcase(path), os.path.normcase(home)
+    if home and (near == base or near.startswith(base + os.sep)):
+        path = "~" + path[len(home) :]
+    return path if os.sep == "/" else path.replace(os.sep, "/")
+
+
 def clean(text: str) -> str:
     """`text` with control characters, line separators and bidi controls as `?`."""
     if text.isprintable():  # the usual case, and cheap

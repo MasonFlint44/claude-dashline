@@ -5,6 +5,11 @@ the plugin's own folder changes with every version. The settings entry names the
 through `${CLAUDE_CONFIG_DIR:-$HOME/.claude}`, so it still resolves in a devcontainer that
 mounts ~/.claude under another user.
 
+On Windows, Claude Code runs the command in Git Bash, or in PowerShell when there's no
+Git Bash, so the entry is one both read: a Python on PATH by name (`py -3`, `python` or
+`python3`, whichever runs Python 3.9 or newer) and the copy's full path in forward
+slashes and double quotes.
+
 A statusLine that runs something else is never replaced without --replace: the skill
 shows it to the user and asks first. Neither is a scripts/statusline/ folder that holds
 another tool's files. Everything is checked before anything is written, so an install
@@ -58,8 +63,51 @@ def user_settings(env) -> str:
     return os.path.join(config_dir(env), "settings.json")
 
 
-def command(glyphs: str) -> str:
-    return COMMAND if glyphs == "unicode" else f"{COMMAND} --glyphs {glyphs}"
+# Pythons a Windows command can name, in order: the python.org launcher, then the
+# names python.org and the Microsoft Store installs put on PATH.
+WINDOWS_PYTHONS = ("py -3", "python", "python3")
+
+
+def command(glyphs: str, base: str = COMMAND) -> str:
+    return base if glyphs == "unicode" else f"{base} --glyphs {glyphs}"
+
+
+def windows_command(env, python: str) -> str:
+    """The command for Windows: `python` (a WINDOWS_PYTHONS name) and a full path."""
+    script = os.path.join(install_dir(env), "statusline.py").replace("\\", "/")
+    return f'{python} -I -S "{script}"'
+
+
+def windows_python(which=None, run=None) -> str | None:
+    """The first WINDOWS_PYTHONS name that runs Python 3.9 or newer, or None.
+
+    Run, not just looked up: `python3` can be the Microsoft Store's stand-in, which
+    opens the Store instead of running anything.
+    """
+    import shutil
+    import subprocess
+
+    which = which or shutil.which
+    run = run or subprocess.run
+    check = "import sys; print(sys.version_info >= (3, 9))"
+    for name in WINDOWS_PYTHONS:
+        program, *options = name.split()
+        found = which(program)
+        if not found:
+            continue
+        try:
+            r = run(
+                [found, *options, "-I", "-S", "-c", check],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                stdin=subprocess.DEVNULL,
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if r.returncode == 0 and r.stdout.strip() == "True":
+            return name
+    return None
 
 
 def runs_install_dir(entry, env=None) -> bool:
@@ -258,11 +306,10 @@ def glyphs_edit(cmd: str, glyphs: str) -> str:
 
 
 def home_short(path: str, env=None) -> str:
-    """`/home/me/.claude/x` → `~/.claude/x`, for messages."""
-    home = home_dir(os.environ if env is None else env).rstrip("/")
-    if home and (path == home or path.startswith(home + os.sep)):
-        return "~" + path[len(home) :]
-    return path
+    """`/home/me/.claude/x` → `~/.claude/x`, for messages (with `/` on Windows too)."""
+    from dashline.text import collapse_home
+
+    return collapse_home(path, home_dir(os.environ if env is None else env))
 
 
 # ---- the files ----
@@ -670,10 +717,16 @@ def write_settings(path: str, text: str) -> None:
 
 
 def plan_entry(
-    current, glyphs: str | None, replace: bool, ours: bool, settings: str = "settings.json"
+    current,
+    glyphs: str | None,
+    replace: bool,
+    ours: bool,
+    settings: str = "settings.json",
+    base: str = COMMAND,
 ) -> tuple:
     """(new entry or None, glyphs used). None means: the entry is someone else's.
 
+    base: the command for a new entry (windows_command on Windows).
     ours: `current` is dashline's (is_ours). It keeps its command as written (say, with
     a full path to Python): only the --glyphs flag changes, and only when asked for
     another set or when it names an unknown one. A command where dashline's arguments
@@ -703,7 +756,7 @@ def plan_entry(
         entry["command"] = cmd
     else:
         glyphs = glyphs or "unicode"
-        entry = {"type": "command", "command": command(glyphs)}
+        entry = {"type": "command", "command": command(glyphs, base)}
     entry["type"] = "command"
     entry.setdefault("refreshInterval", REFRESH)
     return entry, glyphs
@@ -751,11 +804,17 @@ def run(
     out=None,
     cwd=None,
     downgrade: bool = False,
+    windows: bool | None = None,
+    python=windows_python,
 ) -> int:
     """Copy dashline and point settings at it. Exit 3 (nothing changed) when either the
     settings entry or the install folder belongs to something else and --replace wasn't
     given; exit 4 (nothing changed) when the installed copy is newer and --downgrade
-    wasn't given."""
+    wasn't given.
+
+    windows: write the Windows command (default: when running on Windows); python finds
+    the Python it names (windows_python), for tests to stand in for.
+    """
     from dashline import __version__
 
     env = os.environ if env is None else env
@@ -770,7 +829,18 @@ def run(
         where = home_short(target, env)
         theirs_folder = folder_state(target) == "theirs"
         ours = runs_install_dir(current, env) and not theirs_folder
-        entry, _ = plan_entry(current, glyphs, replace, ours, settings)
+        base = COMMAND
+        if (os.name == "nt" if windows is None else windows) and not ours:
+            name = python()
+            if name is None:
+                raise InstallError(
+                    "no Python 3.9 or newer runs as py -3, python or python3 here, and "
+                    "the statusLine command needs one of them on PATH. Install Python "
+                    "(python.org, or `winget install Python.Python.3.13`), then run this "
+                    "again. Nothing was changed."
+                )
+            base = windows_command(env, name)
+        entry, _ = plan_entry(current, glyphs, replace, ours, settings, base)
         if not replace and (theirs_folder or entry is None):
             if theirs_folder:
                 out.write(

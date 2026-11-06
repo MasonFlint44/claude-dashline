@@ -10,6 +10,7 @@ from dashline.colors import THEMES, TOKENS
 def home(tmp_path, monkeypatch):
     """A fake HOME with a config dir, a project dir, and no managed settings."""
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))  # home on Windows
     monkeypatch.setattr(theme, "managed_settings_path", lambda: None)
     (tmp_path / ".claude").mkdir()
     (tmp_path / "proj" / ".claude").mkdir(parents=True)
@@ -17,7 +18,7 @@ def home(tmp_path, monkeypatch):
 
 
 def write(path, data):
-    path.write_text(json.dumps(data))
+    path.write_text(json.dumps(data), encoding="utf-8")
 
 
 def test_default_is_dark(home):

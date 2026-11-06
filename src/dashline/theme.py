@@ -21,7 +21,13 @@ HEX = re.compile(r"^#([0-9a-fA-F]{6}|[0-9a-fA-F]{3})$")
 
 
 def home_dir(env) -> str:
-    """HOME from `env`, so a caller's env decides where ~ is, not the process's."""
+    """Home from `env`, so a caller's env decides where ~ is, not the process's.
+
+    On Windows that's USERPROFILE first, as for Claude Code (Node's os.homedir): HOME
+    there can be Git Bash's own.
+    """
+    if os.name == "nt":
+        return env.get("USERPROFILE") or env.get("HOME") or os.path.expanduser("~")
     return env.get("HOME") or os.path.expanduser("~")
 
 

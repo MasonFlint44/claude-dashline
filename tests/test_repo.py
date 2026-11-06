@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import make_ctx, plain
+from conftest import make_ctx, plain, posix_only
 from dashline import repo
 
 GIT_ENV = {
@@ -432,35 +432,45 @@ def test_quote_matches_urllib(path):
     assert repo.quote(path) == quote(path)
 
 
+HOST = os.uname().nodename if hasattr(os, "uname") else ""
+
+
 def test_folder_url_of_odd_paths():
-    host = os.uname().nodename
+    host = HOST
     assert repo.folder_url("/tmp/caf\u00e9") == f"file://{host}/tmp/caf%C3%A9"
     assert repo.folder_url("/tmp/\udcff") == f"file://{host}/tmp/%FF"  # not UTF-8 on disk
     assert repo.folder_url("/tmp/\ud800") is None  # a lone surrogate from the JSON
 
 
+@posix_only
 def test_folder_url_under_wsl():
     # Windows Terminal opens only drive paths and WSL's share (\\wsl.localhost\<distro>).
     wsl = {"WSL_DISTRO_NAME": "Ubuntu-24.04"}
     url = "file://wsl.localhost/Ubuntu-24.04/home/pat/my%20proj"
     assert repo.folder_url("/home/pat/my proj", wsl) == url
     assert repo.folder_url("/tmp/\ud800", wsl) is None
-    host = os.uname().nodename
-    assert repo.folder_url("/tmp/x", {"WSL_DISTRO_NAME": ""}) == f"file://{host}/tmp/x"
+    assert repo.folder_url("/tmp/x", {"WSL_DISTRO_NAME": ""}) == f"file://{HOST}/tmp/x"
 
 
+@posix_only
 def test_folder_link_under_wsl(project, monkeypatch):
     monkeypatch.setenv("WSL_DISTRO_NAME", "Debian")
     assert links(row(project, color=True)) == {"proj": f"file://wsl.localhost/Debian{project}"}
 
 
+def test_folder_url_of_a_windows_path():
+    assert repo.folder_url("C:/Users/Pat Lee/proj") == f"file://{HOST}/C:/Users/Pat%20Lee/proj"
+
+
 def test_folder_link(project, isolated_home):
-    host = os.uname().nodename
-    assert links(row(project, color=True)) == {"proj": f"file://{host}{project}"}
+    host = HOST
+    shown = ("/" if os.name == "nt" else "") + project.as_posix()
+    assert links(row(project, color=True)) == {"proj": f"file://{host}{shown}"}
     spaced = isolated_home / "my notes"
     spaced.mkdir()
     assert links(row(spaced, color=True)) == {
-        "~/my notes": f"file://{host}{isolated_home}/my%20notes"
+        "~/my notes": f"file://{host}{shown[: -len(project.as_posix())]}"
+        f"{isolated_home.as_posix()}/my%20notes"
     }
 
 
@@ -524,7 +534,7 @@ def test_hung_hook_is_killed_with_git(project, monkeypatch, tmp_path):
     real_start = repo._start
 
     def hung(args, cwd, env):
-        alias = f"alias.hang=!echo $$ > {pidfile}; exec sleep 30"
+        alias = f"alias.hang=!echo $$ > '{pidfile.as_posix()}'; exec sleep 30"
         return real_start(["-c", alias, "hang"], cwd, env)
 
     monkeypatch.setattr(repo, "_start", hung)
@@ -533,6 +543,8 @@ def test_hung_hook_is_killed_with_git(project, monkeypatch, tmp_path):
     began = time.monotonic()
     assert row(project) == "proj"
     assert time.monotonic() - began < 1.5
+    if os.name == "nt":
+        return  # $$ is Git Bash's own pid there: the time above is the test
     pid = int(pidfile.read_text())
     for _ in range(300):  # killed, and reaped once its parent is gone (slow under load)
         if not process_alive(pid):
@@ -606,6 +618,7 @@ def test_names_cannot_inject_escapes():
     assert plain([repo.draw(tagged, make_ctx())]) == ["x  tag:v1?"]
 
 
+@posix_only
 def test_folder_with_control_characters(tmp_path):
     path = tmp_path / "a\x1bb\nc"
     path.mkdir()
@@ -738,9 +751,9 @@ def test_symlinked_project_has_no_false_drift(project, tmp_path):
 def test_fsmonitor_hook_never_runs(project, tmp_path):
     marker = tmp_path / "ran"
     hook = tmp_path / "hook.sh"
-    hook.write_text(f"#!/bin/sh\ntouch {marker}\n")
+    hook.write_text(f"#!/bin/sh\ntouch '{marker.as_posix()}'\n")
     hook.chmod(0o755)
-    git(project, "config", "core.fsmonitor", str(hook))
+    git(project, "config", "core.fsmonitor", hook.as_posix())
     git(project, "status", check=False)
     assert marker.exists()  # git would run it
     marker.unlink()
@@ -900,14 +913,15 @@ def test_url_rewrites_from_config():
 
 def test_config_files(tmp_path):
     home = str(tmp_path)
+    system = [] if os.name == "nt" else ["/etc/gitconfig"]  # Windows: in Git's own folder
     assert repo.config_files({"HOME": home}) == [
-        "/etc/gitconfig",
-        f"{home}/.config/git/config",
-        f"{home}/.gitconfig",
+        *system,
+        str(tmp_path / ".config" / "git" / "config"),
+        str(tmp_path / ".gitconfig"),
     ]
     assert repo.config_files(
         {"HOME": home, "GIT_CONFIG_NOSYSTEM": "1", "XDG_CONFIG_HOME": "/x"}
-    ) == ["/x/git/config", f"{home}/.gitconfig"]
+    ) == [str(Path("/x") / "git" / "config"), str(tmp_path / ".gitconfig")]
     assert repo.config_files({"GIT_CONFIG_GLOBAL": "/g", "GIT_CONFIG_SYSTEM": "/s"}) == [
         "/s",
         "/g",
@@ -1041,6 +1055,7 @@ def test_parse_config_escapes_and_bad_headers():
     assert repo.parse_remotes(entries) == {"origin": "a", "next": "c"}
 
 
+@posix_only
 def test_kill_falls_back_without_process_groups(monkeypatch):
     killed = []
 
@@ -1198,6 +1213,7 @@ def test_odd_git_config_nosystem_is_quiet(cloned, monkeypatch, capsys):
     assert "Traceback" not in capsys.readouterr().err
 
 
+@posix_only
 def test_git_before_2_15_shows_the_folder_alone(project, monkeypatch, tmp_path):
     """Old git refuses --no-optional-locks (exit 129) and so never locks the index."""
     import shutil

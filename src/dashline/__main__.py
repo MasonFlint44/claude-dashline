@@ -112,8 +112,28 @@ def parse_args(argv: list[str]) -> dict:
     return opts
 
 
+def _utf8_pipes() -> None:
+    """On Windows, write UTF-8 to a pipe as everywhere else.
+
+    Python there encodes for the ANSI code page, which has no `→` or `…`: doctor run by
+    the skill (its output piped to Claude Code) would fail on them. A console takes
+    Unicode as it is.
+    """
+    import os
+
+    if os.name != "nt":
+        return
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            if not stream.isatty():
+                stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, OSError, ValueError):
+            pass
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
+    _utf8_pipes()
     try:
         opts = parse_args(argv)
     except UsageError as e:
@@ -181,7 +201,7 @@ def render(stdin, stdout, glyphs: str = "unicode", env=None, now: float | None =
             account.label_text(acct, glyph_set, now),
             state.stale_age,
             repo_state,
-            env.get("HOME") or os.path.expanduser("~"),
+            theme.home_dir(env),
         )
     except Exception:  # the statusline must never show a traceback
         import traceback

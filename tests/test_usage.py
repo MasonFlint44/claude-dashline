@@ -1,12 +1,22 @@
 """Usage cache, lock, hold, fetch (against a local server) and plan bars (usage.py)."""
 
 import json
+import os
 import threading
 from pathlib import Path
 
 import pytest
 
-from conftest import FIXTURES, NOW, REAL_SPAWN, Server, env_for, make_session, read_json
+from conftest import (
+    FIXTURES,
+    NOW,
+    REAL_SPAWN,
+    Server,
+    env_for,
+    make_session,
+    posix_only,
+    read_json,
+)
 from dashline import account, usage
 from dashline.account import Account
 
@@ -629,7 +639,10 @@ def test_spawn_starts_a_detached_child_without_the_token(isolated_home, monkeypa
     nonce = json.loads(Path(usage._path(env, "fetch.lock")).read_text())["nonce"]
     assert seen["argv"][-1] == nonce
     assert seen["kwargs"]["stdout"] is subprocess.DEVNULL
-    assert seen["kwargs"]["start_new_session"] is True
+    if os.name == "nt":  # detached, in a process group of its own
+        assert seen["kwargs"]["creationflags"] == 0x00000008 | 0x00000200
+    else:
+        assert seen["kwargs"]["start_new_session"] is True
     assert not REAL_SPAWN(env, NOW + 1)  # the lock is held until the child ends
 
 
@@ -1184,6 +1197,7 @@ def test_expired_token_holds_without_calling(server, logged_in):
     assert server.requests == []
 
 
+@posix_only
 def test_cache_files_are_private(server, logged_in):
     import stat
 

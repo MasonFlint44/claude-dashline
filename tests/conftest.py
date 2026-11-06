@@ -134,7 +134,9 @@ def no_network_in_subprocesses(monkeypatch):
 
     def guarded(self, args, *rest, **kwargs):
         env = kwargs.get("env")
-        safe = env is None or all(env.get(var) == DEAD_PROXY for var in NO_NETWORK)
+        if env is not None and os.name == "nt":  # names there ignore case: one HTTPS_PROXY
+            env = {k.upper(): v for k, v in env.items()}
+        safe = env is None or all(env.get(var.upper()) == DEAD_PROXY for var in NO_NETWORK)
         if not safe and _runs_python(args):
             leaks.append(args)
             raise AssertionError(
@@ -155,6 +157,7 @@ def isolated_home(tmp_path, monkeypatch):
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))  # home on Windows (theme.home_dir)
     for var in TOKEN_VARS:
         monkeypatch.delenv(var, raising=False)
     # Belt and braces for subprocesses: a stray HTTPS request goes to a dead port.
@@ -193,8 +196,19 @@ def no_real_keychain(request, monkeypatch):
     monkeypatch.setattr(subprocess, "run", guarded)
 
 
-def env_for(home):
-    return {"HOME": str(home), **NO_NETWORK}
+# What a Windows program needs from the environment to start at all (Python wants
+# SYSTEMROOT for sockets and randomness) and to find others.
+WINDOWS_ESSENTIALS = ("SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "TEMP", "TMP")
+
+posix_only = pytest.mark.skipif(os.name == "nt", reason="POSIX behavior (file modes, signals)")
+
+
+def env_for(home, **more):
+    """An env with HOME and the dead proxy (plus, on Windows, what programs need)."""
+    env = {"HOME": str(home), **NO_NETWORK, **more}
+    if os.name == "nt":
+        env.update({k: os.environ[k] for k in WINDOWS_ESSENTIALS if k in os.environ})
+    return env
 
 
 # ---- a local stand-in for the usage endpoint ----
