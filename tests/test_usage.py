@@ -1208,3 +1208,26 @@ def test_cache_files_are_private(server, logged_in):
     name = usage.cache_name(account.identity(logged_in))
     assert stat.S_IMODE((path / name).stat().st_mode) == 0o600
     assert [p.name for p in path.iterdir() if p.suffix == ".tmp"] == []
+
+
+def test_a_cache_write_retries_a_file_held_open_on_windows(isolated_home, monkeypatch):
+    """Windows won't replace a file a render has open for a moment: try again."""
+    real, calls = os.replace, []
+
+    def busy_once(src, dst):
+        calls.append(dst)
+        if len(calls) == 1:
+            raise PermissionError(13, "in use")
+        real(src, dst)
+
+    monkeypatch.setattr(usage.os, "replace", busy_once)
+    monkeypatch.setattr(usage, "WINDOWS", True)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    path = str(isolated_home / "cache" / "x.json")
+    usage._write_json(path, {"a": 1})
+    assert len(calls) == 2
+    assert json.loads(Path(path).read_text()) == {"a": 1}
+    calls.clear()
+    monkeypatch.setattr(usage, "WINDOWS", False)  # elsewhere it's a real error
+    with pytest.raises(PermissionError):
+        usage._write_json(path, {"a": 2})

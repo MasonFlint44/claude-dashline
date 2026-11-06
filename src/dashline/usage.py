@@ -32,6 +32,8 @@ API_URL = "https://api.anthropic.com"
 USAGE_PATH = "/api/oauth/usage"
 BETA = "oauth-2025-04-20"
 TIMEOUT = 10  # for each network step: connecting, each read
+REPLACE_TRIES = 5  # Windows: a file a reader holds open can't be replaced yet
+WINDOWS = os.name == "nt"
 DEADLINE = 30  # for the whole request, DNS included; well under LOCK_STALE
 FRESH = 180  # refetch once the cache is this old
 STALE = 300  # past this, line 2 shows the age (a fetch is failing)
@@ -150,14 +152,27 @@ def _read_json(path: str) -> dict:
 
 
 def _write_json(path: str, data: dict) -> None:
-    """Write atomically: readers see the old file or the new one, never half of one."""
+    """Write atomically: readers see the old file or the new one, never half of one.
+
+    Windows refuses to replace a file another process has open (a render reading it,
+    for a moment), so there it tries a few times.
+    """
     os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
     tmp = f"{path}.{os.getpid()}.tmp"
     try:
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(data, f)
-        os.replace(tmp, path)
+        for attempt in range(REPLACE_TRIES):
+            try:
+                os.replace(tmp, path)
+                break
+            except PermissionError:
+                if not WINDOWS or attempt == REPLACE_TRIES - 1:
+                    raise
+                import time
+
+                time.sleep(0.05)
     finally:
         if os.path.exists(tmp):
             os.unlink(tmp)

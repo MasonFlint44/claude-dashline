@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from dashline import account, glyphs, layout, stdin, theme, usage
+from dashline import account, doctor, glyphs, layout, stdin, theme, usage
 from dashline.colors import THEMES
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -172,6 +172,9 @@ def isolated_home(tmp_path, monkeypatch):
         raise AssertionError("a test tried to start a real fetch")
 
     monkeypatch.setattr(usage, "spawn", no_spawn)
+    # A shared Windows runner can take seconds to start a shell: doctor's `command` check
+    # calls that slow, which these tests don't measure (test_command_slow* set their own).
+    monkeypatch.setattr(doctor, "SLOW_MS_WINDOWS", 60_000)
     return home
 
 

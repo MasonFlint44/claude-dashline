@@ -830,7 +830,8 @@ def run(
         theirs_folder = folder_state(target) == "theirs"
         ours = runs_install_dir(current, env) and not theirs_folder
         base = COMMAND
-        if (os.name == "nt" if windows is None else windows) and not ours:
+        writes_new = not ours and (current is None or replace)
+        if (os.name == "nt" if windows is None else windows) and writes_new:
             name = python()
             if name is None:
                 raise InstallError(
