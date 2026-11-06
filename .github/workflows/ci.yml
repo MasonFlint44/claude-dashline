@@ -45,12 +45,12 @@ jobs:
     # shipped files the way Claude Code does, against a throwaway home.
     runs-on: macos-latest
     timeout-minutes: 10
-    env:
-      NO_COLOR: "1"
-      HTTPS_PROXY: http://127.0.0.1:9 # the render's background fetch goes nowhere
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: smoke test
+        env:
+          NO_COLOR: "1"
+          HTTPS_PROXY: http://127.0.0.1:9 # the render's background fetch goes nowhere
         run: |
           py=/usr/bin/python3
           if ! "$py" -c 'import sys; assert sys.version_info >= (3, 9)' 2>/dev/null; then

@@ -84,7 +84,7 @@ def test_not_a_repo(tmp_path, isolated_home):
     notes.mkdir(parents=True)
     assert row(notes) == "~/Documents/notes"
     assert row(notes, glyph_set="nerd") == "\U000f0770 ~/Documents/notes"
-    assert row(tmp_path) == str(tmp_path)
+    assert row(tmp_path, columns=1000) == str(tmp_path)
 
 
 def test_clean_main(project):
@@ -336,7 +336,7 @@ def test_slow_git_times_out(project, monkeypatch):
 
 
 def test_missing_project_dir(tmp_path):
-    assert row(tmp_path / "gone") == str(tmp_path / "gone")
+    assert row(tmp_path / "gone", columns=1000) == str(tmp_path / "gone")
 
 
 def test_no_project_dir_no_row():
@@ -986,7 +986,7 @@ def test_ceiling_directories_stop_the_walk(project, monkeypatch, tmp_path):
     sub = project / "sub"
     sub.mkdir()
     monkeypatch.setenv("GIT_CEILING_DIRECTORIES", f"relative/dir{os.pathsep}{project}")
-    assert row(sub) == str(sub)  # the repo is above the ceiling
+    assert row(sub, columns=1000) == str(sub)  # the repo is above the ceiling
     assert row(project) == "proj  ⎇ main"  # a walk may start in a ceiling
 
 
