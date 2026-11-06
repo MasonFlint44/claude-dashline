@@ -24,6 +24,11 @@ GIT_ENV = {
 
 @pytest.fixture(autouse=True)
 def git_env(monkeypatch, isolated_home):
+    # None of the developer's git settings or locations reach the test repos: a global
+    # config with commit.gpgsign, or the GIT_INDEX_FILE a pre-commit hook sets.
+    for key in list(os.environ):
+        if (key.startswith("GIT_") and key != "GIT_EXEC_PATH") or key == "XDG_CONFIG_HOME":
+            monkeypatch.delenv(key)
     for key, value in GIT_ENV.items():
         monkeypatch.setenv(key, value)
     (isolated_home / ".gitconfig").write_text(
@@ -388,6 +393,15 @@ def links(segments):
         ("https://user@github.com/o/r/", "https://github.com/o/r"),
         ("ssh://git@github.com:22/o/r.git", "https://github.com/o/r"),
         ("git@github.example.com:o/r.git", "https://github.example.com/o/r"),
+        ("https://www.github.com/o/r", "https://github.com/o/r"),
+        ("git@github-work:o/r.git", "https://github.com/o/r"),  # an ~/.ssh/config alias
+        ("git@github.com-work:o/r.git", "https://github.com/o/r"),
+        ("ssh://git@github-work/o/r", "https://github.com/o/r"),
+        ("git@acme.ghe.com:o/r.git", "https://acme.ghe.com/o/r"),
+        ("https://acme.ghe.com/o/r", "https://acme.ghe.com/o/r"),
+        ("git@github-x.corp.example:o/r.git", None),  # a host, not an alias
+        ("git@ghe.com:o/r.git", None),
+        ("git@notgithub.com:o/r.git", None),
         ("git@gitlab.com:o/r.git", None),
         ("https://github.com/o", None),
         ("/srv/git/r.git", None),
@@ -407,6 +421,22 @@ def test_parse_remotes():
         "origin": "git@github.com:o/r.git",
         "up/stream": "https://github.com/u/r",
     }
+
+
+@pytest.mark.parametrize(
+    "path", ["/a b/c", "/caf\u00e9/\u4e2d", "/x#y?z%w&v=u+t", "/~user/a_b.c-d", "/semi;colon:x"]
+)
+def test_quote_matches_urllib(path):
+    from urllib.parse import quote
+
+    assert repo.quote(path) == quote(path)
+
+
+def test_folder_url_of_odd_paths():
+    host = os.uname().nodename
+    assert repo.folder_url("/tmp/caf\u00e9") == f"file://{host}/tmp/caf%C3%A9"
+    assert repo.folder_url("/tmp/\udcff") == f"file://{host}/tmp/%FF"  # not UTF-8 on disk
+    assert repo.folder_url("/tmp/\ud800") is None  # a lone surrogate from the JSON
 
 
 def test_folder_link(project, isolated_home):
@@ -489,20 +519,44 @@ def test_hung_hook_is_killed_with_git(project, monkeypatch, tmp_path):
     assert row(project) == "proj"
     assert time.monotonic() - began < 1.5
     pid = int(pidfile.read_text())
-    stat = Path(f"/proc/{pid}/stat")
     for _ in range(300):  # killed, and reaped once its parent is gone (slow under load)
-        try:
-            os.kill(pid, 0)
-            if ") Z " in stat.read_text():
-                break  # a zombie: dead, waiting to be reaped
-        except (ProcessLookupError, FileNotFoundError):
+        if not process_alive(pid):
             break
         time.sleep(0.01)
     else:
-        with contextlib.suppress(OSError):
-            if b"sleep" in Path(f"/proc/{pid}/cmdline").read_bytes():
+        if "sleep" in process_info(pid)[1]:
+            with contextlib.suppress(OSError):
                 os.kill(pid, 9)  # only our hook, never a reused pid
         raise AssertionError("the hook's sleep outlived the timeout")
+
+
+def process_info(pid) -> tuple:
+    """(state letter, command) for a process: from /proc on Linux, `ps` elsewhere.
+    ("", "") once it is gone."""
+    proc = Path(f"/proc/{pid}")
+    if Path("/proc/self/stat").exists():
+        try:
+            state = proc.joinpath("stat").read_text().rsplit(") ", 1)[1][:1]
+            return state, proc.joinpath("cmdline").read_bytes().decode(errors="replace")
+        except (OSError, IndexError):
+            return "", ""
+    out = subprocess.run(
+        ["ps", "-o", "stat=", "-o", "command=", "-p", str(pid)], capture_output=True, text=True
+    ).stdout.strip()
+    state, _, command = out.partition(" ")
+    return state[:1], command
+
+
+def process_alive(pid) -> bool:
+    """Running, as opposed to gone or a zombie (dead, waiting to be reaped)."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return False  # another user's process: the pid was reused, so ours is gone
+    state, _ = process_info(pid)
+    return state not in ("", "Z")
 
 
 def test_kill_survives_a_pipe_held_open(monkeypatch):
@@ -857,3 +911,151 @@ def test_shorthand_remote_links_to_github(cloned, isolated_home, where):
     # Git itself must not see the shorthand while the test pushes to the local remote.
     git(cloned, "remote", "set-url", "origin", "gh:o/r")
     assert links(row(cloned, color=True))["⎇ main"] == "https://github.com/o/r/tree/main"
+
+
+# ---- 0.1.7 ----
+
+
+def test_rebase_of_a_detached_head_is_not_local(cloned):
+    """No branch, nothing to push: a remote alone doesn't make the commit `local`."""
+    commit(cloned, text="main\n")
+    git(cloned, "switch", "-q", "--detach", "HEAD~1")
+    commit(cloned, text="detached\n")
+    git(cloned, "rebase", "-q", "main", check=False)
+    shown = row(cloned)
+    assert "rebasing 1/1" in shown
+    assert shown.endswith("✎ +4")
+
+
+def git_version() -> tuple:
+    out = git(".", "--version").split()[2]
+    return tuple(int(p) for p in out.split(".")[:2] if p.isdigit())
+
+
+needs_reftable = pytest.mark.skipif(git_version() < (2, 45), reason="reftable needs git 2.45")
+
+
+@pytest.fixture
+def reftable(tmp_path, project):
+    """Like `cloned`, with the clone's refs in the reftable format."""
+    remote = tmp_path / "remote.git"
+    git(tmp_path, "clone", "-q", "--bare", str(project), str(remote))
+    work = tmp_path / "work"
+    git(tmp_path, "clone", "-q", "--ref-format=reftable", str(remote), str(work))
+    assert (work / ".git" / "reftable").is_dir()
+    return work
+
+
+@needs_reftable
+def test_reftable_branch_links_to_compare(reftable):
+    git(reftable, "switch", "-q", "-c", "feat")
+    git(reftable, "push", "-q", "-u", "origin", "feat")
+    github_origin(reftable)
+    assert links(row(reftable, color=True))["⎇ feat"] == (
+        "https://github.com/o/r/compare/main...feat"
+    )
+
+
+@needs_reftable
+def test_reftable_rebase_sees_a_gone_upstream(reftable):
+    git(reftable, "switch", "-q", "-c", "feat")
+    commit(reftable, text="feat\n")
+    git(reftable, "push", "-q", "-u", "origin", "feat")
+    git(reftable, "switch", "-q", "main")
+    commit(reftable, text="main\n")
+    git(reftable, "switch", "-q", "feat")
+    git(reftable, "rebase", "-q", "main", check=False)
+    assert row(reftable) == "work  ⎇ feat  rebasing 1/1  ✗ 1  ✎ +4"
+    git(reftable, "update-ref", "-d", "refs/remotes/origin/feat")
+    assert row(reftable).endswith("✎ +4  gone")
+
+
+def test_ref_checks_under_reftable_without_git(tmp_path):
+    common = tmp_path / "git"
+    (common / "reftable").mkdir(parents=True)
+    # No answer from git: assume the ref is there, and no default branch.
+    assert repo._ref_exists(str(common), "refs/remotes/o/x")
+    assert repo._ref_exists(str(common), "refs/remotes/o/x", lambda args: None)
+    assert not repo._ref_exists(str(common), "refs/remotes/o/x", lambda args: "refs/x/y\n")
+    assert repo._default_branch(str(common), "o") is None
+    head = "refs/remotes/o/trunk\n"
+    assert repo._default_branch(str(common), "o", lambda args: head) == "trunk"
+
+
+def test_ceiling_directories_stop_the_walk(project, monkeypatch, tmp_path):
+    sub = project / "sub"
+    sub.mkdir()
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", f"relative/dir{os.pathsep}{project}")
+    assert row(sub) == str(sub)  # the repo is above the ceiling
+    assert row(project) == "proj  ⎇ main"  # a walk may start in a ceiling
+
+
+def test_ceiling_dirs_resolve_symlinks_until_an_empty_entry(tmp_path):
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real)
+    value = os.pathsep.join(["rel", str(link), "", str(link) + "/"])
+    assert repo.ceiling_dirs({"GIT_CEILING_DIRECTORIES": value}) == [
+        os.path.realpath(real),
+        str(link),
+    ]
+    assert repo.ceiling_dirs({}) == []
+
+
+@pytest.mark.parametrize("value", ["1", "true", "Yes", "on", "2"])
+def test_config_nosystem_set(value):
+    assert "/etc/gitconfig" not in repo.config_files({"GIT_CONFIG_NOSYSTEM": value})
+
+
+@pytest.mark.parametrize("value", ["0", "false", "no", "off", ""])
+def test_config_nosystem_unset(value):
+    assert "/etc/gitconfig" in repo.config_files({"GIT_CONFIG_NOSYSTEM": value})
+
+
+def test_parse_config_escapes_and_bad_headers():
+    config = (
+        '[core]\n\tx = "a\\tb\\n\\"c\\\\" d\\\n'
+        "e ; comment\n"
+        '[remote "origin"]\n\turl = a\n'
+        "[bad header\n\turl = b\n"
+        '[remote "next"]\n\turl = c\n'
+    )
+    entries = repo.parse_config(config)
+    assert ("core", None, "x", 'a\tb\n"c\\ de') in entries
+    assert repo.parse_remotes(entries) == {"origin": "a", "next": "c"}
+
+
+def test_kill_falls_back_without_process_groups(monkeypatch):
+    killed = []
+
+    class Proc:
+        pid = 12345
+
+        def kill(self):
+            killed.append(True)
+            raise ProcessLookupError  # already gone: not an error
+
+    def no_group(pid, sig):
+        raise PermissionError
+
+    monkeypatch.setattr(os, "killpg", no_group)
+    repo._kill(Proc())
+    monkeypatch.delattr(os, "killpg")  # Windows has none
+    repo._kill(Proc())
+    assert killed == [True, True]
+
+
+def test_parse_status_ignores_a_malformed_ahead_behind():
+    state = repo.RepoState("/p")
+    repo.parse_status("# branch.ab +x -1\0# branch.ab +1\0", state)
+    assert (state.ahead, state.behind) == (0, 0)
+    repo.parse_status("# branch.ab +3 -2\0", state)
+    assert (state.ahead, state.behind) == (3, 2)
+
+
+def test_repo_name_fallbacks():
+    assert repo._repo_name("/srv/x/.git", "/w/a") == "x"
+    assert repo._repo_name("/srv/tool.git", "/w/a") == "tool"
+    assert repo._repo_name("/srv/tool", "/w/a") == "tool"  # a bare repo without .git
+    assert repo._repo_name("/srv/tool/", "/w/a") == "a"

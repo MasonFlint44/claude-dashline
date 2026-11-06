@@ -13,6 +13,12 @@ GREEN_UNTIL = 40.0
 GOLD_AT = 70.0
 CORAL_FROM = 90.0
 COUNTDOWN_FROM = 70.0  # the gold anchor: color and countdown change together
+# Text never grows past these, whatever number arrives: a percent, a count of days,
+# a token count, dollars.
+PERCENT_MAX = 999
+DAYS_MAX = 999
+TOKENS_MAX = 999_000_000
+COST_MAX = 99_999.99
 
 
 def round_half_up(x: float) -> int:
@@ -51,8 +57,8 @@ def filled(percent: float, width: int) -> int:
 
 def percent_text(percent: float) -> str:
     """`41%`. Rounds, but never shows 100% before the limit is reached, or 0% once any
-    of it is used (the bar fills a cell from the first use)."""
-    shown = round_half_up(percent)
+    of it is used (the bar fills a cell from the first use). At most 999%."""
+    shown = round_half_up(min(percent, PERCENT_MAX))
     if percent < 100:
         shown = min(shown, 99)
     if percent > 0:
@@ -61,8 +67,8 @@ def percent_text(percent: float) -> str:
 
 
 def duration(seconds: float) -> str:
-    """Countdown text: `2d4h`, `1h40m`, `40m`, `45s`."""
-    seconds = max(0, int(seconds))
+    """Countdown text: `2d4h`, `1h40m`, `40m`, `45s`. At most 999 days."""
+    seconds = int(min(max(0, seconds), DAYS_MAX * 86400))
     if seconds < 60:
         return f"{seconds}s"
     minutes = -(-seconds // 60)  # round up: "1m" until it's really gone
@@ -76,10 +82,15 @@ def duration(seconds: float) -> str:
 
 
 def tokens(count: float) -> str:
-    """`950`, `38k`, `1.2M`."""
-    count = int(count)
+    """`950`, `38k`, `1.2M`. At most 999.0M."""
+    count = int(min(max(0, count), TOKENS_MAX))
     if count < 1000:
         return str(count)
     if round(count / 1000) < 1000:
         return f"{round(count / 1000)}k"
     return f"{count / 1_000_000:.1f}M"
+
+
+def money(dollars: float) -> str:
+    """`$1.23`, at most $99999.99."""
+    return f"${min(max(0, dollars), COST_MAX):.2f}"

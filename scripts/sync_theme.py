@@ -51,6 +51,12 @@ def find_palettes(data):
             if not obj:
                 break
             pairs = {k.decode(): v.decode() for k, v in PAIR.findall(obj.group(0))}
+            missing = [t for t in TOKENS if t not in pairs]
+            if missing:
+                sys.exit(
+                    f"the {theme.decode()} palette has no {', '.join(missing)}; "
+                    "the bundle changed shape"
+                )
             palettes[theme.decode()] = {t: pairs[t] for t in TOKENS}
         else:
             return palettes

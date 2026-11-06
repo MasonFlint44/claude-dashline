@@ -163,3 +163,8 @@ def test_settings_with_a_bom(home):
     path = home / ".claude" / "settings.json"
     path.write_bytes(b"\xef\xbb\xbf" + b'{"theme": "light"}')
     assert theme.theme_setting(None, {}) == "light"
+
+
+def test_a_project_dir_with_a_nul_is_skipped(home):
+    write(home / ".claude" / "settings.json", {"theme": "light"})
+    assert theme.theme_setting(str(home) + "/\x00", {}) == "light"

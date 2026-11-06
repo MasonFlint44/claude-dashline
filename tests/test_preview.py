@@ -7,6 +7,7 @@ import pytest
 
 from conftest import ANSI
 from dashline import layout, preview
+from dashline.__main__ import MAX_COLUMNS
 
 SGR = re.compile(r"\x1b\[")
 NAMES = list(preview.scenarios())
@@ -108,3 +109,16 @@ def test_every_scenario_in_every_set_has_both_in_the_header():
     assert len(heads) == 3 * len(preview.scenarios())
     assert heads[0].startswith("nerd · pro-trial: ")
     assert heads[-1].startswith("ascii · tiny: ")
+
+
+@pytest.mark.parametrize("columns", ["\u00b2", "3000000", "-5", ""])
+def test_odd_columns(columns, monkeypatch):
+    import shutil
+
+    monkeypatch.setattr(
+        shutil, "get_terminal_size", lambda fallback: __import__("os").terminal_size((90, 24))
+    )
+    out = io.StringIO()
+    assert preview.run("pro", "unicode", env={"COLUMNS": columns, "NO_COLOR": "1"}, out=out) == 0
+    widest = max(len(line) for line in out.getvalue().splitlines())
+    assert widest <= MAX_COLUMNS

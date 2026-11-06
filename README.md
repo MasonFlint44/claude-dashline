@@ -17,8 +17,9 @@ where you are in git, in three lines that fit the terminal's width.
 
 `/dashline:install` checks for Python, copies dashline to
 `~/.claude/scripts/statusline/` (or under `$CLAUDE_CONFIG_DIR`), and points the
-`statusLine` setting at it. It asks first if you already have a statusline, or if
-that folder holds another tool's files. Then it
+`statusLine` setting at it. It asks first if you already have a statusline, if
+that folder holds another tool's files, or if a newer dashline is already installed
+there. Updates keep any files of your own you put in that folder. Then it
 shows you dashline in each glyph set so you can pick the one your terminal draws
 correctly.
 
@@ -50,8 +51,9 @@ commits ahead of or behind the upstream, a branch that was never pushed or whose
 is gone, a rebase, merge, cherry-pick, revert, bisect or `am` in progress, and
 conflicts. It also shows where Claude's shell has moved to if that's outside the
 project. In terminals that support links, the project name opens its folder, and a
-branch pushed to GitHub opens its compare page (`insteadOf` shorthands like
-`gh:owner/repo` included).
+branch pushed to GitHub opens its compare page. That includes GitHub Enterprise
+(`github.<company>.com`, `<name>.ghe.com`), SSH host aliases like `github-work`, and
+`insteadOf` shorthands like `gh:owner/repo`.
 
 When the terminal is narrow, detail goes in a fixed order. Bars stay on their own
 line: plan bars turn into text from the last one back (`credits 12%`), then all of
@@ -91,9 +93,10 @@ Keychain, or `~/.claude/.credentials.json`.
 
 - The request runs in a background process after the statusline has printed, so it
   never slows the statusline.
-- At most one request every 3 minutes, shared by all your Claude Code sessions, with
-  backoff on errors. When the server asks for a longer wait (`Retry-After`), dashline
-  waits that long, up to a day.
+- At most one request every 3 minutes per login, shared by all your Claude Code
+  sessions, with backoff on errors. When the server asks for a longer wait
+  (`Retry-After`), dashline waits that long, up to a day; `/dashline:doctor` tells you
+  so and only fetches early if you say to.
 - The token goes only to `api.anthropic.com`: redirects are refused, so it can't follow
   one elsewhere. It is never written anywhere, passed on a command line or put in an
   environment variable.
@@ -107,10 +110,13 @@ dashline catches up; the rest of the statusline keeps working.
 ## Uninstall
 
 Remove the `statusLine` entry from `~/.claude/settings.json`, delete
-`~/.claude/scripts/statusline/`, then `/plugin uninstall dashline@claude-toolbox`.
-dashline's cache is `usage.json`, `fetch.hold` and `fetch.lock*` in
-`~/.claude/cache/statusline/`. Delete those files, and the folder only if nothing else
-uses it.
+`~/.claude/scripts/statusline/` (and `statusline.backup` next to it, if
+`/dashline:install` set another tool's files aside there), then
+`/plugin uninstall dashline@claude-toolbox`. dashline's cache is `usage-*.json`,
+`fetch-*.hold` and `fetch.lock*` in `~/.claude/cache/statusline/`, plus `usage.json` and
+`fetch.hold` from 0.1.6 and earlier, and any of these ending in `.tmp`. Delete those
+files, and the folder only if nothing else uses it. With `CLAUDE_CONFIG_DIR` set, all
+of these are under that folder instead of `~/.claude`.
 
 ## Development
 

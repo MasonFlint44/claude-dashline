@@ -1,23 +1,30 @@
 name: ci
 on:
   push:
+    branches: [main]
   pull_request:
 permissions:
   contents: read
+concurrency:
+  # A newer push to the same PR cancels the older run; every run on main finishes.
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
-      - run: uv run --frozen ruff format --check
-      - run: uv run --frozen ruff check
+      - run: uv run --locked ruff format --check
+      - run: uv run --locked ruff check
   preview:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
-      - run: uv run --frozen python scripts/preview.py --check
+      - run: uv run --locked python scripts/preview.py --check
   test:
     strategy:
       fail-fast: false
@@ -25,9 +32,36 @@ jobs:
         os: [ubuntu-latest, macos-latest]
         python: ["3.9", "3.12", "3.14"]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           python-version: ${{ matrix.python }}
-      - run: uv run --frozen pytest
+      - run: uv run --locked pytest
+  apple-python:
+    # The Python most Macs have: Apple's /usr/bin/python3 from the command-line tools
+    # (3.9, built against LibreSSL), not the one uv installs for the tests. Runs the
+    # shipped files the way Claude Code does, against a throwaway home.
+    runs-on: macos-latest
+    timeout-minutes: 10
+    env:
+      NO_COLOR: "1"
+      HTTPS_PROXY: http://127.0.0.1:9 # the render's background fetch goes nowhere
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: smoke test
+        run: |
+          py=/usr/bin/python3
+          if ! "$py" -c 'import sys; assert sys.version_info >= (3, 9)' 2>/dev/null; then
+            echo "::notice::no usable $py on this runner; skipped"
+            exit 0
+          fi
+          "$py" --version
+          "$py" -I -S statusline.py --version
+          "$py" -I -S statusline.py --preview all
+          export HOME="$RUNNER_TEMP/home"
+          mkdir -p "$HOME"
+          "$py" -I -S statusline.py --install
+          "$py" -I -S "$HOME/.claude/scripts/statusline/statusline.py" \
+            < tests/fixtures/stdin/after-first-response.json

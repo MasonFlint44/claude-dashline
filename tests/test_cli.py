@@ -94,14 +94,57 @@ def test_usage_error_in_a_mode_prints_only_to_stderr():
     assert r.stdout == ""
 
 
-def test_render_writes_utf8_whatever_the_locale():
-    r = run_shim(
-        stdin=json.dumps({"model": {"display_name": "Opus ✦"}}),
-        env_extra={"PYTHONIOENCODING": "latin-1", "NO_COLOR": "1"},
-    )
-    assert r.returncode == 0, r.stderr
-    assert "Traceback" not in r.stderr
-    assert r.stdout.startswith("Opus ✦")
+def latin1(data: bytes = b""):
+    """A text stream the way a latin-1 locale opens stdin and stdout."""
+    import io
+
+    return io.TextIOWrapper(io.BytesIO(data), encoding="latin-1")
+
+
+def test_render_reads_and_writes_utf8_whatever_the_locale(isolated_home):
+    from dashline import __main__
+
+    # ensure_ascii=False: the bytes on stdin are UTF-8, not \u escapes.
+    text = json.dumps({"model": {"display_name": "Opus ✦ café"}}, ensure_ascii=False)
+    stdout = latin1()
+    env = {"HOME": str(isolated_home), "NO_COLOR": "1"}
+    assert __main__.render(latin1(text.encode("utf-8")), stdout, env=env) == 0
+    assert stdout.buffer.getvalue().decode("utf-8").startswith("Opus ✦ café")
+
+
+def test_stdin_that_isnt_utf8_still_renders(isolated_home, capsys):
+    from dashline import __main__
+
+    data = b'{"model": {"display_name": "Opus \xff\xfe"}}'
+    stdout = latin1()
+    env = {"HOME": str(isolated_home), "NO_COLOR": "1"}
+    assert __main__.render(latin1(data), stdout, env=env) == 0
+    assert stdout.buffer.getvalue().decode("utf-8").startswith("Opus \ufffd\ufffd")
+    assert "Traceback" not in capsys.readouterr().err
+
+
+def test_a_failed_spawn_still_prints_the_statusline(isolated_home, monkeypatch, capsys):
+    import io
+
+    from dashline import __main__, usage
+
+    class State:
+        fetch = True
+        data = None
+        stale_age = None
+
+    def boom(env, now):
+        raise OSError("no fork")
+
+    monkeypatch.setattr(usage, "load", lambda env, account, now: State())
+    monkeypatch.setattr(usage, "spawn", boom)
+    out = io.StringIO()
+    stdin = io.StringIO(json.dumps({"model": {"display_name": "Opus 5.5"}}))
+    env = {"HOME": str(isolated_home), "NO_COLOR": "1"}
+    assert __main__.render(stdin, out, env=env) == 0
+    assert out.getvalue().startswith("Opus 5.5")
+    assert "internal error" not in out.getvalue()
+    assert "OSError: no fork" in capsys.readouterr().err
 
 
 def test_closed_stdout_is_quiet():
@@ -115,13 +158,16 @@ def test_closed_stdout_is_quiet():
     assert b"Traceback" not in err
 
 
-def opts(mode="render", glyphs=None, scenario=None, replace=False, downgrade=False):
+def opts(
+    mode="render", glyphs=None, scenario=None, replace=False, downgrade=False, fetch_now=False
+):
     return {
         "mode": mode,
         "glyphs": glyphs,
         "scenario": scenario,
         "replace": replace,
         "downgrade": downgrade,
+        "fetch_now": fetch_now,
     }
 
 
@@ -139,6 +185,8 @@ def opts(mode="render", glyphs=None, scenario=None, replace=False, downgrade=Fal
         (["-h"], opts("help")),
         (["--glyphs=nerd", "--install"], opts("install", "nerd")),
         (["--install", "--downgrade"], opts("install", downgrade=True)),
+        (["--doctor", "--fetch-now"], opts("doctor", fetch_now=True)),
+        (["--fetch-now", "--doctor"], opts("doctor", fetch_now=True)),
     ],
 )
 def test_parse_args(argv, expected):
@@ -162,8 +210,45 @@ def test_parse_args(argv, expected):
         ["--install", "--install"],
         ["--downgrade"],
         ["--doctor", "--downgrade"],
+        ["--fetch-now"],
+        ["--install", "--fetch-now"],
+        ["--preview", "--fetch-now"],
     ],
 )
 def test_parse_args_rejects(argv):
     with pytest.raises(UsageError):
         parse_args(argv)
+
+
+def test_mode_option_errors_name_the_mode():
+    with pytest.raises(UsageError, match="--fetch-now only works with --doctor"):
+        parse_args(["--fetch-now"])
+    with pytest.raises(UsageError, match="--downgrade only works with --install"):
+        parse_args(["--doctor", "--downgrade"])
+
+
+def test_help_lists_every_flag():
+    from dashline.__main__ import USAGE
+
+    flags = ("--glyphs", "--doctor", "--fetch-now", "--install", "--replace", "--downgrade")
+    for flag in (*flags, "--preview", "--version", "--help"):
+        assert flag in USAGE
+
+
+@pytest.mark.parametrize(
+    ("value", "columns"),
+    [
+        ("120", 120),
+        (" 90 ", 90),
+        ("3000000", 1000),
+        ("\u00b2", None),
+        ("-5", None),
+        ("0", None),
+        ("", None),
+        (None, None),
+    ],
+)
+def test_parse_columns(value, columns):
+    from dashline.__main__ import parse_columns
+
+    assert parse_columns(value) == columns

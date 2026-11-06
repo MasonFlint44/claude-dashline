@@ -142,3 +142,24 @@ def test_displayed_names_lose_control_characters():
     assert s.agent == "rev?iewer?"
     assert "\x1b" not in s.cache.miss_cause
     assert s.model_id == "claude-opus-5-5"
+
+
+@pytest.mark.parametrize("text", ["[" * 100_000, '{"a":' * 100_000])
+def test_deep_nesting_reads_as_bad_input(text):
+    assert stdin.parse(text) == {}
+
+
+def test_a_path_with_a_nul_reads_as_missing():
+    s = stdin.Session({"cwd": "/tmp/a\x00b", "workspace": {"project_dir": "/tmp/\x00"}})
+    assert s.project_dir is None
+    assert s.current_dir is None
+    s = stdin.Session({"cwd": "/tmp/ok", "workspace": {"project_dir": "/tmp/\x00"}})
+    assert s.project_dir == "/tmp/ok"
+
+
+def test_negative_cost_and_token_counts_read_as_missing():
+    s = stdin.Session(
+        {"cost": {"total_cost_usd": -2}, "prompt_cache": {"recache_tokens_if_cold": -5e20}}
+    )
+    assert s.cost is None
+    assert s.cache.recache_tokens is None

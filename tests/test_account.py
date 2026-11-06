@@ -318,6 +318,7 @@ def test_keychain_miss_falls_back_to_file(isolated_home, monkeypatch):
     assert account.read_token(env_for(isolated_home), NOW, "darwin") == ("file-token", None)
 
 
+@pytest.mark.real_keychain
 def test_keychain_reader_runs_security(monkeypatch):
     import subprocess
 
@@ -345,3 +346,69 @@ def test_keychain_reader_runs_security(monkeypatch):
     ]
     Done.returncode = 44
     assert account._read_keychain(env) == {}
+
+
+def fake_security(monkeypatch, returncode=0, stdout="", error=None):
+    import subprocess
+
+    class Done:
+        pass
+
+    def run(argv, **kwargs):
+        if error is not None:
+            raise error
+        done = Done()
+        done.returncode, done.stdout = returncode, stdout
+        return done
+
+    monkeypatch.setattr(subprocess, "run", run)
+
+
+@pytest.mark.real_keychain
+@pytest.mark.parametrize("stdout", ["not json", "[1]", "[" * 100000, ""])
+def test_keychain_reader_odd_output_is_no_login(monkeypatch, stdout):
+    fake_security(monkeypatch, stdout=stdout)
+    assert account._read_keychain({}) == {}
+
+
+@pytest.mark.real_keychain
+def test_keychain_reader_without_security_is_no_login(monkeypatch):
+    fake_security(monkeypatch, error=FileNotFoundError("security"))
+    assert account._read_keychain({}) == {}
+
+
+@pytest.mark.real_keychain
+@pytest.mark.parametrize("returncode", [36, 51, 1])
+def test_keychain_reader_locked_is_not_no_login(monkeypatch, returncode):
+    """Over SSH a locked Keychain says "User interaction is not allowed": /login won't
+    fix that, so it mustn't read as no login."""
+    fake_security(monkeypatch, returncode=returncode)
+    with pytest.raises(account.KeychainError):
+        account._read_keychain({})
+
+
+@pytest.mark.real_keychain
+def test_keychain_reader_unanswered_prompt_is_locked(monkeypatch):
+    import subprocess
+
+    fake_security(monkeypatch, error=subprocess.TimeoutExpired("security", 5))
+    with pytest.raises(account.KeychainError):
+        account._read_keychain({})
+
+
+def test_locked_keychain_says_so(isolated_home, monkeypatch):
+    def locked(env):
+        raise account.KeychainError(account.KEYCHAIN_LOCKED)
+
+    monkeypatch.setattr(account, "_read_keychain", locked)
+    token, why, _ = account.find_token(env_for(isolated_home), NOW, "darwin")
+    assert (token, why) == (None, account.KEYCHAIN_LOCKED)
+
+
+def test_locked_keychain_still_falls_back_to_file(isolated_home, monkeypatch):
+    def locked(env):
+        raise account.KeychainError(account.KEYCHAIN_LOCKED)
+
+    write_credentials(isolated_home, accessToken="file-token")
+    monkeypatch.setattr(account, "_read_keychain", locked)
+    assert account.read_token(env_for(isolated_home), NOW, "darwin") == ("file-token", None)

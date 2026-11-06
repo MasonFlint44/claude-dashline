@@ -30,6 +30,11 @@ GLYPH_SETS = ("nerd", "unicode", "ascii")
 GLYPHS = re.compile(r"\s*--glyphs(?:=|\s+)(\S+)")
 LEFTOVER = re.compile(r"^statusline\.(?:new|old)-(\d+)$")
 LEFTOVER_AGE = 3600  # where a process can't be asked whether it's alive (Windows)
+# What an install consists of, at the top of its folder. Anything else there is the
+# user's, and an update carries it over.
+OWN_NAMES = ("statusline.py", "VERSION", "dashline")
+# Files a file manager leaves in any folder it shows: they don't make a folder someone's.
+DESKTOP_JUNK = (".DS_Store", "Thumbs.db", "desktop.ini")
 
 # Exit codes beyond 0 and 1.
 NEEDS_REPLACE = 3
@@ -84,9 +89,21 @@ def glyphs_of(entry) -> str:
 
 
 def with_glyphs(cmd: str, glyphs: str) -> str:
-    """`cmd` asking for `glyphs`: any --glyphs flag replaced, the rest kept as written."""
+    """`cmd` asking for `glyphs`: any --glyphs flag replaced, the rest kept as written.
+
+    The flag goes right after the statusline.py argument, so a hand-edited command that
+    goes on (`… 2>/dev/null || echo off`) still passes it to dashline.
+    """
     bare = GLYPHS.sub("", cmd).rstrip()
-    return bare if glyphs == "unicode" else f"{bare} --glyphs {glyphs}"
+    if glyphs == "unicode":
+        return bare
+    at = bare.replace("\\", "/").find(MARK)
+    if at < 0:
+        return f"{bare} --glyphs {glyphs}"
+    end = at + len(MARK)
+    while end < len(bare) and not bare[end].isspace() and bare[end] not in ";|&<>()":
+        end += 1  # a closing quote
+    return f"{bare[:end]} --glyphs {glyphs}{bare[end:]}"
 
 
 def home_short(path: str, env=None) -> str:
@@ -184,7 +201,7 @@ def folder_state(target: str) -> str:
         names = os.listdir(target)
     except OSError:
         return "theirs"
-    if not names:
+    if not [name for name in names if name not in DESKTOP_JUNK]:
         return "missing"
     if os.path.isfile(os.path.join(target, "dashline", "__init__.py")):
         return "ours"
@@ -250,8 +267,45 @@ def set_aside(target: str) -> str:
     return aside
 
 
+def _extras(target: str) -> list:
+    """Top-level names in an install folder that an install didn't put there."""
+    if os.path.islink(target) or not os.path.isdir(target):
+        return []
+    try:
+        return sorted(name for name in os.listdir(target) if name not in OWN_NAMES)
+    except OSError:
+        return []
+
+
+def _copy_entry(src: str, dst: str) -> None:
+    """Copy a file, folder or link as it is."""
+    import shutil
+
+    if os.path.islink(src):
+        os.symlink(os.readlink(src), dst)
+    elif os.path.isdir(src):
+        shutil.copytree(src, dst, symlinks=True)
+    else:
+        shutil.copy2(src, dst)
+
+
+def put_back(aside: str, target: str, env) -> str:
+    """Undo set_aside after a failed --replace. Returns what happened, in words."""
+    where, backup = home_short(target, env), home_short(aside, env)
+    try:
+        _rmtree(target)
+        os.rename(aside, target)
+    except OSError as e:
+        return f"couldn't move {backup} back to {where} ({e.strerror or e}): move it yourself\n"
+    return f"moved the files in {backup} back to {where}\n"
+
+
 def copy(env) -> tuple:
-    """Copy this package into the install dir. Returns (target, what happened)."""
+    """Copy this package into the install dir. Returns (target, what happened).
+
+    Files the user added at the top of the folder (notes, a wrapper script) are copied
+    into the new folder too, so an update doesn't lose them.
+    """
     import shutil
     import time
 
@@ -268,8 +322,9 @@ def copy(env) -> tuple:
     if digest(source) == digest(installed_files(env)) and installed_version(env) == __version__:
         return target, "unchanged"
 
-    # Build the new copy beside the old one, then swap folders, so a render running
-    # meanwhile sees one whole version or the other.
+    # Build the new copy beside the old one, then swap folders with two renames. A render
+    # never reads a half-copied folder, but one starting between the renames finds no
+    # folder and draws nothing that once.
     os.makedirs(os.path.dirname(target), exist_ok=True)
     new, old = f"{target}.new-{os.getpid()}", f"{target}.old-{os.getpid()}"
     _rmtree(new)
@@ -281,6 +336,8 @@ def copy(env) -> tuple:
             shutil.copyfile(path, os.path.join(new, *rel.split("/")))
         with open(os.path.join(new, "VERSION"), "w", encoding="utf-8") as f:
             f.write(__version__ + "\n")
+        for name in _extras(target):
+            _copy_entry(os.path.join(target, name), os.path.join(new, name))
         if had:
             os.rename(target, old)
         try:
@@ -336,16 +393,25 @@ def has_bom(path: str) -> bool:
 
 
 def check_writable(path: str) -> None:
-    """Raise InstallError if settings.json exists but is read-only: someone made it so."""
+    """Raise InstallError if settings.json can't be rewritten: the file is read-only
+    (someone made it so), or its folder is, where the new file is written first."""
     real = os.path.realpath(path)
     try:
         mode = os.stat(real).st_mode
     except OSError:
-        return  # missing: it gets made
-    if not mode & 0o200 or not os.access(real, os.W_OK):
+        mode = None  # missing: it gets made
+    if mode is not None and (not mode & 0o200 or not os.access(real, os.W_OK)):
         raise InstallError(
             f"{path} is read-only, so it was left alone; make it writable, or add the "
             "statusLine entry yourself, then run again"
+        )
+    folder = os.path.dirname(real)
+    while not os.path.isdir(folder) and os.path.dirname(folder) != folder:
+        folder = os.path.dirname(folder)  # the nearest folder that exists gets the rest
+    if not os.access(folder, os.W_OK | os.X_OK):
+        raise InstallError(
+            f"can't write in {folder}, so {path} was left alone; make the folder "
+            "writable, or add the statusLine entry yourself, then run again"
         )
 
 
@@ -360,14 +426,21 @@ def write_settings(path: str, data: dict) -> None:
         mode = None
     bom = BOM if has_bom(real) else ""
     tmp = f"{real}.dashline-{os.getpid()}.tmp"
+    if os.path.lexists(tmp):
+        os.unlink(tmp)  # left by an earlier run that had this pid
+    # Made private, then given the old file's mode once written: settings can hold
+    # secrets (an `env` block), so the copy is never readable by more people than the
+    # file was. A new settings.json gets the usual mode (0666 less the umask), like any
+    # file Claude Code makes.
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600 if mode is not None else 0o666)
     try:
-        with open(tmp, "w", encoding="utf-8") as f:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(bom + json.dumps(data, indent=2, ensure_ascii=False) + "\n")
-        if mode is not None:
-            os.chmod(tmp, mode)
+            if mode is not None:
+                os.chmod(tmp, mode)
         os.replace(tmp, real)
     finally:
-        if os.path.exists(tmp):
+        if os.path.lexists(tmp):
             os.unlink(tmp)
 
 
@@ -481,6 +554,11 @@ def run(
             return NEEDS_DOWNGRADE
         if entry != current:
             check_writable(path)
+    except InstallError as e:
+        sys.stderr.write(f"dashline: {e}\n")
+        return 1
+    aside = None
+    try:
         if theirs_folder:
             aside = set_aside(target)
             out.write(f"moved the files in {where} to {home_short(aside, env)}\n")
@@ -495,6 +573,8 @@ def run(
             write_entry(path, data, entry)
     except InstallError as e:
         sys.stderr.write(f"dashline: {e}\n")
+        if aside:  # the other tool's statusline still runs from its folder: put it back
+            out.write(put_back(aside, target, env))
         return 1
     verb = "already runs" if entry == current else "now runs"
     out.write(f"{settings}: statusLine {verb} it with {describe(entry)}\n")

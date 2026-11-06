@@ -2,9 +2,10 @@
 
 Every field is optional: keys come and go between CLI versions, and `rate_limits` /
 `prompt_cache` only appear after the first API response (PLAN §1, Phase 0 results).
-A field of the wrong type, or a number that isn't finite, reads as missing, never as an
-error. Names that get displayed (model, effort, agent) have control characters replaced
-(text.clean), so a name can't split a line or start an escape sequence.
+A field of the wrong type, a number that isn't finite, a negative cost or token count,
+or a path with a NUL in it reads as missing, never as an error. Names that get displayed
+(model, effort, agent) have control characters replaced (text.clean), so a name can't
+split a line or start an escape sequence.
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ def parse(text: str) -> dict:
     """Parse stdin text. Bad or empty input gives an empty dict, never an exception."""
     try:
         data = json.loads(text) if text.strip() else {}
-    except ValueError:
+    except (ValueError, RecursionError):  # RecursionError: nesting thousands deep
         return {}
     return data if isinstance(data, dict) else {}
 
@@ -47,8 +48,21 @@ def _num(value) -> float | None:
     return value if math.isfinite(value) else None
 
 
+def _count(value) -> float | None:
+    """A finite number that isn't negative (a cost, a token count), or None."""
+    value = _num(value)
+    return value if value is not None and value >= 0 else None
+
+
 def _str(value) -> str | None:
     return value if isinstance(value, str) and value else None
+
+
+def _path(value) -> str | None:
+    """A path, or None. One with a NUL in it can't name a file, and os.path calls on it
+    raise."""
+    value = _str(value)
+    return value if value is not None and "\x00" not in value else None
 
 
 def iso_time(value) -> float | None:
@@ -92,7 +106,7 @@ class Cache:
         self.warm = data.get("warm") is True
         self.ttl = _str(data.get("ttl"))
         self.expires_at = _num(data.get("expires_at"))
-        self.recache_tokens = _num(data.get("recache_tokens_if_cold"))
+        self.recache_tokens = _count(data.get("recache_tokens_if_cold"))
         causes = _dig(data, "last_miss_cause", "causes")
         cause = causes[0] if isinstance(causes, list) and causes else None
         self.miss_cause = clean(cause) if isinstance(cause, str) else None
@@ -108,10 +122,11 @@ class Session:
         self.fast = data.get("fast_mode") is True
         agent = _str(_dig(data, "agent", "name"))
         self.agent = clean(agent) if agent else None
-        self.cost = _num(_dig(data, "cost", "total_cost_usd"))
+        self.cost = _count(_dig(data, "cost", "total_cost_usd"))
         self.context_percent = _num(_dig(data, "context_window", "used_percentage"))
-        self.project_dir = _str(_dig(data, "workspace", "project_dir")) or _str(data.get("cwd"))
-        self.current_dir = _str(_dig(data, "workspace", "current_dir")) or _str(data.get("cwd"))
+        cwd = _path(data.get("cwd"))
+        self.project_dir = _path(_dig(data, "workspace", "project_dir")) or cwd
+        self.current_dir = _path(_dig(data, "workspace", "current_dir")) or cwd
         cache = data.get("prompt_cache")
         self.cache = Cache(cache) if isinstance(cache, dict) else None
         self.windows = {}

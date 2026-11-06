@@ -1,6 +1,6 @@
 # dashline — plan
 
-Status: built; 0.1.6 on 2026-11-05. Draft 4 (2026-11-04) was the design the build followed;
+Status: built; 0.1.7 on 2026-11-06. Draft 4 (2026-11-04) was the design the build followed;
 later changes are marked with their date.
 
 Repo `~/git/claude-dashline`; plugin `dashline` (skills `/dashline:install`,
@@ -137,24 +137,34 @@ It's undocumented, so any shape change must degrade to a hidden bar, never a cra
 
 ```
 ${CLAUDE_CONFIG_DIR:-~/.claude}/scripts/statusline/
-  statusline.py          entry shim: puts its dir on sys.path, runs the package
+  statusline.py          entry shim: puts its dir on sys.path, imports the package,
+                         takes the dir off again (0.1.7)
   dashline/              package, copied from the plugin
   VERSION
 ${CLAUDE_CONFIG_DIR:-~/.claude}/cache/statusline/
-  usage.json  fetch.lock  fetch.hold
+  usage-<tag>.json  fetch-<tag>.hold     one pair per login (0.1.7)
+  fetch.lock  fetch.lock.break           shared by all logins
 ```
 
-Fetching (Phase 3): a render that finds `usage.json` missing or ≥ 3 min old, and no
-`fetch.hold` in force for this login, takes `fetch.lock` (O_EXCL; a lock ≥ 60 s old
+Fetching (Phase 3): a render that finds this login's cache missing or ≥ 3 min old, and
+no hold in force for it, takes `fetch.lock` (O_EXCL; a lock ≥ 60 s old
 belongs to a dead child; only one process at a time may break it, through
 `fetch.lock.break`, and a child releases only the lock it took, by nonce) and, after printing, starts a detached `python3 -I -S` child
-(new session, stdio on /dev/null, no token in argv). The child fetches once and writes
-`usage.json` `{fetched_at, account, data}` or `fetch.hold` `{until, reason, failures,
-account}`. `account` is a hash of the account and org ids, so a different login never
+(new session, stdio on /dev/null, no token in argv). Once it holds the lock, the child
+checks the cache and hold again (another render may just have fetched), then fetches once
+and writes the cache `{fetched_at, account, data}` or the hold `{until, at, reason,
+failures, account, server}`. `account` is a hash of the account and org ids, so a different login never
 sees another's numbers. Holds: no login 10 min, expired token / 401 5 min, 403 1 h,
 404 6 h; anything else backs off 1, 2, 4 … 30 min, or longer when the server's
 `Retry-After` (seconds or a date) asks for it, up to a day (0.1.6, asked by the
-author). Redirects are refused, so the token only goes to `api.anthropic.com`; any
+author; since 0.1.7 it also stretches the 401/403/404 holds, and `server: true` marks a
+hold the server set). Each login has its own cache and hold, named by its tag (the
+`account` hash: 16 hex digits, `env-` and 16 for `CLAUDE_CODE_OAUTH_TOKEN`, or
+`unknown`), so two logins in use at once don't overwrite each other's numbers or clear
+each other's waits (0.1.7; before, they refetched over each other every render). Writes
+remove 0.1.6's shared `usage.json` / `fetch.hold`, and other logins' files untouched
+for over a day; files whose names aren't dashline's tags are never touched. A request
+gets 10 s per step and 30 s in all, DNS included. Redirects are refused, so the token only goes to `api.anthropic.com`; any
 failure, even one the code didn't foresee, writes a hold. Times more than a minute
 ahead of the clock (it was set back: an NTP step, a restored VM; daylight saving
 doesn't move epoch time) count as unknown: the cache refetches, and a lock or hold
@@ -315,6 +325,9 @@ how a new meter shows up without a release.
   (`resets_at` within 60 s) the higher percent wins, otherwise the later window. A
   cached row, or a stdin window, whose `resets_at` has passed reads 0% (stdin since
   0.1.6: Claude Code resends the last response's window while you're idle).
+- Absurd numbers stay short (0.1.7): percents stop at 999%, countdowns at 999 days,
+  token counts at 999.0M and cost at $99999.99; a negative cost or token count reads as
+  missing.
 - Past 100% (credits, gateway spend): the bar stays full and the percent keeps counting.
 
 ### Narrow terminals
@@ -435,13 +448,18 @@ Details:
   no commits yet diffs the index against the empty tree. git gets 1 s in total; past
   that, or with no git installed, the row shows the project alone.
 - Hardened 0.1.6: git runs in its own process group, killed at the timeout along with
-  any hook it started; with `-c core.fsmonitor=false` and `--ignore-submodules=dirty`;
+  any hook it started; with `-c core.fsmonitor=` (off on every git; 0.1.6 used `false`,
+  which git 2.16–2.35 ran as a hook program) and `--ignore-submodules=dirty`;
   without the inherited variables that point it at another repo or index (`GIT_DIR`,
   `GIT_INDEX_FILE`, …; `GIT_CONFIG*` are the user's and stay). The project is found by
   its real path, so a symlink works and shows no false drift. Mid-rebase, the branch's
   configured upstream decides "never pushed". An interrupted cherry-pick or revert
   sequence (`sequencer/todo`) shows. Displayed names have control characters replaced,
   and a link is attached only to a printable-ASCII URL.
+- 0.1.7: a rebase of a detached commit shows no `local` (there's no branch to push).
+  The repo search stops at `GIT_CEILING_DIRECTORIES` as git's does, and
+  `GIT_CONFIG_NOSYSTEM` is read as git's boolean. In a reftable repo (git 2.45+) the
+  default branch and a gone upstream come from one extra git call, made only there.
 - Nerd glyphs (all Material Design `md-`, codepoints checked against
   `glyphnames.json`):
 
@@ -476,14 +494,18 @@ Details:
   round trip; its output is used only when status shows tracked changes.
 - Operation state is read from `.git` files (`rebase-merge/`, `MERGE_HEAD`, …).
   The tag lookup runs only when detached.
-- All with `--no-optional-locks`. Budget: 20 ms on a mid-size repo.
+- All with `GIT_OPTIONAL_LOCKS=0` (git 2.15+; 0.1.7 dropped `--no-optional-locks`, which
+  git 2.11–2.14 rejects, so those showed no git state). Budget: 20 ms on a mid-size repo.
 
 **OSC 8 hyperlinks pass through (E3).** The CLI re-emits them with its own `id=` and a BEL
 terminator, colors intact, `file://` links included (checked 11/4).
 
 **Links (chosen 11/4: branch and folder):** the project name (or plain folder) links to
 `file://<hostname><project dir>`; the branch links to GitHub when it has a live upstream
-on a `github.com` / `github.*` remote: `…/compare/<default>...<branch>`, or
+on a GitHub remote: `github.com`, `www.github.com`, an SSH alias `github-<name>` (no
+dot) or `github.com-<name>` (all linking to github.com), `github.<domain>` (Enterprise
+Server) or `<name>.ghe.com` (Enterprise Cloud; aliases and `ghe.com` 0.1.7, asked by the
+author; `~/.ssh/config` isn't read): `…/compare/<default>...<branch>`, or
 `…/tree/<branch>` when it is the default branch (from `refs/remotes/<remote>/HEAD`) or
 the default is unknown. Unpushed branches, other hosts, tags and detached commits get no
 link. A remote written with a `url.<base>.insteadOf` shorthand (`gh:owner/repo`) is
@@ -519,8 +541,11 @@ bar characters have different shapes.
 Widths are counted in terminal columns (0.1.6, asked by the author): East Asian Wide
 and Fullwidth characters (CJK, most emoji) count 2, combining marks and format
 characters 0, everything else 1, including the ambiguous-width ones below and Nerd
-icons. ASCII text skips the lookup, so a normal render costs nothing extra. Before
-0.1.6 a CJK branch or model name overflowed its line.
+icons. A character followed by VS16 (U+FE0F, emoji presentation, as in ❤️) counts 2,
+and cutting text never splits the pair (0.1.7); a ZWJ sequence counts each emoji, which
+errs wide. ASCII text skips the lookup, so a normal render costs nothing extra. Before
+0.1.6 a CJK branch or model name overflowed its line. stdin is read as UTF-8 whatever
+the locale, bad bytes becoming U+FFFD (0.1.7).
 
 Rules for the unicode set: nothing emoji-capable (⚠ ❄ ☁ ⚡ ✖ ✔ ✏ can render two
 columns wide) and nothing Nerd Font. The block, box, dot and ellipsis characters `▆ ▁ │ · …`
@@ -598,8 +623,10 @@ writes. If hiding elements ever earns its keep, a file goes in
 
 ## 9. CLI, skills, plugin
 
-`statusline.py` modes: *(stdin)* render · `--doctor` · `--install [--replace]`
-· `--preview [SCENARIO]` · `--glyphs SET` · `--version` · `--help`.
+`statusline.py` modes: *(stdin)* render · `--doctor [--fetch-now]` ·
+`--install [--replace] [--downgrade]` · `--preview [SCENARIO]` · `--glyphs SET` ·
+`--version` · `--help`. `COLUMNS` counts only as plain digits, capped at 1000, in
+render and preview alike.
 
 - `--doctor`: one line per check (`ok` / `warn` / `fail` / `info`, a `fix:` line under
   problems), exit 1 on any `fail`. Checks: python, install (installed copy vs the
@@ -613,8 +640,13 @@ writes. If hiding elements ever earns its keep, a file goes in
   `sh -c` on a sample session and times it), git (≥ 2.11), theme, font (Nerd Font
   guess). Phase 6: no profile endpoint any more (§1), and a lock or hold can't wedge
   (a lock expires after 60 s; doctor's fetch replaces the hold), so there is nothing
-  to clear by hand.
-- `--install [--glyphs SET] [--replace]` (Phase 6, so the skill never edits JSON by
+  to clear by hand. Since 0.1.7 (asked by the author): while a hold the server asked
+  for (`Retry-After`) is in force, doctor doesn't fetch; its usage line warns "the
+  server asked to wait until …" and names `--fetch-now`, which fetches anyway. The
+  skill asks the user before using it. A locked or denied macOS Keychain is reported
+  as such, not as no login. A command naming an unknown glyph set gets a `settings`
+  warning, and a failing command shows its `dashline:` error line.
+- `--install [--glyphs SET] [--replace] [--downgrade]` (Phase 6, so the skill never edits JSON by
   hand): copies `statusline.py` + `dashline/*.py` + `VERSION` into a sibling folder and
   swaps it in; writes the user `statusLine` through a symlinked settings.json to the
   real file, keeping its mode and key order. Keeps the installed glyph set unless
@@ -631,6 +663,20 @@ writes. If hiding elements ever earns its keep, a file goes in
   settings.json is kept. An installed copy newer than this one is left alone: exit 4,
   and the skill asks (updating the plugin is the recommended answer) before
   `--downgrade` installs the older copy (0.1.6, asked by the author).
+  0.1.7:
+  - the settings folder must be writable too, checked before anything is written;
+  - a failed `--replace` moves the other tool's files back;
+  - the temp settings file is 0600 until it takes the old file's mode;
+  - in a hand-edited command, `--glyphs` goes right after the script path, so a shell
+    tail (`|| …`) keeps working;
+  - updates keep files the user added at the top of `scripts/statusline/` (not inside
+    `dashline/`);
+  - a folder holding only `.DS_Store`, `Thumbs.db` or `desktop.ini` counts as empty;
+  - the swap is two renames, so a render starting between them draws nothing once.
+
+  Skills: doctor runs at most twice per request (once, plus once after fixes). The
+  no-ask `--install` fix applies only when the `settings` line is ok, because otherwise
+  it would turn on a statusline the user may have removed.
 - `--glyphs all` (preview only) prints each set in turn, for the install skill.
 - `--preview [SCENARIO|all]`: built-in scenarios with fake data at a fixed clock:
   `pro-trial`, `pro`, `ultra-fable`, `team`, `enterprise`, `api`, `limit`, `rebase`,
@@ -693,12 +739,13 @@ src/dashline/
   glyphs.py     nerd / unicode / ascii
   theme.py      which Claude Code theme is active; tokens → SGR
   colors.py     theme tokens, generated by scripts/sync_theme.py
-  text.py       outside text made safe to print (control characters → `?`)
+  text.py       outside text made safe to print (control characters → `?`), widths
   doctor.py  install.py  preview.py
 statusline.py   entry shim (what gets copied)
-scripts/preview.py
+scripts/preview.py  scripts/sync_theme.py  scripts/capture_fixtures.py  scripts/assets/
 tests/  fixtures/{stdin,usage,profile}/*.json
-docs/PLAN.md  docs/preview.svg
+.github/workflows/ci.yml  .github/dependabot.yml
+docs/PLAN.md  docs/preview.svg  docs/plans.svg
 pyproject.toml  README.md  CHANGELOG.md  LICENSE (MIT)  CLAUDE.md
 ```
 
@@ -707,7 +754,16 @@ tests build throwaway repos in `tmp_path`; fetch tests hit a local
 `http.server`; golden tests compare full rendered lines per scenario; one
 fixture set per plan (the old plan→bar table becomes these expectations). No test reaches a real
 endpoint: every subprocess a test starts gets a dead-port `HTTPS_PROXY`, and an autouse
-check fails any test that starts one without it (0.1.6).
+check fails any test that starts one without it (0.1.6). Since 0.1.7 the tests also
+clear the developer's proxy, provider and git variables (a global `commit.gpgsign`, a
+hook's `GIT_INDEX_FILE`), and stub the macOS `security` command as "not found"
+(`@pytest.mark.real_keychain` opts out).
+
+CI (0.1.7): lint, the preview `--check`, and the tests on Linux and macOS for
+Python 3.9, 3.12 and 3.14, all through `uv run --locked`; plus a smoke run on Apple's
+`/usr/bin/python3` (version, preview, install into a throwaway home, render).
+Actions are SHA-pinned and bumped by Dependabot. `capture_fixtures.py` goes through
+`usage.get`, so it refuses redirects too, and it scrubs every id.
 
 ---
 
@@ -778,6 +834,7 @@ outside this repo. The compaction-point work does **not** move here.)
 
 ## 13. Open questions
 
-None on design as of 11/5; wide characters and the context-bar rule were settled for
-0.1.6 (§4, §7).
+None on design as of 11/6; wide characters and the context-bar rule were settled for
+0.1.6 (§4, §7), and doctor's handling of a server-asked wait, and GitHub aliases, for
+0.1.7 (§9, §5).
 - Later: pace tick; tag + GitHub release.

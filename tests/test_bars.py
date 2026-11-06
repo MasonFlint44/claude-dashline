@@ -61,6 +61,7 @@ def test_filled(percent, width, cells):
         (99.6, "99%"),
         (100, "100%"),
         (140.2, "140%"),
+        (1e300, "999%"),  # no giant number on the line
     ],
 )
 def test_percent_text(percent, text):
@@ -79,6 +80,7 @@ def test_percent_text(percent, text):
         (2 * 3600, "2h"),
         (52 * 3600, "2d4h"),
         (48 * 3600, "2d"),
+        (1e300, "999d"),
     ],
 )
 def test_duration(seconds, text):
@@ -86,7 +88,22 @@ def test_duration(seconds, text):
 
 
 @pytest.mark.parametrize(
-    ("count", "text"), [(950, "950"), (38_400, "38k"), (999_600, "1.0M"), (1_234_000, "1.2M")]
+    ("count", "text"),
+    [
+        (950, "950"),
+        (38_400, "38k"),
+        (999_600, "1.0M"),
+        (1_234_000, "1.2M"),
+        (1e300, "999.0M"),
+        (-5, "0"),
+    ],
 )
 def test_tokens(count, text):
     assert bars.tokens(count) == text
+
+
+@pytest.mark.parametrize(
+    ("dollars", "text"), [(0, "$0.00"), (11.8, "$11.80"), (1e300, "$99999.99"), (-1, "$0.00")]
+)
+def test_money(dollars, text):
+    assert bars.money(dollars) == text

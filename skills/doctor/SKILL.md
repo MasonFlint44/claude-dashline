@@ -12,10 +12,16 @@ Running it from the plugin lets doctor compare the installed copy with this vers
 
 Run `DASHLINE --doctor` once. It checks each part in order and prints one line per
 check: `ok`, `warn`, `fail` or `info`, the check's name, and what it found. Any problem
-has a `fix:` line under it. It exits 1 if anything failed.
+has a `fix:` line under it. It exits 1 if anything failed, and 2 on a usage error
+(relay its message; nothing was checked).
 
-Doctor fetches plan usage once, the way the statusline's background fetch does. Running
-it again therefore retries now instead of waiting out a backoff. Don't run it in a loop.
+Doctor fetches plan usage once, the way the statusline's background fetch does, so it
+retries now instead of waiting out dashline's own backoff. The exception: when the
+server asked dashline to wait, doctor doesn't fetch, and its `usage` line says
+`server asked to wait` and until when (see §3). `--fetch-now` makes it fetch anyway.
+
+Each run is a live request, so run doctor at most twice per request from the user:
+once, and once more after applying fixes from §3. Never in a loop.
 
 ## 2. Report
 
@@ -32,7 +38,7 @@ What the checks mean:
 | `install` | the copy in `<config>/scripts/statusline/` and whether it matches this plugin version |
 | `settings` | which settings file's `statusLine` wins, and whether it runs dashline; `disableAllHooks` |
 | `login` | subscription vs API key / Bedrock / Vertex / Foundry; where the token comes from |
-| `usage` | one live fetch of plan usage: the bars it would draw, or why it failed |
+| `usage` | one live fetch of plan usage (none while the server asked to wait): the bars it would draw, or why it failed |
 | `cache` | `<config>/cache/statusline/`: writable, dashline's files private, when last fetched, fetch lock |
 | `command` | runs the exact settings command on a sample session, like Claude Code does |
 | `git` | git for the directory row (2.11 or newer) |
@@ -41,20 +47,31 @@ What the checks mean:
 
 ## 3. Fix what's safe
 
-Do these without asking, then run doctor again:
+After applying any of these, run doctor once more to confirm (§1: no more than that).
+
+Do this without asking, only when the `settings` line is `ok` (settings.json already
+runs dashline):
 - `install` warns that the copy is old or differs, or `command` says its statusline.py
-  is missing: run `DASHLINE --install`. It keeps the glyph set and the command as
-  written, and only touches settings.json when the entry is already dashline's.
+  is missing: run `DASHLINE --install`. With the entry already dashline's, it updates
+  the copy and keeps the command and glyph set as written.
   Not when `install` says the installed copy is newer than this one: that means this
   plugin is out of date, so tell the user to update it (`/plugin`) instead.
 
 Ask first (AskUserQuestion), and act only on a yes:
-- `settings` says your user settings.json has no statusLine, or one that runs another
-  statusline: run `DASHLINE --install`. If it exits 3, show what its output says is
-  there (the existing entry, or another tool's files in `scripts/statusline/`) and ask
-  before `DASHLINE --install --replace`. If it exits 4, the installed copy is newer than
-  this plugin: recommend updating the plugin (`/plugin`), and only on an explicit yes
-  run `DASHLINE --install --downgrade`.
+- `settings` isn't `ok` because user settings.json has no statusLine or one that runs
+  another statusline, or `install` fails with `nothing installed`: run
+  `DASHLINE --install`. It copies dashline and writes the statusLine entry, which turns
+  the statusline on, so the user may have removed it on purpose. If it exits 3, show
+  what its output says is there (the existing entry, or another tool's files in
+  `scripts/statusline/`) and ask before `DASHLINE --install --replace`. If it exits 4,
+  the installed copy is newer than this plugin: recommend updating the plugin
+  (`/plugin`), and only on an explicit yes run `DASHLINE --install --downgrade`.
+- `usage` says `server asked to wait`: the server turned the usage request away and
+  said when to come back (usually a rate limit); dashline waits until then on its own, and the statusline
+  keeps the last numbers meanwhile. Tell the user when it will retry and the reason
+  doctor gives, then ask whether to try now anyway (recommend waiting). Only on a yes,
+  run `DASHLINE --doctor --fetch-now`, once; it counts as the one re-run. If it's still
+  refused, stop: don't retry.
 - `cache` says other users can read one of its files: run the `chmod 600` in its `fix:` line.
 
 Explain, and leave to the user:

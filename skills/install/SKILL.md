@@ -45,16 +45,23 @@ uses `unicode`.
   then `/dashline:install` again. Only if the user wants the older version anyway,
   run `DASHLINE --install --downgrade` (add `--replace` if exit 3 asked for it too).
 - **Exit 1:** relay the error: usually settings.json that isn't valid JSON, or is
-  read-only. Don't fix settings.json yourself unless the user asks.
+  read-only (the file or its folder). Don't fix settings.json yourself unless the user
+  asks. If `--replace` had moved another tool's files aside, the output says they were
+  moved back.
+- **Exit 2:** a usage error (a mistyped flag or glyph set). Relay the message; nothing
+  was changed.
+
+An update keeps files the user added to `scripts/statusline/` (notes, a wrapper script).
 
 An entry that is already dashline's keeps its command as written (for example a full
 path to Python); only the `--glyphs` flag changes.
 
 ## 3. Check
 
-Run `DASHLINE --doctor` once (it fetches plan usage live, so don't repeat it) and tell
-the user the result in a sentence or two. If it isn't `All good.`, explain each `warn`
-and `fail` line and its `fix:`, using the doctor skill's guidance (`/dashline:doctor`).
+Run `DASHLINE --doctor` and tell the user the result in a sentence or two. If it isn't
+`All good.`, explain each `warn` and `fail` line and its `fix:`, using the doctor
+skill's guidance (`/dashline:doctor`). Each doctor run fetches plan usage live, so the
+doctor skill's limit applies: one more run only to confirm fixes you applied from it.
 Keep its `font` line for the next step: it says whether this terminal probably shows
 Nerd Font icons (Ghostty and WezTerm bundle them; otherwise it looks for an installed
 Nerd Font) and which set is in use.
@@ -63,7 +70,7 @@ Nerd Font) and which set is in use.
 
 A terminal can't be asked which fonts it draws, so the user has to look.
 
-1. Read the `font` line from step 3's doctor output. Don't run doctor again.
+1. Read the `font` line from step 3's doctor output. Don't run doctor again for it.
 2. Ask the user to run this themselves, because only output from their own `!` command
    is certain to show in their terminal's font. Write it with the real path in place of
    `${CLAUDE_PLUGIN_ROOT}`:

@@ -60,6 +60,8 @@ def settings_files(project_dir: str | None, env) -> list:
     Managed, project-local, project, user. (Flags like --settings can't be seen from here.)
     """
     user = os.path.join(config_dir(env), "settings.json")
+    if project_dir and "\x00" in project_dir:
+        project_dir = None  # can't name a folder; os.path.realpath would raise
     candidates = []
     managed = managed_settings_path()
     if managed:

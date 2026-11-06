@@ -9,7 +9,7 @@ project and branch only.
 git runs with the repo's fsmonitor hook off and submodules' own changes ignored, in a
 process group of its own: at the timeout the whole group is killed, so a hung hook or
 filter can't hold the render. Every name shown goes through `text.clean`, so a folder or
-branch name can't put escape codes on the terminal.
+branch name can't put escape codes on the terminal. Any git from 2.11 works.
 
 Links (OSC 8, chosen 11/4): the project opens its folder (`file://host/path`); a pushed
 branch on GitHub opens its compare page against the default branch, or the branch page
@@ -56,6 +56,9 @@ GITHUB = re.compile(
     r"(?P<path>[^/]+/[^/]+?)(?:\.git)?/?$"
 )
 GITHUB_HOST = re.compile(r"^[a-z0-9-]+(?:\.[a-z0-9-]+)*$")
+# Bytes a URL path keeps as they are; the rest are percent-encoded (as urllib's quote
+# does, without importing it on every render).
+URL_SAFE = frozenset(b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-~/")
 GITHUB_PATH = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")  # owner/repo
 # A config section header: [section], [section "subsection"] or the old [section.sub].
 CONFIG_HEADER = re.compile(r'^\[\s*([A-Za-z0-9.-]+)(?:\s+"((?:[^"\\]|\\.)*)")?\s*\]')
@@ -101,8 +104,23 @@ def _read(path: str) -> str | None:
         return None
 
 
-def find_git(start: str) -> tuple | None:
-    """(top level, git dir, common dir) for the repo holding `start`, or None."""
+def ceiling_dirs(env) -> list:
+    """GIT_CEILING_DIRECTORIES as git reads it: absolute paths only, with symlinks
+    resolved except after an empty entry."""
+    out, resolve = [], True
+    for entry in (env.get("GIT_CEILING_DIRECTORIES") or "").split(os.pathsep):
+        if not entry:
+            resolve = False
+        elif os.path.isabs(entry):
+            out.append(os.path.realpath(entry) if resolve else os.path.normpath(entry))
+    return out
+
+
+def find_git(start: str, ceilings: list = ()) -> tuple | None:
+    """(top level, git dir, common dir) for the repo holding `start`, or None.
+
+    Like git, the walk up never enters a ceiling directory (it may start in one).
+    """
     path = os.path.abspath(start)
     while True:
         dot_git = os.path.join(path, ".git")
@@ -116,7 +134,7 @@ def find_git(start: str) -> tuple | None:
             git_dir = os.path.normpath(os.path.join(path, text[len("gitdir:") :].strip()))
             break
         parent = os.path.dirname(path)
-        if parent == path:
+        if parent == path or parent in ceilings:
             return None
         path = parent
     common = (_read(os.path.join(git_dir, "commondir")) or "").strip()
@@ -205,6 +223,14 @@ def parse_remotes(config) -> dict:
     return remotes
 
 
+def _env_bool(value: str | None) -> bool:
+    """A git boolean from the environment: unset, empty, 0, false, no and off are false."""
+    value = (value or "").strip().lower()
+    if value.lstrip("-").isascii() and value.lstrip("-").isdigit():
+        return int(value) != 0
+    return value not in ("", "false", "no", "off")
+
+
 def config_files(env) -> list:
     """The config files git reads before a repo's own: system, then global.
 
@@ -212,7 +238,7 @@ def config_files(env) -> list:
     `url.<base>.insteadOf` shorthands like `gh:owner/repo`.
     """
     paths = []
-    if not env.get("GIT_CONFIG_NOSYSTEM"):
+    if not _env_bool(env.get("GIT_CONFIG_NOSYSTEM")):
         paths.append(env.get("GIT_CONFIG_SYSTEM") or "/etc/gitconfig")
     if env.get("GIT_CONFIG_GLOBAL"):
         paths.append(env["GIT_CONFIG_GLOBAL"])
@@ -241,20 +267,31 @@ def rewrite_url(url: str, rewrites: list) -> str:
     return best[1] + url[len(best[0]) :] if best else url
 
 
-def _ref_exists(common_dir: str, ref: str) -> bool:
-    """Whether `refs/…` exists, loose or packed. Assumed so under the reftable backend."""
-    if os.path.isdir(os.path.join(common_dir, "reftable")):
-        return True
+def _reftable(common_dir: str) -> bool:
+    """Whether the repo keeps its refs in the reftable format (git 2.45+), not files."""
+    return os.path.isdir(os.path.join(common_dir, "reftable"))
+
+
+def _ref_exists(common_dir: str, ref: str, git=None) -> bool:
+    """Whether `refs/…` exists, loose or packed.
+
+    Under reftable the files can't say, so `git` (args → output, or None) is asked;
+    without an answer the ref is assumed to exist.
+    """
+    if _reftable(common_dir):
+        out = git(["for-each-ref", "--format=%(refname)", ref]) if git else None
+        return out is None or ref in out.splitlines()
     if os.path.exists(os.path.join(common_dir, *ref.split("/"))):
         return True
     packed = _read(os.path.join(common_dir, "packed-refs")) or ""
     return any(line.endswith(" " + ref) for line in packed.splitlines())
 
 
-def configured_upstream(entries: list, branch: str, common_dir: str) -> tuple:
+def configured_upstream(entries: list, branch: str, common_dir: str, git=None) -> tuple:
     """(upstream, gone) for a branch from its `[branch]` config, as git status names it.
 
     For when status can't say: HEAD is detached while the branch is being rebased.
+    git: as for `_ref_exists`.
     """
     remote = merge = None
     for section, sub, key, value in entries:
@@ -267,8 +304,27 @@ def configured_upstream(entries: list, branch: str, common_dir: str) -> tuple:
         return None, False
     name = merge[len("refs/heads/") :]
     if remote == ".":
-        return name, not _ref_exists(common_dir, merge)
-    return f"{remote}/{name}", not _ref_exists(common_dir, f"refs/remotes/{remote}/{name}")
+        return name, not _ref_exists(common_dir, merge, git)
+    ref = f"refs/remotes/{remote}/{name}"
+    return f"{remote}/{name}", not _ref_exists(common_dir, ref, git)
+
+
+def github_host(host: str) -> str | None:
+    """The web host for a GitHub remote's host, or None when it isn't GitHub.
+
+    github.com itself, also as `www.github.com` or an SSH alias from ~/.ssh/config like
+    `github-work` or `github.com-work` (the usual way to use two accounts); GitHub
+    Enterprise Server at `github.<domain>`; Enterprise Cloud at `<name>.ghe.com`.
+    """
+    if not GITHUB_HOST.match(host):
+        return None  # not a name GitHub allows, so not a page to link to
+    if host in ("github.com", "www.github.com") or host.startswith("github.com-"):
+        return "github.com"
+    if host.startswith("github-") and "." not in host:
+        return "github.com"
+    if host.startswith("github.") or host.endswith(".ghe.com"):
+        return host
+    return None
 
 
 def github_web(url: str) -> str | None:
@@ -276,38 +332,56 @@ def github_web(url: str) -> str | None:
     m = GITHUB.match(url.strip())
     if not m:
         return None
-    host = (m.group("h1") or m.group("h2")).lower()
-    if host != "github.com" and not host.startswith("github."):
+    host = github_host((m.group("h1") or m.group("h2")).lower())
+    if not host or not GITHUB_PATH.match(m.group("path")):
         return None
-    if not GITHUB_HOST.match(host) or not GITHUB_PATH.match(m.group("path")):
-        return None  # not a name GitHub allows, so not a page to link to
     return f"https://{host}/{m.group('path')}"
 
 
-def _default_branch(common_dir: str, remote: str) -> str | None:
-    """The remote's default branch, from `refs/remotes/<remote>/HEAD` (set by clone)."""
-    text = (_read(os.path.join(common_dir, "refs", "remotes", remote, "HEAD")) or "").strip()
-    prefix = f"ref: refs/remotes/{remote}/"
-    return text[len(prefix) :] if text.startswith(prefix) else None
+def _default_branch(common_dir: str, remote: str, git=None) -> str | None:
+    """The remote's default branch, from `refs/remotes/<remote>/HEAD` (set by clone).
+
+    Under reftable that ref isn't a file, so `git` (args → output, or None) is asked.
+    """
+    prefix = f"refs/remotes/{remote}/"
+    if _reftable(common_dir):
+        text = ((git(["symbolic-ref", "-q", prefix + "HEAD"]) if git else None) or "").strip()
+    else:
+        text = (_read(os.path.join(common_dir, *prefix.split("/"), "HEAD")) or "").strip()
+        text = text[len("ref: ") :] if text.startswith("ref: ") else ""
+    return (text[len(prefix) :] or None) if text.startswith(prefix) else None
 
 
-def folder_url(path: str) -> str:
-    from urllib.parse import quote
+def quote(text: str) -> str:
+    """`text` percent-encoded as UTF-8 for a URL path; `/` is kept.
 
+    Raises UnicodeEncodeError for a lone surrogate (only bytes from a file name that
+    isn't UTF-8 encode).
+    """
+    raw = text.encode("utf-8", "surrogateescape")
+    return "".join(chr(b) if b in URL_SAFE else f"%{b:02X}" for b in raw)
+
+
+def folder_url(path: str) -> str | None:
+    """`file://host/path` for the folder, or None when the path can't be encoded."""
     host = os.uname().nodename if hasattr(os, "uname") else ""
     path = path.replace(os.sep, "/")
     if not path.startswith("/"):
         path = "/" + path  # C:/x on Windows
-    return f"file://{host}{quote(path)}"
+    try:
+        return f"file://{host}{quote(path)}"
+    except UnicodeEncodeError:
+        return None
 
 
-def branch_url(state: RepoState, remotes: dict, common_dir: str, rewrites: list = ()) -> str | None:
+def branch_url(
+    state: RepoState, remotes: dict, common_dir: str, rewrites: list = (), git=None
+) -> str | None:
     """Compare page for a pushed branch on GitHub; the branch page for the default.
 
     rewrites: url_rewrites from every config file, so `gh:owner/repo` links too.
+    git: as for `_default_branch`.
     """
-    from urllib.parse import quote
-
     if not state.branch or not state.upstream or state.upstream_gone:
         return None
     remote = max((r for r in remotes if state.upstream.startswith(r + "/")), key=len, default=None)
@@ -315,10 +389,13 @@ def branch_url(state: RepoState, remotes: dict, common_dir: str, rewrites: list 
     if not web:
         return None
     branch = state.upstream[len(remote) + 1 :]
-    default = _default_branch(common_dir, remote)
-    if default is None or default == branch:
-        return f"{web}/tree/{quote(branch)}"
-    return f"{web}/compare/{quote(default)}...{quote(branch)}"
+    default = _default_branch(common_dir, remote, git)
+    try:
+        if default is None or default == branch:
+            return f"{web}/tree/{quote(branch)}"
+        return f"{web}/compare/{quote(default)}...{quote(branch)}"
+    except UnicodeEncodeError:
+        return None
 
 
 def operation(git_dir: str) -> tuple:
@@ -380,7 +457,10 @@ def _start(args: list, cwd: str, env: dict):
 
     return subprocess.Popen(
         # No fsmonitor: its hook is a program the repo's config names, run on each status.
-        ["git", "--no-optional-locks", "-c", "core.fsmonitor=false", *args],
+        # Empty means off on every git: a hook path before 2.36, a boolean since. No
+        # --no-optional-locks: git before 2.15 refuses it, and GIT_OPTIONAL_LOCKS=0
+        # does the same where it exists.
+        ["git", "-c", "core.fsmonitor=", *args],
         cwd=cwd,
         env=env,
         stdin=subprocess.DEVNULL,
@@ -435,9 +515,9 @@ def parse_status(text: str, state: RepoState) -> None:
         elif field.startswith("# branch.upstream "):
             state.upstream = field[len("# branch.upstream ") :]
         elif field.startswith("# branch.ab "):
-            parts = field.split()
-            if len(parts) == 4:
-                state.ahead, state.behind = abs(int(parts[2])), abs(int(parts[3]))
+            parts = [p.lstrip("+-") for p in field.split()[2:]]
+            if len(parts) == 2 and all(p.isascii() and p.isdigit() for p in parts):
+                state.ahead, state.behind = int(parts[0]), int(parts[1])
         elif field.startswith(("1 ", "2 ")):
             state.dirty = True
             if field.startswith("2 "):
@@ -492,7 +572,7 @@ def _inspect(state: RepoState, env) -> None:
     state.folder_url = folder_url(os.path.abspath(project_dir))
     # git itself works from the resolved path: a symlink into a repo is still in it.
     state.real_dir = os.path.realpath(project_dir)
-    found = find_git(state.real_dir)
+    found = find_git(state.real_dir, ceiling_dirs(env))
     if not found:
         return
     root, git_dir, common_dir = found
@@ -526,6 +606,16 @@ def _inspect(state: RepoState, env) -> None:
     parse_status(status_text, state)
     if state.upstream and "# branch.ab " not in status_text:
         state.upstream_gone = True
+
+    def run_git(args):
+        """One more git command within the deadline: its output, or None."""
+        if time.monotonic() >= deadline:
+            return None
+        try:
+            return _finish(_start(args, root, genv), deadline)
+        except OSError:
+            return None
+
     if state.dirty:
         if numstat_text is None and state.oid is None and time.monotonic() < deadline:
             # No commits yet: `--cached` alone compares the index with the empty tree,
@@ -539,7 +629,7 @@ def _inspect(state: RepoState, env) -> None:
         state.branch = _rebase_branch(git_dir)
         if state.branch:
             state.upstream, state.upstream_gone = configured_upstream(
-                config, state.branch, common_dir
+                config, state.branch, common_dir, run_git
             )
     if state.branch and state.upstream and not state.upstream_gone:
         # insteadOf shorthands usually live in the global config, so read it only here.
@@ -547,7 +637,7 @@ def _inspect(state: RepoState, env) -> None:
         for path in config_files(env):
             rewrites += url_rewrites(parse_config(_read(path) or ""))
         rewrites += url_rewrites(config)
-        state.branch_url = branch_url(state, remotes, common_dir, rewrites)
+        state.branch_url = branch_url(state, remotes, common_dir, rewrites, run_git)
     if state.branch is None and state.oid and time.monotonic() < deadline:
         tag = _finish(_start(["describe", "--tags", "--exact-match", "HEAD"], root, genv), deadline)
         state.tag = tag.strip() if tag and tag.strip() else None
@@ -658,7 +748,9 @@ def _changes(state: RepoState, ctx, counts: bool) -> list:
 
 
 def _sync(state: RepoState, ctx) -> list:
-    if not state.git or not (state.branch or state.operation == "rebase"):
+    # A detached HEAD has nothing to push, mid-rebase too. A branch being rebased is
+    # known by now, from the rebase state.
+    if not state.git or not state.branch:
         return []
     if state.upstream_gone:
         return [ctx.seg(ctx.g["upstream_gone"], "inactive")]

@@ -417,3 +417,31 @@ def test_context_bar_keeps_the_plan_width_before_the_cache_detail():
     first, second = lines
     assert first.endswith("57% cache cold")  # the detail went, not the bar's cells
     assert cells(first, "context") == cells(second, "5h")
+
+
+def test_truncate_stops_where_a_wide_character_did_not_fit():
+    line = [("\u4e2d\u4e2d\u4e2d", ""), ("ab", "")]
+    assert layout.truncate(line, 6, "\u2026", "") == [("\u4e2d\u4e2d", ""), ("\u2026", "")]
+
+
+def test_warm_cache_without_an_expiry_shows_nothing():
+    s = make_session(prompt_cache={"caching_observed": True, "warm": True, "expires_at": None})
+    assert layout.cache_state(s, make_ctx(120), False) == []
+
+
+def test_fast_mode_without_an_effort_level():
+    s = make_session(effort=None, fast_mode=True)
+    line = plain([layout.session_items(s, make_ctx(120), None, False)])[0]
+    assert line.startswith("Sonnet 5.5 \u21af")
+
+
+def test_absurd_numbers_stay_short():
+    s = make_session(
+        context_window={"used_percentage": 1e300},
+        cost={"total_cost_usd": 1e300},
+        prompt_cache={"warm": False, "recache_tokens_if_cold": -5e20},
+    )
+    first = lines_text(s, make_ctx(120))[0]
+    assert "$99999.99" in first
+    assert "999%" in first
+    assert "\u21bb" not in first  # no recache count from a negative number

@@ -1,5 +1,80 @@
 # Changelog
 
+## 0.1.7 — 2026-11-06
+
+Fixes from a second review of the whole project.
+
+**Plan usage**
+- Each login has its own usage cache and backoff. Two logins in use at once (say,
+  `CLAUDE_CODE_OAUTH_TOKEN` in one session) no longer refetch over each other on every
+  render or clear each other's `Retry-After`. 0.1.6's `usage.json` and `fetch.hold` are
+  removed on the next fetch.
+- Two sessions rendering together can't start a second fetch: the fetch checks the
+  cache again once it holds the lock.
+- `Retry-After` also stretches the waits after a 401, 403 or 404.
+- A request has 30 s in all, DNS included, so a server trickling bytes can't keep a
+  fetch alive past its lock.
+- A locked or denied macOS Keychain is reported as such, instead of "no login" with
+  advice to `/login`.
+- A deeply nested answer counts as unreadable instead of failing oddly.
+
+**Doctor**
+- While the server has asked dashline to wait, doctor says until when and doesn't
+  fetch. `--doctor --fetch-now` fetches anyway, and the skill asks you first.
+- A command naming an unknown glyph set (`--glyphs Nerd`) gets a clear warning, and a
+  failing command shows its error instead of the last line of the help.
+- The skill no longer turns a statusline you removed back on without asking. The
+  install and doctor skills agree on re-running doctor: once after fixes, never in a
+  loop.
+
+**Install**
+- A failed `--replace` moves the other tool's files back instead of leaving your
+  statusline broken.
+- A read-only config folder is caught before anything is copied.
+- The temporary settings file is never readable by others, even for a moment.
+- In a hand-edited command with a shell tail (`… 2>/dev/null || echo x`), `--glyphs`
+  goes right after the script path instead of at the very end.
+- Updates keep files you added to `scripts/statusline/`, and a stray `.DS_Store` or
+  `Thumbs.db` no longer makes the folder look like another tool's.
+
+**Statusline**
+- Input is read as UTF-8 whatever the system locale, so `Opus ✦` or a folder named
+  `café` no longer turns into mojibake; invalid bytes show as `�` instead of
+  `internal error`.
+- Absurd numbers stay short: percents stop at 999%, countdowns at 999 days, token
+  counts at 999.0M, cost at $99999.99. A negative cost or token count reads as missing.
+- Emoji written with VS16 (❤️, ⚠️) count as two columns, and cutting text never splits
+  one. A wide character that doesn't fit no longer lets a narrow one from the next
+  piece slip in.
+- `--preview` with an odd `COLUMNS` (`²`, `3000000`) no longer crashes or prints
+  megabytes.
+- Very deeply nested input, and a path containing a NUL byte, read as bad input
+  instead of `internal error`.
+- The entry script takes its folder back off Python's import path, so a stray `.py`
+  file there can't stand in for a standard-library module.
+
+**Directory row**
+- A rebase of a detached commit no longer shows `local`.
+- git 2.11–2.14 shows git state again (`--no-optional-locks` made it fail), and git
+  2.16–2.35 no longer runs the program `false` on every render.
+- GitHub links for SSH host aliases (`git@github-work:o/r`, `github.com-work`),
+  `www.github.com` and GitHub Enterprise Cloud (`<name>.ghe.com`).
+- Reftable repos (git 2.45+) get the compare link and gone-upstream detection.
+- `GIT_CEILING_DIRECTORIES` is respected, and `GIT_CONFIG_NOSYSTEM=0` no longer counts
+  as set.
+- The folder link no longer imports `urllib`, about 2 ms off each render.
+
+**Development**
+- Tests no longer pick up your proxy, provider or git settings (a global
+  `commit.gpgsign`, a pre-commit hook's `GIT_INDEX_FILE`), and on macOS never query
+  your login Keychain. The hung-hook test now checks something on macOS too.
+- CI checks `uv.lock` is current (`--locked`), has job timeouts, cancels superseded PR
+  runs, runs once per PR, smoke-tests Apple's `/usr/bin/python3`, and Dependabot keeps
+  the pinned actions current.
+- `scripts/capture_fixtures.py` refuses redirects (it would have sent the token to a
+  redirect's host) and scrubs every id, not just UUIDs.
+- `.gitignore` covers coverage output, `.DS_Store` and captured fixtures.
+
 ## 0.1.6 — 2026-11-05
 
 A hardening release from a review of the whole project.

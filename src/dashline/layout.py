@@ -110,6 +110,8 @@ def truncate(line: list, limit: int, ellipsis: str, style: str) -> list:
             break
         part = cut(text, room)
         out.append((part, *rest))
+        if part != text:
+            break  # cut short: a narrower character from later must not fill the gap
         room -= cols(part)
     out.append((cut(ellipsis, limit), style))
     return out
@@ -198,7 +200,7 @@ def session_items(
     if plan_label:
         items.append([ctx.seg(plan_label, "inactive")])
     if session.cost is not None:
-        items.append([ctx.seg(f"${session.cost:.2f}", "text")])
+        items.append([ctx.seg(bars.money(session.cost), "text")])
     line = []
     for i, item in enumerate(items):
         if i:

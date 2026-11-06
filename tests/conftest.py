@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from dashline import glyphs, layout, stdin, theme, usage
+from dashline import account, glyphs, layout, stdin, theme, usage
 from dashline.colors import THEMES
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -70,14 +70,30 @@ def stdin_fixture():
     return load
 
 
+# Everything that picks the login or the provider; the providers come from account.py,
+# so a new one is cleared here too.
 TOKEN_VARS = (
     "CLAUDE_CONFIG_DIR",
     "CLAUDE_CODE_OAUTH_TOKEN",
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_AUTH_TOKEN",
-    "CLAUDE_CODE_USE_BEDROCK",
-    "CLAUDE_CODE_USE_VERTEX",
-    "CLAUDE_CODE_USE_FOUNDRY",
+    *(var for var, _ in account.PROVIDERS),
+)
+# The developer's shell, which a test must not inherit: other proxies (the local
+# stand-in server is plain http, so HTTP_PROXY would route it away), the terminal, and
+# Claude Code's own session variables when the suite runs inside Claude Code.
+SHELL_VARS = (
+    "HTTP_PROXY",
+    "http_proxy",
+    "ALL_PROXY",
+    "all_proxy",
+    "NO_PROXY",
+    "no_proxy",
+    "TERM_PROGRAM",
+    "NO_COLOR",
+    "COLORFGBG",
+    "COLUMNS",
+    "CLAUDE_PROJECT_DIR",
 )
 
 
@@ -145,7 +161,7 @@ def isolated_home(tmp_path, monkeypatch):
         monkeypatch.setenv(var, DEAD_PROXY)
     # Managed settings would win over everything a test writes.
     monkeypatch.setattr(theme, "MANAGED_SETTINGS", str(tmp_path / "managed-settings.json"))
-    for var in ("NO_PROXY", "no_proxy", "TERM_PROGRAM", "NO_COLOR", "COLORFGBG"):
+    for var in SHELL_VARS:
         monkeypatch.delenv(var, raising=False)
 
     def no_spawn(env, now):
@@ -153,6 +169,27 @@ def isolated_home(tmp_path, monkeypatch):
 
     monkeypatch.setattr(usage, "spawn", no_spawn)
     return home
+
+
+@pytest.fixture(autouse=True)
+def no_real_keychain(request, monkeypatch):
+    """No test reads the developer's login Keychain on a Mac: `security` answers "not
+    found" (exit 44). A test that fakes subprocess.run itself replaces this; one marked
+    `real_keychain` gets the real subprocess.run.
+    """
+    if request.node.get_closest_marker("real_keychain"):
+        return
+    real_run = subprocess.run
+
+    def guarded(args, *rest, **kwargs):
+        words = [args] if isinstance(args, (str, bytes, os.PathLike)) else list(args)
+        if words and Path(os.fsdecode(words[0])).name == "security":
+            text = kwargs.get("text") or kwargs.get("universal_newlines") or kwargs.get("encoding")
+            empty = "" if text else b""
+            return subprocess.CompletedProcess(args, 44, empty, empty)
+        return real_run(args, *rest, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", guarded)
 
 
 def env_for(home):

@@ -10,14 +10,15 @@ import sys
 GLYPH_SETS = ("nerd", "unicode", "ascii")
 
 USAGE = """\
-usage: statusline.py [--glyphs SET] [--doctor | --install [--replace] [--downgrade]
-                     | --preview [SCENARIO]
+usage: statusline.py [--glyphs SET] [--doctor [--fetch-now]
+                     | --install [--replace] [--downgrade] | --preview [SCENARIO]
                      | --version | --help]
 
 With no mode, reads Claude Code's statusline JSON on stdin and prints the status lines.
 
   --glyphs SET         nerd, unicode (default) or ascii; --preview also takes all
   --doctor             check the install, login, usage endpoint, cache and settings
+  --fetch-now          with --doctor: fetch plan usage even if the server asked to wait
   --install            copy dashline into the config dir and point settings.json at it;
                        keeps the current glyph set unless --glyphs is given
   --replace            with --install: replace a statusLine that runs something else
@@ -29,6 +30,8 @@ With no mode, reads Claude Code's statusline JSON on stdin and prints the status
 
 
 MODE_FLAGS = ("--doctor", "--install", "--preview", "--version", "--help", "-h")
+# Flags that only go with one mode.
+MODE_OPTIONS = {"replace": "install", "downgrade": "install", "fetch_now": "doctor"}
 # A COLUMNS beyond this is a mistake, not a terminal; it would only make huge bars.
 MAX_COLUMNS = 1000
 
@@ -37,8 +40,18 @@ class UsageError(Exception):
     pass
 
 
+def parse_columns(value) -> int | None:
+    """COLUMNS as a width, at most MAX_COLUMNS; None if it isn't a plain number."""
+    value = (value or "").strip()
+    # isdigit alone takes "²", which int() rejects.
+    if not (value.isascii() and value.isdigit()):
+        return None
+    return min(int(value), MAX_COLUMNS) or None
+
+
 def parse_args(argv: list[str]) -> dict:
-    """Parse argv into {"mode", "glyphs", "scenario", "replace", "downgrade"}. Raises UsageError.
+    """Parse argv into {"mode", "glyphs", "scenario", "replace", "downgrade", "fetch_now"}.
+    Raises UsageError.
 
     `glyphs` is None when not given: render and preview use unicode, install keeps the
     installed choice.
@@ -49,6 +62,7 @@ def parse_args(argv: list[str]) -> dict:
         "scenario": None,
         "replace": False,
         "downgrade": False,
+        "fetch_now": False,
     }
     modes = {
         "--doctor": "doctor",
@@ -73,10 +87,8 @@ def parse_args(argv: list[str]) -> dict:
             if value not in (*GLYPH_SETS, "all"):
                 raise UsageError(f"unknown glyph set {value!r}: use nerd, unicode or ascii")
             opts["glyphs"] = value
-        elif arg == "--replace":
-            opts["replace"] = True
-        elif arg == "--downgrade":
-            opts["downgrade"] = True
+        elif arg in ("--replace", "--downgrade", "--fetch-now"):
+            opts[arg[2:].replace("-", "_")] = True
         elif arg in modes:
             if opts["mode"] == modes[arg]:
                 raise UsageError(f"{arg} is given twice")
@@ -91,9 +103,9 @@ def parse_args(argv: list[str]) -> dict:
         i += 1
     if opts["glyphs"] == "all" and opts["mode"] != "preview":
         raise UsageError("--glyphs all only works with --preview")
-    for flag in ("replace", "downgrade"):
-        if opts[flag] and opts["mode"] != "install":
-            raise UsageError(f"--{flag} only works with --install")
+    for flag, mode in MODE_OPTIONS.items():
+        if opts[flag] and opts["mode"] != mode:
+            raise UsageError(f"--{flag.replace('_', '-')} only works with --{mode}")
     return opts
 
 
@@ -120,7 +132,7 @@ def main(argv: list[str] | None = None) -> int:
     if mode == "doctor":
         from dashline import doctor
 
-        return doctor.run()
+        return doctor.run(fetch_now=opts["fetch_now"])
     if mode == "install":
         from dashline import install
 
@@ -145,18 +157,14 @@ def render(stdin, stdout, glyphs: str = "unicode", env=None, now: float | None =
 
         env = os.environ if env is None else env
         now = time.time() if now is None else now
-        session = stdin_mod.load(stdin.read())
+        session = stdin_mod.load(read(stdin))
         if session.model is None:
             return 0  # not Claude Code's input: nothing to show
         glyph_set = glyph_sets.get(glyphs)
         palette = theme.load(session.project_dir, env)
         acct = account.load(env, session)
         state = usage.load(env, acct, now)
-        columns = env.get("COLUMNS", "").strip()
-        # isdigit alone takes "²"; int() of it fails.
-        columns = (
-            min(int(columns), MAX_COLUMNS) if columns.isascii() and columns.isdigit() else None
-        )
+        columns = parse_columns(env.get("COLUMNS"))
         repo_state = None
         if session.project_dir:
             repo_state = repo.inspect(session.project_dir, session.current_dir, env)
@@ -189,6 +197,15 @@ def render(stdin, stdout, glyphs: str = "unicode", env=None, now: float | None =
 
             traceback.print_exc(file=sys.stderr)
     return 0
+
+
+def read(stdin) -> str:
+    """stdin as UTF-8 whatever the locale says: Claude Code writes UTF-8. Bytes that
+    aren't UTF-8 become U+FFFD instead of an error."""
+    buffer = getattr(stdin, "buffer", None)
+    if buffer is None:
+        return stdin.read()
+    return buffer.read().decode("utf-8", "replace")
 
 
 def write(stdout, lines: list) -> None:

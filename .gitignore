@@ -3,3 +3,9 @@ __pycache__/
 .venv/
 .pytest_cache/
 .ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.DS_Store
+# scripts/capture_fixtures.py output: review it before it goes anywhere
+fixture-*.json

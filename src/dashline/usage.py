@@ -1,9 +1,12 @@
 """The usage endpoint: cache, lock, hold, background fetch, and the plan bars (PLAN §1, §3, §4).
 
-A render never waits on the network. It reads `usage.json`; when that is missing or older
-than FRESH, it takes `fetch.lock` and starts a detached child that fetches once and
-writes either a fresh `usage.json` or a `fetch.hold` saying when to try again and why.
-Several Claude Code sessions share the cache, so the lock keeps them to one fetch.
+A render never waits on the network. It reads its login's `usage-<tag>.json`; when that
+is missing or older than FRESH, it takes `fetch.lock` and starts a detached child that
+fetches once and writes either a fresh cache or a `fetch-<tag>.hold` saying when to try
+again and why. `<tag>` is the login's fingerprint (account.fingerprint), so two logins
+in use at once (say, one session with CLAUDE_CODE_OAUTH_TOKEN) keep their own numbers
+and their own backoff. All sessions share the one lock, which keeps them to one fetch at
+a time.
 
 Times written by another process (the cache's fetch time, the lock, the hold) can be
 ahead of the clock if it has been set back (an NTP step, a manual change, a restored VM
@@ -28,7 +31,8 @@ from dashline.theme import config_dir
 API_URL = "https://api.anthropic.com"
 USAGE_PATH = "/api/oauth/usage"
 BETA = "oauth-2025-04-20"
-TIMEOUT = 10
+TIMEOUT = 10  # for each network step: connecting, each read
+DEADLINE = 30  # for the whole request, DNS included; well under LOCK_STALE
 FRESH = 180  # refetch once the cache is this old
 STALE = 300  # past this, line 2 shows the age (a fetch is failing)
 MAX_AGE = 86400  # older data is dropped, not drawn
@@ -60,11 +64,67 @@ def _path(env, name: str) -> str:
     return os.path.join(cache_dir(env), name)
 
 
+# The files dashline 0.1.6 and earlier shared between logins: removed on the next write.
+LEGACY = ("usage.json", "fetch.hold")
+
+
+def _tag(who: str | None) -> str:
+    """A login's fingerprint as part of a file name. Fingerprints are already hashes; any
+    other value is hashed, so a file name can't carry an id or a path."""
+    if who is None:
+        return "unknown"
+    if _is_tag(who) and who != "unknown":
+        return who
+    import hashlib
+
+    return hashlib.sha256(who.encode("utf-8", "replace")).hexdigest()[:16]
+
+
+def cache_name(who: str | None) -> str:
+    """The cache file of the login whose fingerprint is `who`."""
+    return f"usage-{_tag(who)}.json"
+
+
+def hold_name(who: str | None) -> str:
+    """The hold file of the login whose fingerprint is `who`."""
+    return f"fetch-{_tag(who)}.hold"
+
+
+def _hex16(text: str) -> bool:
+    return len(text) == 16 and all(c in "0123456789abcdef" for c in text)
+
+
+def _is_tag(text: str) -> bool:
+    """A tag `_tag` writes: 16 hex digits, `env-` and 16, or `unknown`."""
+    return text == "unknown" or _hex16(text[4:] if text.startswith("env-") else text)
+
+
+def _per_login(name: str) -> bool:
+    """A per-login cache or hold file. Only dashline's tags match, so other files in a
+    shared folder are never touched."""
+    for prefix, suffix in (("usage-", ".json"), ("fetch-", ".hold")):
+        if name.startswith(prefix) and name.endswith(suffix):
+            return _is_tag(name[len(prefix) : -len(suffix)])
+    return False
+
+
+def own_files(names) -> list:
+    """The names in `names` that are dashline's: the cache folder may be shared."""
+    out = []
+    for name in names:
+        base = name
+        if name.endswith(".tmp"):  # `usage-x.json.123.tmp`, left by a killed writer
+            base = name.rsplit(".", 2)[0]
+        if base in LEGACY or base.startswith("fetch.lock") or _per_login(base):
+            out.append(name)
+    return sorted(out)
+
+
 def _read_json(path: str) -> dict:
     try:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
         return {}
     return data if isinstance(data, dict) else {}
 
@@ -110,10 +170,11 @@ class State:
 def hold(env, who: str | None, now: float | None = None) -> dict | None:
     """The current hold if it is for this login (by fingerprint). Callers compare `until`.
 
-    With `now`, a hold written after `now` (the clock was set back), or one longer than
-    any dashline writes, is ignored.
+    `server` is True when the server asked for the wait (Retry-After). With `now`, a hold
+    written after `now` (the clock was set back), or one longer than any dashline writes,
+    is ignored.
     """
-    data = _read_json(_path(env, "fetch.hold"))
+    data = _read_json(_path(env, hold_name(who)))
     until = _num(data.get("until"))
     if until is None or data.get("account") != who:
         return None
@@ -125,15 +186,14 @@ def hold(env, who: str | None, now: float | None = None) -> dict | None:
     return data
 
 
-def load(env, account, now: float) -> State:
-    if account.mode != "subscription":
-        return State()
-    cache = _read_json(_path(env, "usage.json"))
+def cached(env, who: str | None, now: float) -> tuple:
+    """(data or None, age or None) from the cache of the login `who`."""
+    cache = _read_json(_path(env, cache_name(who)))
     data, age = cache.get("data"), None
     fetched_at = _num(cache.get("fetched_at"))
     if not isinstance(data, dict) or fetched_at is None:
         data = None
-    elif cache.get("account") != account.fingerprint:
+    elif cache.get("account") != who:
         data = None  # someone else's usage: a different login
     elif fetched_at > now + CLOCK_SLACK:
         age = None  # fetched "later" than now: the clock was set back, so age is unknown
@@ -141,10 +201,22 @@ def load(env, account, now: float) -> State:
         age = max(0.0, now - fetched_at)
         if age > MAX_AGE:
             data, age = None, None
-    held = hold(env, account.fingerprint, now)
-    wait = held is not None and held["until"] > now
-    due = data is None or age is None or age >= FRESH
-    return State(data, age, fetch=due and not wait)
+    return data, age
+
+
+def _due(env, who: str | None, now: float, data, age) -> bool:
+    """No fresh cache, and no hold in force."""
+    held = hold(env, who, now)
+    if held is not None and held["until"] > now:
+        return False
+    return data is None or age is None or age >= FRESH
+
+
+def load(env, account, now: float) -> State:
+    if account.mode != "subscription":
+        return State()
+    data, age = cached(env, account.fingerprint, now)
+    return State(data, age, fetch=_due(env, account.fingerprint, now, data, age))
 
 
 # ---- fetching ----
@@ -272,14 +344,20 @@ def spawn(env, now: float) -> bool:
 def child(nonce: str | None = None) -> None:
     """The detached child's entry point: one refresh, then release its lock.
 
-    A failure refresh didn't foresee still writes a backoff hold, so renders don't start
-    a new fetch every time.
+    It looks again first: between its render reading the cache and taking the lock,
+    another child may have fetched, or been told to wait. A failure refresh didn't
+    foresee still writes a backoff hold, so renders don't start a new fetch every time.
     """
     import time
 
     env = os.environ
     now = time.time()
     try:
+        from dashline import account as account_mod
+
+        who = account_mod.identity(env)
+        if not _due(env, who, now, *cached(env, who, now)):
+            return
         refresh(env, now)
     except Exception as e:
         # Nowhere to show a traceback; doctor runs refresh in the foreground.
@@ -313,13 +391,40 @@ def retry_after(value, now: float) -> float | None:
         return None
 
 
-def get(url: str, token: str, timeout: float = TIMEOUT, now: float | None = None) -> tuple:
+def get(
+    url: str,
+    token: str,
+    timeout: float = TIMEOUT,
+    now: float | None = None,
+    deadline: float = DEADLINE,
+) -> tuple:
     """GET the endpoint: (status, parsed JSON or None, Retry-After seconds or None).
 
     Status 0 means the request never got a whole HTTP answer (DNS, refused, timeout, a
-    connection cut mid-answer). Redirects are refused, so the token only ever goes to
-    `url`'s host: a 3xx comes back as its status.
+    connection cut mid-answer, or past `deadline`). Redirects are refused, so the token
+    only ever goes to `url`'s host: a 3xx comes back as its status.
+
+    `timeout` bounds each step and `deadline` the whole request: a server sending a byte
+    every few seconds, or a slow DNS lookup, would outlast the steps. The request runs in
+    a thread so the deadline holds even inside DNS; one that misses it dies with the
+    process.
     """
+    import threading
+
+    if now is None:
+        import time
+
+        now = time.time()
+    result = []
+    worker = threading.Thread(
+        target=lambda: result.append(_request(url, token, timeout, now)), daemon=True
+    )
+    worker.start()
+    worker.join(deadline)
+    return result[0] if result else (0, None, None)
+
+
+def _request(url: str, token: str, timeout: float, now: float) -> tuple:
     import http.client
     import urllib.error
     import urllib.request
@@ -330,10 +435,6 @@ def get(url: str, token: str, timeout: float = TIMEOUT, now: float | None = None
         def redirect_request(self, *args, **kwargs):
             return None  # urllib then raises the 3xx as an HTTPError
 
-    if now is None:
-        import time
-
-        now = time.time()
     request = urllib.request.Request(
         url,
         headers={
@@ -348,36 +449,74 @@ def get(url: str, token: str, timeout: float = TIMEOUT, now: float | None = None
         with opener.open(request, timeout=timeout) as r:
             status, body, headers = r.status, r.read(MAX_BODY + 1), r.headers
     except urllib.error.HTTPError as e:
-        status, body, headers = e.code, b"", e.headers
+        with contextlib.closing(e):  # it holds the connection open
+            status, body, headers = e.code, b"", e.headers
     except (OSError, ValueError, http.client.HTTPException):
         return 0, None, None
     retry = retry_after(headers.get("Retry-After"), now) if headers is not None else None
     try:
         data = json.loads(body) if body and len(body) <= MAX_BODY else None
-    except ValueError:
+    except (ValueError, RecursionError):  # RecursionError: nested past Python's limit
         data = None
     return status, data, retry
 
 
-def _set_hold(env, who, now: float, seconds: float, reason: str, failures: int = 0):
+def _set_hold(env, who, now: float, seconds: float, reason: str, failures=0, server=False):
+    """`server`: the wait is what the server asked for (Retry-After), not our own."""
     _write_json(
-        _path(env, "fetch.hold"),
-        {"until": now + seconds, "at": now, "reason": reason, "failures": failures, "account": who},
+        _path(env, hold_name(who)),
+        {
+            "until": now + seconds,
+            "at": now,
+            "reason": reason,
+            "failures": failures,
+            "account": who,
+            "server": server,
+        },
     )
+    _tidy(env, now)
+
+
+def _wait(ours: float, retry: float | None) -> tuple:
+    """(seconds, True if the server's Retry-After set it): the longer of the two."""
+    if retry is not None and min(retry, RETRY_MAX) > ours:
+        return min(retry, RETRY_MAX), True
+    return ours, False
 
 
 def _backoff(env, who, now: float, reason: str, retry: float | None = None) -> None:
     """Hold after a failure: 60 s doubling to 30 min, or longer if the server asked."""
     previous = hold(env, who, now) or {}
     failures = int(min(max(_num(previous.get("failures")) or 0, 0), 30)) + 1
-    wait = min(BACKOFF_MAX, BACKOFF_FIRST * 2 ** (failures - 1))
-    if retry is not None:
-        wait = max(wait, min(retry, RETRY_MAX))
-    _set_hold(env, who, now, wait, reason, failures)
+    wait, server = _wait(min(BACKOFF_MAX, BACKOFF_FIRST * 2 ** (failures - 1)), retry)
+    _set_hold(env, who, now, wait, reason, failures, server)
+
+
+def _tidy(env, now: float) -> None:
+    """Remove 0.1.6's shared files, and other logins' files too old to matter.
+
+    Data older than MAX_AGE isn't drawn and no hold outlasts RETRY_MAX, so a file left
+    alone longer than both belongs to a login no longer used (a replaced token, say).
+    """
+    folder = cache_dir(env)
+    for name in LEGACY:
+        _remove(os.path.join(folder, name))
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return
+    limit = max(MAX_AGE, RETRY_MAX) + CLOCK_SLACK
+    for name in names:
+        if not _per_login(name):
+            continue
+        path = os.path.join(folder, name)
+        with contextlib.suppress(OSError):
+            if now - os.stat(path).st_mtime > limit:
+                _remove(path)
 
 
 def refresh(env, now: float, base_url: str | None = None, platform: str | None = None) -> str:
-    """Fetch once and write usage.json or fetch.hold. Returns what happened, in words."""
+    """Fetch once and write this login's cache or hold. Returns what happened, in words."""
     from dashline import account as account_mod
 
     who = account_mod.identity(env)
@@ -390,10 +529,11 @@ def refresh(env, now: float, base_url: str | None = None, platform: str | None =
     del token
     if status == 200 and isinstance(data, dict):
         _write_json(
-            _path(env, "usage.json"),
+            _path(env, cache_name(who)),
             {"fetched_at": now, "account": who, "data": data},
         )
-        _remove(_path(env, "fetch.hold"))
+        _remove(_path(env, hold_name(who)))  # this login's only: others keep theirs
+        _tidy(env, now)
         return "ok"
     if status in HOLDS:
         reason = {
@@ -401,7 +541,8 @@ def refresh(env, now: float, base_url: str | None = None, platform: str | None =
             403: "not allowed (403): the login may lack the profile scope",
             404: "usage endpoint not found (404)",
         }[status]
-        _set_hold(env, who, now, HOLDS[status], reason)
+        wait, server = _wait(HOLDS[status], retry)
+        _set_hold(env, who, now, wait, reason, server=server)
         return reason
     if status == 200:
         reason = "unreadable answer"

@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from conftest import FIXTURES, NO_NETWORK, NOW, ROOT, read_json
-from dashline import doctor, install, usage
+from dashline import account, doctor, install, usage
 
 CLOSED = "http://127.0.0.1:9"  # nothing listens here
 
@@ -398,6 +398,11 @@ def cache_path(env):
     return Path(usage.cache_dir(env))
 
 
+def cache_file(env):
+    """This login's cache file."""
+    return cache_path(env) / usage.cache_name(account.identity(env))
+
+
 def test_cache_not_needed_for_api(installed, tmp_path):
     status, text, _ = check(installed, "cache", tmp_path)
     assert (status, text) == ("ok", "~/.claude/cache/statusline: not needed without plan bars")
@@ -410,18 +415,36 @@ def test_shared_cache_folder_is_fine(sub, server, tmp_path):
     cache_path(sub).chmod(0o775)
     status, text, fix = check(sub, "cache", tmp_path, server.url)
     assert (status, text, fix) == ("ok", "~/.claude/cache/statusline: fetched just now", None)
-    assert (cache_path(sub) / "usage.json").stat().st_mode & 0o777 == 0o600
+    assert cache_file(sub).stat().st_mode & 0o777 == 0o600
 
 
 def test_cache_file_readable_by_others(sub, tmp_path):
     cache_path(sub).mkdir(mode=0o700, parents=True)
-    cached = cache_path(sub) / "usage.json"
+    cached = cache_file(sub)
     cached.write_text(json.dumps({"fetched_at": NOW - 60, "data": {}}))
     cached.chmod(0o644)
-    status, text, fix = check(sub, "cache", tmp_path)  # the fetch fails: usage.json stays
+    status, text, fix = check(sub, "cache", tmp_path)  # the fetch fails: the cache stays
     assert status == "warn"
-    assert text.endswith("other users can read usage.json")
-    assert fix == "chmod 600 ~/.claude/cache/statusline/usage.json"
+    assert text.endswith(f"other users can read {cached.name}")
+    assert fix == f"chmod 600 ~/.claude/cache/statusline/{cached.name}"
+
+
+def test_cache_checks_every_file_of_dashline_and_no_other(sub, tmp_path):
+    cache_path(sub).mkdir(mode=0o700, parents=True)
+    for name in (
+        "usage-0123456789abcdef.json",
+        "fetch-0123456789abcdef.hold",
+        "plan-usage",
+        "notes.txt",
+        "usage-notes.json",
+    ):
+        (cache_path(sub) / name).write_text("{}")
+        (cache_path(sub) / name).chmod(0o644)
+    status, text, _ = check(sub, "cache", tmp_path)
+    assert status == "warn"
+    assert text.endswith(
+        "other users can read fetch-0123456789abcdef.hold, usage-0123456789abcdef.json"
+    )
 
 
 def test_chmod_fix_is_quoted(sub, isolated_home, tmp_path):
@@ -429,10 +452,11 @@ def test_chmod_fix_is_quoted(sub, isolated_home, tmp_path):
     env = dict(sub, CLAUDE_CONFIG_DIR=str(conf))
     cache = conf / "cache" / "statusline"
     cache.mkdir(parents=True)
-    (cache / "usage.json").write_text(json.dumps({"fetched_at": NOW - 60, "data": {}}))
-    (cache / "usage.json").chmod(0o644)
+    name = usage.cache_name(account.identity(env))
+    (cache / name).write_text(json.dumps({"fetched_at": NOW - 60, "data": {}}))
+    (cache / name).chmod(0o644)
     _, _, fix = check(env, "cache", tmp_path)
-    assert fix == "chmod 600 ~/'My Claude/cache/statusline/usage.json'"
+    assert fix == f"chmod 600 ~/'My Claude/cache/statusline/{name}'"
 
 
 def test_chmod_fix_outside_home(sub, tmp_path):
@@ -440,11 +464,11 @@ def test_chmod_fix_outside_home(sub, tmp_path):
     env = dict(sub, CLAUDE_CONFIG_DIR=str(conf))
     cache = conf / "cache" / "statusline"
     cache.mkdir(parents=True)
-    (cache / "fetch.hold").write_text("{}")
-    (cache / "fetch.hold").chmod(0o640)
+    (cache / "usage-0123456789abcdef.json").write_text("{}")
+    (cache / "usage-0123456789abcdef.json").chmod(0o640)
     status, _, fix = check(env, "cache", tmp_path)
     assert status == "warn"
-    assert fix == f"chmod 600 '{cache / 'fetch.hold'}'"
+    assert fix == f"chmod 600 '{cache / 'usage-0123456789abcdef.json'}'"
 
 
 def test_cache_not_writable(sub, tmp_path):
@@ -486,6 +510,7 @@ def test_cache_lock_uses_its_time(sub, server, tmp_path, at, note):
     lock.write_text(json.dumps({"at": at, "pid": 1, "nonce": "n"}))
     lock.chmod(0o600)
     (cache_path(sub) / "fetch.lock.break").write_text("")
+    (cache_path(sub) / "fetch.lock.break").chmod(0o600)  # as _break_lock makes it
     status, text, _ = check(sub, "cache", tmp_path, server.url)
     assert status == "ok"
     assert note in text
@@ -629,3 +654,194 @@ def test_shim_doctor_exit_code(isolated_home):
     )
     assert r.returncode == 1  # nothing installed in the fake home
     assert "fail  install" in r.stdout
+
+
+# ---- a wait the server asked for ----
+
+
+def server_hold(env, until, server=True, reason="HTTP 429"):
+    cache_path(env).mkdir(mode=0o700, parents=True, exist_ok=True)
+    who = account.identity(env)
+    body = {"until": until, "at": NOW - 60, "account": who, "reason": reason, "server": server}
+    (cache_path(env) / usage.hold_name(who)).write_text(json.dumps(body))
+
+
+def usage_check(env, tmp_path, base_url, fetch_now=False):
+    d = doctor.Doctor(env, NOW, str(tmp_path), base_url, "linux", fetch_now=fetch_now)
+    return {n: (s, t, f) for s, n, t, f in d.run()}["usage"]
+
+
+def test_usage_respects_the_servers_wait(sub, server, tmp_path):
+    import re
+
+    server_hold(sub, NOW + 3000)
+    status, text, fix = usage_check(sub, tmp_path, server.url)
+    assert server.requests == []
+    assert status == "warn"
+    assert re.fullmatch(
+        r"not fetched: the server asked to wait until \d\d:\d\d \(50 min left\) after HTTP 429",
+        text,
+    ), text
+    assert "--fetch-now" in fix  # a warning, so doctor's exit code stays 0
+
+
+def test_usage_fetch_now_tries_anyway(sub, server, tmp_path):
+    server_hold(sub, NOW + 3000)
+    server.reply(200, json.dumps(usage_fixture("ultra")))
+    status, _, _ = usage_check(sub, tmp_path, server.url, fetch_now=True)
+    assert status == "ok"
+    assert len(server.requests) == 1
+
+
+def test_run_passes_fetch_now(sub, server, tmp_path):
+    server_hold(sub, NOW + 3000)
+    server.reply(200, json.dumps(usage_fixture("ultra")))
+    doctor.run(sub, io.StringIO(), str(tmp_path), server.url, now=NOW, fetch_now=True)
+    assert len(server.requests) == 1
+
+
+def test_clock_names_the_day_when_not_today():
+    import time
+
+    later = NOW + 30 * 3600  # always another day
+    assert doctor._clock(later, NOW) == time.strftime("%a %H:%M", time.localtime(later))
+    assert doctor._clock(NOW, NOW) == time.strftime("%H:%M", time.localtime(NOW))
+
+
+@pytest.mark.parametrize(
+    ("until", "server_set"),
+    [
+        (NOW + 3000, False),  # our own backoff: doctor retries now, as before
+        (NOW - 1, True),  # the server's wait is over
+    ],
+)
+def test_usage_fetches_through_other_holds(sub, server, tmp_path, until, server_set):
+    server_hold(sub, until, server=server_set)
+    server.reply(200, json.dumps(usage_fixture("ultra")))
+    assert usage_check(sub, tmp_path, server.url)[0] == "ok"
+    assert len(server.requests) == 1
+
+
+def test_usage_says_when_a_new_wait_is_the_servers(sub, server, tmp_path):
+    server.reply(429, "", **{"Retry-After": "7200"})
+    status, text, _ = usage_check(sub, tmp_path, server.url)
+    assert status == "fail"
+    assert text == "HTTP 429; renders retry in 2h00m (the server asked for that wait)"
+
+
+# ---- a locked Keychain ----
+
+
+def test_locked_keychain_is_not_a_login_problem(sub, isolated_home, tmp_path, monkeypatch):
+    def locked(env):
+        raise account.KeychainError(account.KEYCHAIN_LOCKED)
+
+    (isolated_home / ".claude" / ".credentials.json").unlink()
+    monkeypatch.setattr(account, "_read_keychain", locked)
+    d = doctor.Doctor(sub, NOW, str(tmp_path), CLOSED, "darwin")
+    results = {n: (s, t, f) for s, n, t, f in d.run()}
+    status, text, fix = results["login"]
+    assert status == "fail"
+    assert text.endswith(account.KEYCHAIN_LOCKED)
+    assert "unlock" in fix
+    assert "/login won't help" in fix
+    status, text, fix = results["usage"]
+    assert text.startswith(account.KEYCHAIN_LOCKED)
+    assert "unlock" in fix
+
+
+# ---- a bad --glyphs value ----
+
+
+def test_bad_glyphs_in_the_command(installed, tmp_path):
+    data = get_settings(installed)
+    data["statusLine"]["command"] = data["statusLine"]["command"].replace("nerd", "Nerd")
+    set_settings(installed, data)
+    d = doctor.Doctor(installed, NOW, str(tmp_path), CLOSED, "linux")
+    results = {n: (s, t, f) for s, n, t, f in d.run()}
+    status, text, fix = results["settings"]
+    assert status == "warn"
+    assert text.endswith("--glyphs Nerd isn't a glyph set (nerd, unicode or ascii)")
+    assert "/dashline:install" in fix
+    status, text, _ = results["command"]
+    assert status == "fail"
+    assert text == "dashline: unknown glyph set 'Nerd': use nerd, unicode or ascii"
+    assert "names no glyph set" in results["font"][1]
+
+
+@pytest.mark.parametrize(
+    ("err", "reason"),
+    [
+        (["dashline: x", "", "usage: y", "  --help  show this help"], "dashline: x"),
+        (["Traceback", "ValueError: z"], "ValueError: z"),
+        ([], None),
+    ],
+)
+def test_stderr_reason(err, reason):
+    assert doctor.stderr_reason(err) == reason
+
+
+# ---- the command and git checks when things go wrong ----
+
+
+def fake_run(monkeypatch, program, error=None, stdout=""):
+    """subprocess.run, with `program` faked: it raises `error` or prints `stdout`."""
+    real = subprocess.run
+
+    class Done:
+        returncode = 0
+
+    def fake(args, **kwargs):
+        if args[0] != program:
+            return real(args, **kwargs)
+        if error is not None:
+            raise error
+        done = Done()
+        done.stdout = stdout
+        return done
+
+    monkeypatch.setattr(subprocess, "run", fake)
+
+
+def test_command_timeout(installed, tmp_path, monkeypatch):
+    fake_run(monkeypatch, "sh", error=subprocess.TimeoutExpired("sh", 10))
+    status, text, _ = check(installed, "command", tmp_path)
+    assert (status, text) == ("fail", "took over 10 s")
+
+
+def test_command_without_sh(installed, tmp_path, monkeypatch):
+    fake_run(monkeypatch, "sh", error=FileNotFoundError("sh"))
+    status, text, _ = check(installed, "command", tmp_path)
+    assert status == "fail"
+    assert text.startswith("couldn't run sh:")
+
+
+def test_command_slow(installed, tmp_path, monkeypatch):
+    monkeypatch.setattr(doctor, "SLOW_MS", -1)
+    status, text, fix = check(installed, "command", tmp_path)
+    assert status == "warn"
+    assert text.endswith("(slow)")
+    assert "git" in fix
+
+
+def test_git_too_old(installed, tmp_path, monkeypatch):
+    fake_run(monkeypatch, "git", stdout="git version 2.9.5\n")
+    status, text, fix = check(installed, "git", tmp_path)
+    assert (status, text) == ("warn", "2.9.5: too old for the git row (needs 2.11)")
+    assert fix == "update git"
+
+
+def test_git_unreadable_version(installed, tmp_path, monkeypatch):
+    fake_run(monkeypatch, "git", stdout="git, but not as we know it\n")
+    status, text, _ = check(installed, "git", tmp_path)
+    assert (status, text) == ("warn", "unexpected version: git, but not as we know it")
+
+
+def test_statusline_type_not_command(installed, tmp_path):
+    data = get_settings(installed)
+    data["statusLine"]["type"] = "static"
+    set_settings(installed, data)
+    status, text, fix = check(installed, "settings", tmp_path)
+    assert status == "fail"
+    assert text == '~/.claude/settings.json: statusLine type isn\'t "command"'
+    assert fix == "run /dashline:install"

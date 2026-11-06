@@ -329,17 +329,22 @@ def test_gateway_period_label(period, label):
 # ---- the cache as a render reads it ----
 
 
-def write_cache(home, fetched_at=NOW - 10, who="abc", data=None):
+def cache_folder(home):
     path = home / ".claude" / "cache" / "statusline"
     path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def write_cache(home, fetched_at=NOW - 10, who="abc", data=None, file_who=None):
+    """`file_who`: whose file it goes in, when that isn't `who`."""
     body = {"fetched_at": fetched_at, "account": who, "data": data or usage_fixture("ultra")}
-    (path / "usage.json").write_text(json.dumps(body))
+    name = usage.cache_name(who if file_who is None else file_who)
+    (cache_folder(home) / name).write_text(json.dumps(body))
 
 
-def write_hold(home, until, who="abc", **extra):
-    path = home / ".claude" / "cache" / "statusline"
-    path.mkdir(parents=True, exist_ok=True)
-    (path / "fetch.hold").write_text(json.dumps({"until": until, "account": who, **extra}))
+def write_hold(home, until, who="abc", file_who=None, **extra):
+    name = usage.hold_name(who if file_who is None else file_who)
+    (cache_folder(home) / name).write_text(json.dumps({"until": until, "account": who, **extra}))
 
 
 def test_load_api_reads_nothing(isolated_home):
@@ -374,6 +379,62 @@ def test_load_ignores_another_login(isolated_home):
     assert (state.data, state.fetch) == (None, True)
 
 
+def test_load_ignores_another_login_in_its_file(isolated_home):
+    """The file name says whose it is, and so does its content: both must agree."""
+    write_cache(isolated_home, who="someone-else", file_who="abc")
+    state = usage.load(env_for(isolated_home), ULTRA, NOW)
+    assert (state.data, state.fetch) == (None, True)
+
+
+def test_load_ignores_the_shared_file_of_older_versions(isolated_home):
+    body = {"fetched_at": NOW - 10, "account": "abc", "data": usage_fixture("ultra")}
+    (cache_folder(isolated_home) / "usage.json").write_text(json.dumps(body))
+    state = usage.load(env_for(isolated_home), ULTRA, NOW)
+    assert (state.data, state.fetch) == (None, True)
+
+
+@pytest.mark.parametrize(
+    ("who", "tag"),
+    [
+        ("0123456789abcdef", "0123456789abcdef"),
+        ("env-0123456789abcdef", "env-0123456789abcdef"),
+        (None, "unknown"),
+    ],
+)
+def test_file_names_are_the_fingerprint(who, tag):
+    assert usage.cache_name(who) == f"usage-{tag}.json"
+    assert usage.hold_name(who) == f"fetch-{tag}.hold"
+
+
+@pytest.mark.parametrize("who", ["../../etc/x", "a/b", "me@example.com", "", "x" * 65, "é"])
+def test_odd_fingerprints_are_hashed_in_file_names(who):
+    name = usage.cache_name(who)
+    tag = name[len("usage-") : -len(".json")]
+    assert len(tag) == 16 and all(c in "0123456789abcdef" for c in tag)
+    assert usage.cache_name(who) == name  # stable
+
+
+def test_own_files():
+    tag = "0123456789abcdef"
+    names = [
+        f"usage-{tag}.json",
+        f"fetch-env-{tag}.hold",
+        "usage-unknown.json",
+        "fetch.lock",
+        "fetch.lock.break",
+        "usage.json",
+        "fetch.hold",
+        f"usage-{tag}.json.123.tmp",
+        f"fetch-{tag}.hold.9.tmp",
+        "plan-usage",
+        "other.json",
+        "usage-notes.txt",
+        "usage-notes.json",  # another tool's, in a shared folder: not a tag dashline writes
+        f"usage-{tag.upper()}.json",
+    ]
+    assert usage.own_files(names) == sorted(names[:9])
+
+
 def test_load_drops_day_old_data(isolated_home):
     write_cache(isolated_home, fetched_at=NOW - usage.MAX_AGE - 1)
     assert usage.load(env_for(isolated_home), ULTRA, NOW).data is None
@@ -395,20 +456,16 @@ def test_load_after_the_clock_was_set_back_refetches(isolated_home):
 
 @pytest.mark.parametrize("value", ["NaN", "Infinity", "1e400"])
 def test_load_non_finite_fetch_time_is_broken(isolated_home, value):
-    path = isolated_home / ".claude" / "cache" / "statusline"
-    path.mkdir(parents=True)
-    (path / "usage.json").write_text(
+    (cache_folder(isolated_home) / usage.cache_name("abc")).write_text(
         '{"fetched_at": ' + value + ', "account": "abc", "data": {"limits": []}}'
     )
     state = usage.load(env_for(isolated_home), ULTRA, NOW)
     assert (state.data, state.fetch) == (None, True)
 
 
-@pytest.mark.parametrize("text", ["", "{", "[]", '{"fetched_at": "x", "data": {}}'])
+@pytest.mark.parametrize("text", ["", "{", "[]", '{"fetched_at": "x", "data": {}}', "[" * 100000])
 def test_load_broken_cache(isolated_home, text):
-    path = isolated_home / ".claude" / "cache" / "statusline"
-    path.mkdir(parents=True)
-    (path / "usage.json").write_text(text)
+    (cache_folder(isolated_home) / usage.cache_name("abc")).write_text(text)
     state = usage.load(env_for(isolated_home), ULTRA, NOW)
     assert (state.data, state.fetch) == (None, True)
 
@@ -421,6 +478,8 @@ def test_hold_blocks_fetch_until_it_ends(isolated_home):
 
 def test_hold_for_another_login_is_ignored(isolated_home):
     write_hold(isolated_home, until=NOW + 60, who="other")
+    assert usage.load(env_for(isolated_home), ULTRA, NOW).fetch is True
+    write_hold(isolated_home, until=NOW + 60, who="other", file_who="abc")
     assert usage.load(env_for(isolated_home), ULTRA, NOW).fetch is True
 
 
@@ -439,9 +498,7 @@ def test_hold_longer_than_any_dashline_writes_is_ignored(isolated_home):
 
 @pytest.mark.parametrize("until", ["soon", None, float("nan")])
 def test_odd_hold_is_no_hold(isolated_home, until):
-    path = isolated_home / ".claude" / "cache" / "statusline"
-    path.mkdir(parents=True)
-    (path / "fetch.hold").write_text(json.dumps({"until": until, "account": "abc"}))
+    write_hold(isolated_home, until=until)
     assert usage.hold(env_for(isolated_home), "abc", NOW) is None
 
 
@@ -612,18 +669,52 @@ def test_child_fetches_and_writes_the_cache(server, logged_in, monkeypatch):
     server.reply(200, json.dumps(usage_fixture("ultra")))
     nonce = usage.take_lock(logged_in, time.time())
     usage.child(nonce)
-    assert cache_files(logged_in)["usage.json"]["data"] == usage_fixture("ultra")
+    assert cache_files(logged_in)["cache"]["data"] == usage_fixture("ultra")
     assert not Path(usage._path(logged_in, "fetch.lock")).exists()
+
+
+@pytest.mark.parametrize("what", ["fresh cache", "hold"])
+def test_child_skips_when_another_child_got_there_first(server, logged_in, monkeypatch, what):
+    """Two renders read a stale cache; the first child fetches and releases the lock
+    before the second render takes it. The second child must not fetch again."""
+    import os
+    import time
+
+    monkeypatch.setattr(usage, "API_URL", server.url)
+    monkeypatch.setattr(os, "environ", logged_in)
+    fresh_credentials(logged_in)
+    now, who = time.time(), account.identity(logged_in)
+    if what == "fresh cache":
+        write_cache(logged_in_home(logged_in), fetched_at=now - 5, who=who)
+    else:
+        write_hold(logged_in_home(logged_in), until=now + 600, who=who)
+    nonce = usage.take_lock(logged_in, now)
+    usage.child(nonce)
+    assert server.requests == []
+    assert not Path(usage._path(logged_in, "fetch.lock")).exists()
+
+
+def test_spawn_releases_the_lock_when_the_child_cant_start(isolated_home, monkeypatch):
+    import subprocess
+
+    def broken(*args, **kwargs):
+        raise OSError("no python")
+
+    monkeypatch.setattr(subprocess, "Popen", broken)
+    env = env_for(isolated_home)
+    assert REAL_SPAWN(env, NOW) is False
+    assert not Path(usage._path(env, "fetch.lock")).exists()
 
 
 def test_spawned_child_runs_and_backs_off(logged_in):
     """The real detached process: no network here (the proxy is a dead port), so it
-    writes a hold and releases the lock."""
+    writes a hold and releases the lock. The token comes from the environment, so on a
+    Mac the child never asks the real Keychain (a monkeypatch can't reach it)."""
     import os
     import time
 
-    fresh_credentials(logged_in)
     env = dict(logged_in, HTTPS_PROXY="http://127.0.0.1:9", https_proxy="http://127.0.0.1:9")
+    env["CLAUDE_CODE_OAUTH_TOKEN"] = "tok-env"
     env["PATH"] = os.environ.get("PATH", "")
     assert REAL_SPAWN(env, time.time())
     lock = Path(usage._path(env, "fetch.lock"))
@@ -633,15 +724,20 @@ def test_spawned_child_runs_and_backs_off(logged_in):
     assert not lock.exists()
     held = usage.hold(env, account.identity(env))
     assert held["reason"] == "no answer (network)"
-    assert cache_files(env)["usage.json"] is None
+    assert cache_files(env)["cache"] is None
 
 
 # ---- fetching against a local server ----
 
 
-def cache_files(env):
+def cache_files(env, who=...):
+    """{"cache": ..., "hold": ...} of the login `who` (by default, the one `env` is in)."""
+    who = account.identity(env) if who is ... else who
     path = usage.cache_dir(env)
-    return {name: read_json_path(f"{path}/{name}") for name in ("usage.json", "fetch.hold")}
+    return {
+        "cache": read_json_path(f"{path}/{usage.cache_name(who)}"),
+        "hold": read_json_path(f"{path}/{usage.hold_name(who)}"),
+    }
 
 
 def read_json_path(path):
@@ -658,10 +754,10 @@ def test_fetch_ok_writes_cache(server, logged_in):
     assert headers["anthropic-beta"] == "oauth-2025-04-20"
     assert headers["User-Agent"].startswith("dashline/")
     files = cache_files(logged_in)
-    assert files["usage.json"]["fetched_at"] == NOW
-    assert files["usage.json"]["account"] == account.identity(logged_in)
-    assert files["usage.json"]["data"] == usage_fixture("ultra")
-    assert files["fetch.hold"] is None
+    assert files["cache"]["fetched_at"] == NOW
+    assert files["cache"]["account"] == account.identity(logged_in)
+    assert files["cache"]["data"] == usage_fixture("ultra")
+    assert files["hold"] is None
 
 
 def test_token_never_written(server, logged_in):
@@ -677,7 +773,7 @@ def test_fetch_ok_clears_hold_and_render_sees_it(server, logged_in):
     write_hold(logged_in_home(logged_in), until=NOW - 1, who=account.identity(logged_in))
     server.reply(200, json.dumps(usage_fixture("ultra")))
     usage.refresh(logged_in, NOW, server.url, "linux")
-    assert cache_files(logged_in)["fetch.hold"] is None
+    assert cache_files(logged_in)["hold"] is None
     acct = account.load(logged_in, make_session())
     state = usage.load(logged_in, acct, NOW + 5)
     assert state.data == usage_fixture("ultra")
@@ -695,11 +791,30 @@ def logged_in_home(env):
 def test_fixed_holds(server, logged_in, status, wait, words):
     server.reply(status, "{}")
     reason = usage.refresh(logged_in, NOW, server.url, "linux")
-    held = cache_files(logged_in)["fetch.hold"]
+    held = cache_files(logged_in)["hold"]
     assert held["until"] == NOW + wait
+    assert held["server"] is False
     assert reason == held["reason"]
     assert words in reason
-    assert cache_files(logged_in)["usage.json"] is None
+    assert cache_files(logged_in)["cache"] is None
+
+
+@pytest.mark.parametrize(
+    ("status", "header", "wait", "server_set"),
+    [
+        (403, "7200", 7200, True),  # longer than the fixed hour: the server's wins
+        (401, "60", 300, False),  # shorter than the fixed wait: ours wins
+        (404, "9" * 50, 86400, True),  # capped at a day, still the server's
+    ],
+)
+def test_fixed_holds_honor_a_longer_retry_after(
+    server, logged_in, status, header, wait, server_set
+):
+    server.reply(status, "{}", **{"Retry-After": header})
+    usage.refresh(logged_in, NOW, server.url, "linux")
+    held = cache_files(logged_in)["hold"]
+    assert held["until"] == NOW + wait
+    assert held["server"] is server_set
 
 
 def test_backoff_doubles_and_caps(server, logged_in):
@@ -708,7 +823,7 @@ def test_backoff_doubles_and_caps(server, logged_in):
     for _ in range(7):
         server.reply(503)
         usage.refresh(logged_in, now, server.url, "linux")
-        held = cache_files(logged_in)["fetch.hold"]
+        held = cache_files(logged_in)["hold"]
         waits.append(held["until"] - now)
         now = held["until"]
     assert waits == [60, 120, 240, 480, 960, 1800, 1800]
@@ -718,7 +833,111 @@ def test_backoff_doubles_and_caps(server, logged_in):
 def test_rate_limited_honors_retry_after(server, logged_in):
     server.reply(429, "", **{"Retry-After": "900"})
     usage.refresh(logged_in, NOW, server.url, "linux")
-    assert cache_files(logged_in)["fetch.hold"]["until"] == NOW + 900
+    held = cache_files(logged_in)["hold"]
+    assert held["until"] == NOW + 900
+    assert held["server"] is True  # doctor won't fetch through it unless asked
+
+
+def test_short_retry_after_is_our_backoff(server, logged_in):
+    server.reply(429, "", **{"Retry-After": "5"})
+    usage.refresh(logged_in, NOW, server.url, "linux")
+    held = cache_files(logged_in)["hold"]
+    assert (held["until"], held["server"]) == (NOW + 60, False)
+
+
+def test_two_logins_keep_their_own_cache_and_hold(server, logged_in):
+    """One session on CLAUDE_CODE_OAUTH_TOKEN, another on the stored login: neither
+    undoes the other's numbers or the wait the server asked of it."""
+    other = dict(logged_in, CLAUDE_CODE_OAUTH_TOKEN="tok-other")
+    assert account.identity(other) != account.identity(logged_in)
+
+    server.reply(429, "", **{"Retry-After": "3600"})
+    usage.refresh(other, NOW, server.url, "linux")
+    server.reply(200, json.dumps(usage_fixture("ultra")))
+    assert usage.refresh(logged_in, NOW + 1, server.url, "linux") == "ok"
+    server.reply(403, "{}")
+    usage.refresh(logged_in, NOW + 200, server.url, "linux")
+    server.reply(200, json.dumps(usage_fixture("ultra-credits-off")))
+    usage.refresh(logged_in, NOW + 400, server.url, "linux")
+
+    assert server.requests[0][1]["Authorization"] == "Bearer tok-other"
+    mine, theirs = cache_files(logged_in), cache_files(other)
+    assert mine["cache"]["data"] == usage_fixture("ultra-credits-off")
+    assert mine["hold"] is None  # its success removed its own hold
+    assert theirs["cache"] is None
+    assert theirs["hold"]["until"] == NOW + 3600  # and left this one alone
+    acct = account.load(other, make_session())
+    assert usage.load(other, acct, NOW + 500).fetch is False
+
+
+def test_success_removes_the_shared_files_of_older_versions(server, logged_in):
+    folder = Path(usage.cache_dir(logged_in))
+    folder.mkdir(parents=True)
+    (folder / "usage.json").write_text("{}")
+    (folder / "fetch.hold").write_text("{}")
+    (folder / "plan-usage").write_text("{}")  # another tool's
+    server.reply(200, "{}")
+    usage.refresh(logged_in, NOW, server.url, "linux")
+    names = sorted(p.name for p in folder.iterdir())
+    assert names == ["plan-usage", usage.cache_name(account.identity(logged_in))]
+
+
+def test_old_files_of_unused_logins_are_removed(server, logged_in):
+    import os
+
+    folder = Path(usage.cache_dir(logged_in))
+    folder.mkdir(parents=True)
+    gone, recent = "a" * 16, "b" * 16
+    old, held = folder / f"usage-{gone}.json", folder / f"fetch-{recent}.hold"
+    other = folder / "usage-notes.json"  # not a name dashline writes: never removed
+    for path in (old, held, other, folder / f"fetch-env-{gone}.hold"):
+        path.write_text("{}")
+    long_ago = NOW - usage.MAX_AGE - usage.CLOCK_SLACK - 10
+    for path in (old, other, folder / f"fetch-env-{gone}.hold"):
+        os.utime(path, (long_ago, long_ago))
+    os.utime(held, (NOW - 3600, NOW - 3600))
+    server.reply(503)
+    usage.refresh(logged_in, NOW, server.url, "linux")
+    names = sorted(p.name for p in folder.iterdir())
+    expected = [held.name, other.name, usage.hold_name(account.identity(logged_in))]
+    assert names == sorted(expected)
+
+
+def test_deadline_bounds_a_trickling_answer():
+    """A server sending a byte at a time never trips the per-read timeout."""
+    import contextlib
+    import socket
+    import threading
+    import time
+
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    stop = threading.Event()
+
+    def trickle():
+        conn, _ = listener.accept()
+        with conn:
+            conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\n")
+            while not stop.is_set():
+                with contextlib.suppress(OSError):
+                    conn.sendall(b" ")
+                time.sleep(0.05)
+
+    threading.Thread(target=trickle, daemon=True).start()
+    url = f"http://127.0.0.1:{listener.getsockname()[1]}/"
+    start = time.monotonic()
+    try:
+        assert usage.get(url, "tok", timeout=2, now=NOW, deadline=0.5) == (0, None, None)
+        assert time.monotonic() - start < 2
+    finally:
+        stop.set()
+        listener.close()
+
+
+def test_deeply_nested_answer_is_unreadable(server, logged_in):
+    server.reply(200, "[" * 200000)
+    assert usage.refresh(logged_in, NOW, server.url, "linux") == "unreadable answer"
 
 
 @pytest.mark.parametrize(
@@ -734,7 +953,7 @@ def test_rate_limited_honors_retry_after(server, logged_in):
 def test_retry_after_seconds(server, logged_in, status, header, wait):
     server.reply(status, "", **{"Retry-After": header})
     usage.refresh(logged_in, NOW, server.url, "linux")
-    assert cache_files(logged_in)["fetch.hold"]["until"] == NOW + wait
+    assert cache_files(logged_in)["hold"]["until"] == NOW + wait
 
 
 def test_retry_after_http_date(server, logged_in):
@@ -742,7 +961,7 @@ def test_retry_after_http_date(server, logged_in):
 
     server.reply(429, "", **{"Retry-After": formatdate(NOW + 5400, usegmt=True)})
     usage.refresh(logged_in, NOW, server.url, "linux")
-    assert cache_files(logged_in)["fetch.hold"]["until"] == NOW + 5400
+    assert cache_files(logged_in)["hold"]["until"] == NOW + 5400
 
 
 @pytest.mark.parametrize(
@@ -762,11 +981,23 @@ def test_retry_after_parsing(value, seconds):
     assert usage.retry_after(value, NOW) == seconds
 
 
+def test_retry_after_date_without_a_zone_is_utc():
+    """`-0000` means "zone unknown": parsedate_to_datetime gives a naive time."""
+    assert usage.retry_after("Thu, 05 Nov 2026 01:00:00 -0000", NOW) == 3600
+
+
+def test_retry_after_date_parser_giving_none(monkeypatch):
+    import email.utils
+
+    monkeypatch.setattr(email.utils, "parsedate_to_datetime", lambda value: None)
+    assert usage.retry_after("Thu, 05 Nov 2026 01:00:00 GMT", NOW) is None
+
+
 def test_cut_off_answer_backs_off(server, logged_in):
     """A connection that ends mid-answer raises IncompleteRead, not an OSError."""
     server.reply(200, "a\r\n{}", **{"Transfer-Encoding": "chunked"})
     assert usage.refresh(logged_in, NOW, server.url, "linux") == "no answer (network)"
-    assert cache_files(logged_in)["fetch.hold"]["until"] == NOW + 60
+    assert cache_files(logged_in)["hold"]["until"] == NOW + 60
 
 
 def test_redirect_is_refused_and_keeps_the_token(server, logged_in):
@@ -777,7 +1008,7 @@ def test_redirect_is_refused_and_keeps_the_token(server, logged_in):
         reason = usage.refresh(logged_in, NOW, server.url, "linux")
         assert reason == "redirect refused (HTTP 302)"
         assert other.requests == []
-        assert cache_files(logged_in)["fetch.hold"]["until"] == NOW + 60
+        assert cache_files(logged_in)["hold"]["until"] == NOW + 60
     finally:
         other.httpd.shutdown()
         other.httpd.server_close()
@@ -793,15 +1024,15 @@ def test_huge_failure_count_is_clamped(server, logged_in):
     write_hold(logged_in_home(logged_in), until=NOW - 1, who=who, failures=1e300)
     server.reply(503)
     usage.refresh(logged_in, NOW, server.url, "linux")
-    assert cache_files(logged_in)["fetch.hold"]["until"] == NOW + usage.BACKOFF_MAX
+    assert cache_files(logged_in)["hold"]["until"] == NOW + usage.BACKOFF_MAX
 
 
 @pytest.mark.parametrize("body", ["not json", "[1]", ""])
 def test_unreadable_answer_backs_off(server, logged_in, body):
     server.reply(200, body)
     assert usage.refresh(logged_in, NOW, server.url, "linux") == "unreadable answer"
-    assert cache_files(logged_in)["fetch.hold"]["until"] == NOW + 60
-    assert cache_files(logged_in)["usage.json"] is None
+    assert cache_files(logged_in)["hold"]["until"] == NOW + 60
+    assert cache_files(logged_in)["cache"] is None
 
 
 def test_network_failure_backs_off(logged_in):
@@ -813,7 +1044,7 @@ def test_network_failure_backs_off(logged_in):
     s.close()  # nothing listens here now
     reason = usage.refresh(logged_in, NOW, f"http://127.0.0.1:{port}", "linux")
     assert reason == "no answer (network)"
-    assert cache_files(logged_in)["fetch.hold"]["until"] == NOW + 60
+    assert cache_files(logged_in)["hold"]["until"] == NOW + 60
 
 
 def test_failure_keeps_old_cache(server, logged_in):
@@ -821,14 +1052,14 @@ def test_failure_keeps_old_cache(server, logged_in):
     usage.refresh(logged_in, NOW, server.url, "linux")
     server.reply(500)
     usage.refresh(logged_in, NOW + 200, server.url, "linux")
-    assert cache_files(logged_in)["usage.json"]["fetched_at"] == NOW
+    assert cache_files(logged_in)["cache"]["fetched_at"] == NOW
 
 
 def test_no_login_holds_without_calling(server, isolated_home):
     env = env_for(isolated_home)
     reason = usage.refresh(env, NOW, server.url, "linux")
     assert reason == "no Claude login found"
-    assert cache_files(env)["fetch.hold"]["until"] == NOW + 600
+    assert cache_files(env)["hold"]["until"] == NOW + 600
     assert server.requests == []
 
 
@@ -837,7 +1068,7 @@ def test_expired_token_holds_without_calling(server, logged_in):
     (logged_in_home(logged_in) / ".claude" / ".credentials.json").write_text(json.dumps(creds))
     reason = usage.refresh(logged_in, NOW, server.url, "linux")
     assert reason.startswith("token expired")
-    assert cache_files(logged_in)["fetch.hold"]["until"] == NOW + 300
+    assert cache_files(logged_in)["hold"]["until"] == NOW + 300
     assert server.requests == []
 
 
@@ -848,5 +1079,6 @@ def test_cache_files_are_private(server, logged_in):
     usage.refresh(logged_in, NOW, server.url, "linux")
     path = Path(usage.cache_dir(logged_in))
     assert stat.S_IMODE(path.stat().st_mode) == 0o700
-    assert stat.S_IMODE((path / "usage.json").stat().st_mode) == 0o600
+    name = usage.cache_name(account.identity(logged_in))
+    assert stat.S_IMODE((path / name).stat().st_mode) == 0o600
     assert [p.name for p in path.iterdir() if p.suffix == ".tmp"] == []

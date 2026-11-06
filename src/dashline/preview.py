@@ -238,6 +238,7 @@ def run(scenario: str | None, glyphs: str = "unicode", env=None, out=None) -> in
     import shutil
 
     from dashline import theme
+    from dashline.__main__ import MAX_COLUMNS, parse_columns
 
     env = os.environ if env is None else env
     out = out or sys.stdout
@@ -249,8 +250,9 @@ def run(scenario: str | None, glyphs: str = "unicode", env=None, out=None) -> in
             f"dashline: unknown scenario {unknown[0]!r}; choose from: all, {', '.join(table)}\n"
         )
         return 2
-    columns = env.get("COLUMNS", "")
-    columns = int(columns) if columns.isdigit() else shutil.get_terminal_size((100, 24)).columns
+    columns = parse_columns(env.get("COLUMNS")) or min(
+        shutil.get_terminal_size((100, 24)).columns, MAX_COLUMNS
+    )
     palette = theme.load(None, env)
     dim = palette.sgr("inactive")
     sets = ("nerd", "unicode", "ascii") if glyphs == "all" else (glyphs,)

@@ -89,6 +89,42 @@ def test_stale_copy_is_replaced_whole(conf, env):
     assert not [p for p in target.parent.iterdir() if p.name != "statusline"]
 
 
+def test_update_keeps_the_users_own_files(conf, env):
+    run(env)
+    target = conf / "scripts" / "statusline"
+    (target / "dashline" / "layout.py").write_text("# old\n")
+    (target / "notes.txt").write_text("mine\n")
+    (target / "wrap").mkdir()
+    (target / "wrap" / "run.sh").write_text("#!/bin/sh\n")
+    (target / "link").symlink_to("notes.txt")
+    code, out = run(env)
+    assert code == 0
+    assert "updated dashline" in out
+    assert (target / "notes.txt").read_text() == "mine\n"
+    assert (target / "wrap" / "run.sh").read_text() == "#!/bin/sh\n"
+    assert str((target / "link").readlink()) == "notes.txt"
+    assert (target / "dashline" / "layout.py").read_text() != "# old\n"
+    assert not [p for p in target.parent.iterdir() if p.name != "statusline"]
+
+
+def test_missing_shim_is_an_error(conf, env, monkeypatch, capsys):
+    monkeypatch.setattr(install, "source_shim", lambda root: None)
+    code, _ = run(env)
+    assert code == 1
+    assert "no statusline.py next to" in capsys.readouterr().err
+    assert not (conf / "scripts").exists()
+    assert not (conf / "settings.json").exists()
+
+
+def test_install_run_from_the_installed_copy(conf, env, monkeypatch):
+    run(env)
+    target = conf / "scripts" / "statusline"
+    monkeypatch.setattr(install, "source_root", lambda: str(target))
+    code, out = run(env)
+    assert code == 0
+    assert "running from ~/.claude/scripts/statusline: nothing to copy" in out
+
+
 def test_symlinked_install_dir_is_replaced(conf, env, tmp_path):
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
@@ -320,6 +356,78 @@ def test_empty_folder_counts_as_missing(conf, env):
     assert run(env)[0] == 0
 
 
+@pytest.mark.parametrize("junk", [".DS_Store", "Thumbs.db"])
+def test_file_manager_junk_doesnt_make_a_folder_someones(conf, env, junk):
+    target = conf / "scripts" / "statusline"
+    target.mkdir(parents=True)
+    (target / junk).write_text("")
+    assert install.folder_state(str(target)) == "missing"
+    code, out = run(env)
+    assert code == 0, out
+    assert (target / "dashline" / "__init__.py").exists()
+    assert not (conf / "scripts" / "statusline.backup").exists()
+
+
+def test_failed_replace_puts_their_folder_back(conf, env, monkeypatch, capsys):
+    import shutil
+
+    other = conf / "scripts" / "statusline"
+    other.mkdir(parents=True)
+    (other / "statusline.py").write_text("print('mine')\n")
+    their_entry = {"type": "command", "command": f"bash {other}/statusline.py"}
+    write_settings(conf, {"statusLine": their_entry})
+
+    def full(*args, **kw):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(shutil, "copyfile", full)
+    code, out = run(env, replace=True)
+    assert code == 1
+    assert "No space left on device" in capsys.readouterr().err
+    assert "back to ~/.claude/scripts/statusline" in out
+    assert (other / "statusline.py").read_text() == "print('mine')\n"
+    assert sorted(p.name for p in other.parent.iterdir()) == ["statusline"]
+    assert settings(conf)["statusLine"] == their_entry
+
+
+def test_replace_whose_settings_write_fails_puts_their_folder_back(conf, env, monkeypatch, capsys):
+    other = conf / "scripts" / "statusline"
+    other.mkdir(parents=True)
+    (other / "statusline.py").write_text("print('mine')\n")
+    write_settings(conf, {"statusLine": {"type": "command", "command": "echo theirs"}})
+
+    def fail(path, data):
+        raise OSError(5, "Input/output error")
+
+    monkeypatch.setattr(install, "write_settings", fail)
+    code, _ = run(env, replace=True)
+    assert code == 1
+    assert "couldn't write" in capsys.readouterr().err
+    assert (other / "statusline.py").read_text() == "print('mine')\n"
+    assert not (other / "dashline").exists()
+    assert sorted(p.name for p in other.parent.iterdir()) == ["statusline"]
+
+
+def test_failed_set_aside_changes_nothing(conf, env, monkeypatch, capsys):
+    other = conf / "scripts" / "statusline"
+    other.mkdir(parents=True)
+    (other / "statusline.py").write_text("print('mine')\n")
+    write_settings(conf, {"statusLine": {"type": "command", "command": "echo theirs"}})
+    real_rename = os.rename
+
+    def rename(src, dst):
+        if str(dst).endswith(".backup"):
+            raise OSError(13, "Permission denied")
+        real_rename(src, dst)
+
+    monkeypatch.setattr(os, "rename", rename)
+    code, _ = run(env, replace=True)
+    assert code == 1
+    assert "couldn't move" in capsys.readouterr().err
+    assert sorted(p.name for p in other.iterdir()) == ["statusline.py"]
+    assert settings(conf)["statusLine"]["command"] == "echo theirs"
+
+
 # ---- a command the user edited ----
 
 EDITED = '/opt/py312/bin/python3 -I -S "$HOME/.claude/scripts/statusline/statusline.py"'
@@ -361,10 +469,55 @@ def test_unknown_glyphs_in_the_command_are_dropped(conf, env):
         (f"{ENTRY_CMD} --glyphs nerd", "unicode", ENTRY_CMD),
         (f"{ENTRY_CMD} --glyphs=nerd", "ascii", f"{ENTRY_CMD} --glyphs ascii"),
         (f"{ENTRY_CMD} --glyphs 'nerd' --glyphs x", "ascii", f"{ENTRY_CMD} --glyphs ascii"),
+        # The flag goes after the script, ahead of anything the command does next.
+        (
+            f"{ENTRY_CMD} 2>/dev/null || echo off",
+            "ascii",
+            f"{ENTRY_CMD} --glyphs ascii 2>/dev/null || echo off",
+        ),
+        (
+            f"{ENTRY_CMD} --glyphs nerd 2>/dev/null || echo off",
+            "unicode",
+            f"{ENTRY_CMD} 2>/dev/null || echo off",
+        ),
+        (
+            f"{ENTRY_CMD} --glyphs nerd 2>/dev/null",
+            "ascii",
+            f"{ENTRY_CMD} --glyphs ascii 2>/dev/null",
+        ),
+        # A flag a broken edit left at the end moves to where dashline sees it.
+        (
+            f"{ENTRY_CMD} || echo off --glyphs nerd",
+            "ascii",
+            f"{ENTRY_CMD} --glyphs ascii || echo off",
+        ),
+        (
+            "python3 $HOME/.claude/scripts/statusline/statusline.py;true",
+            "nerd",
+            "python3 $HOME/.claude/scripts/statusline/statusline.py --glyphs nerd;true",
+        ),
+        (
+            "python3 '/home/my me/.claude/scripts/statusline/statusline.py' | cat",
+            "nerd",
+            "python3 '/home/my me/.claude/scripts/statusline/statusline.py' --glyphs nerd | cat",
+        ),
+        (
+            r"py C:\Users\me\.claude\scripts\statusline\statusline.py -x",
+            "nerd",
+            r"py C:\Users\me\.claude\scripts\statusline\statusline.py --glyphs nerd -x",
+        ),
     ],
 )
 def test_with_glyphs(cmd, glyphs, expected):
     assert install.with_glyphs(cmd, glyphs) == expected
+
+
+def test_glyphs_change_keeps_a_shell_tail_working(conf, env):
+    write_settings(conf, {"statusLine": {"type": "command", "command": f"{EDITED} || echo off"}})
+    code, out = run(env, "ascii")
+    assert code == 0
+    assert settings(conf)["statusLine"]["command"] == f"{EDITED} --glyphs ascii || echo off"
+    assert "now runs it with ascii glyphs" in out
 
 
 # ---- settings.json edge cases ----
@@ -393,6 +546,58 @@ def test_read_only_settings_are_refused(conf, env, capsys):
         assert not (conf / "scripts").exists()  # checked before copying
     finally:
         (conf / "settings.json").chmod(0o644)
+
+
+@pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0, reason="POSIX permissions")
+def test_read_only_settings_folder_is_refused_before_copying(conf, env, capsys):
+    write_settings(conf, {"theme": "dark"})
+    conf.chmod(0o555)
+    try:
+        code, _ = run(env)
+        assert code == 1
+        assert "can't write in" in capsys.readouterr().err
+        assert not (conf / "scripts").exists()  # checked before copying
+    finally:
+        conf.chmod(0o755)
+    assert settings(conf) == {"theme": "dark"}
+
+
+def test_new_settings_folder_is_checked_where_it_will_be_made(isolated_home, tmp_path):
+    custom = tmp_path / "a" / "b"
+    code, _ = run({"HOME": str(isolated_home), "CLAUDE_CONFIG_DIR": str(custom), **NO_NETWORK})
+    assert code == 0
+    assert "statusLine" in settings(custom)
+
+
+def test_settings_temp_file_is_private_until_written(conf, env, monkeypatch):
+    write_settings(conf, {"env": {"SECRET": "x"}})
+    (conf / "settings.json").chmod(0o600)
+    modes = []
+    real_open = os.open
+
+    def spy(path, flags, mode=0o777, *args, **kw):
+        if ".dashline-" in str(path):
+            modes.append((flags & os.O_EXCL, mode))
+        return real_open(path, flags, mode, *args, **kw)
+
+    monkeypatch.setattr(os, "open", spy)
+    assert run(env)[0] == 0
+    assert modes == [(os.O_EXCL, 0o600)]
+    assert (conf / "settings.json").stat().st_mode & 0o777 == 0o600
+
+
+def test_settings_keep_a_wider_mode(conf, env):
+    write_settings(conf, {"theme": "dark"})
+    (conf / "settings.json").chmod(0o640)
+    assert run(env)[0] == 0
+    assert (conf / "settings.json").stat().st_mode & 0o777 == 0o640
+
+
+def test_a_stale_settings_temp_file_is_replaced(conf, env):
+    write_settings(conf, {"theme": "dark"})
+    (conf / f"settings.json.dashline-{os.getpid()}.tmp").write_text("old")
+    assert run(env)[0] == 0
+    assert sorted(p.name for p in conf.iterdir()) == ["scripts", "settings.json"]
 
 
 def test_read_only_settings_that_need_no_change_are_fine(conf, env):
@@ -474,6 +679,14 @@ def test_leftovers_where_pids_cant_be_checked(conf, monkeypatch):
     removed = install.clean_leftovers(str(scripts), NOW_REAL)
     assert removed == ["statusline.old-11"]
     assert (scripts / "statusline.old-12").exists()
+
+
+def test_leftover_that_vanishes_mid_scan(conf, monkeypatch):
+    monkeypatch.setattr(install, "_alive", lambda pid: None)
+    scripts = conf / "scripts"
+    scripts.mkdir()
+    monkeypatch.setattr(os, "listdir", lambda path: ["statusline.old-11"])  # gone already
+    assert install.clean_leftovers(str(scripts), NOW_REAL) == []
 
 
 def test_home_short():

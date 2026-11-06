@@ -11,7 +11,6 @@ anyway; a hash of it tags the cache, since it may belong to another login than
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import sys
@@ -136,6 +135,8 @@ def fingerprint(oauth: dict, env) -> str | None:
     may be another account's, so its own hash tags the cache instead. 64 bits of a
     salted SHA-256 can't be turned back into the token.
     """
+    import hashlib
+
     token = env.get("CLAUDE_CODE_OAUTH_TOKEN")
     if token:
         digest = hashlib.sha256(b"dashline-cache-tag:" + token.encode("utf-8", "replace"))
@@ -191,6 +192,7 @@ def label_text(account: Account, glyphs: dict, now: float) -> str | None:
 
 def keychain_service(env) -> str:
     """The CLI's Keychain item: a per-directory suffix when CLAUDE_CONFIG_DIR is set."""
+    import hashlib
     import unicodedata
 
     custom = env.get("CLAUDE_CONFIG_DIR")
@@ -206,8 +208,21 @@ def keychain_account(env) -> str:
     return user if ok else "claude-code-user"
 
 
+class KeychainError(Exception):
+    """The Keychain has the item but wouldn't hand it over: locked, or access denied."""
+
+
+KEYCHAIN_LOCKED = "the macOS Keychain is locked or denied access"
+KEYCHAIN_NOT_FOUND = 44  # `security`'s exit code for errSecItemNotFound
+
+
 def _read_keychain(env) -> dict:
-    """The credentials JSON from the macOS Keychain, or {}."""
+    """The credentials JSON from the macOS Keychain, or {} if there is none.
+
+    Raises KeychainError when `security` fails for another reason, such as a locked
+    Keychain over SSH ("User interaction is not allowed"), a denied prompt, or one left
+    waiting: /login can't fix those, so they mustn't read as "no login".
+    """
     import subprocess
 
     try:
@@ -225,13 +240,17 @@ def _read_keychain(env) -> dict:
             text=True,
             timeout=5,
         )
+    except subprocess.TimeoutExpired:
+        raise KeychainError(KEYCHAIN_LOCKED) from None  # a prompt nobody answered
     except (OSError, subprocess.SubprocessError):
+        return {}  # no `security`: not a Mac after all
+    if r.returncode == KEYCHAIN_NOT_FOUND:
         return {}
     if r.returncode != 0:
-        return {}
+        raise KeychainError(KEYCHAIN_LOCKED)
     try:
         data = json.loads(r.stdout)
-    except ValueError:
+    except (ValueError, RecursionError):
         return {}
     return data if isinstance(data, dict) else {}
 
@@ -250,8 +269,13 @@ def find_token(env, now: float, platform: str | None = None) -> tuple:
     if platform == "darwin":
         sources.append(("macOS Keychain", lambda: _read_keychain(env)))
     sources.append((credentials_path(env), lambda: _read_json(credentials_path(env))))
+    locked = None
     for source, read in sources:
-        oauth = read().get("claudeAiOauth")
+        try:
+            oauth = read().get("claudeAiOauth")
+        except KeychainError as e:
+            locked = str(e)  # the file may still have a token
+            continue
         if not isinstance(oauth, dict):
             continue
         token = oauth.get("accessToken")
@@ -262,7 +286,7 @@ def find_token(env, now: float, platform: str | None = None) -> tuple:
         if expires is not None and expires < now + EXPIRY_MARGIN:
             return None, "token expired (Claude Code renews it on its next request)", expires
         return token, source, expires
-    return None, "no Claude login found", None
+    return None, locked or "no Claude login found", None
 
 
 def read_token(env, now: float, platform: str | None = None) -> tuple:

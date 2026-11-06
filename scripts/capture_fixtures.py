@@ -4,19 +4,21 @@ Usage: python3 capture_fixtures.py PLAN      (PLAN: free, pro, max5x, ultra, tea
 
 Reads the Claude Code OAuth token the way the statusline does (CLAUDE_CODE_OAUTH_TOKEN,
 the macOS Keychain, or the credentials file), calls
-/api/oauth/usage and /api/oauth/profile once each, removes names, emails, ids and URLs,
-and writes fixture-PLAN.json in the current directory. The token stays in this process.
-Read the output before sharing it; anything personal left in it is a bug here.
+/api/oauth/usage and /api/oauth/profile once each through the statusline's own request
+(which refuses redirects, so the token only goes to api.anthropic.com), removes names,
+emails, ids (every `id`, `uuid`, `*_id` and `*_uuid` value, and anything UUID-shaped)
+and URLs, and writes fixture-PLAN.json in the current directory. The token stays in this
+process. Read the output before sharing it; anything personal left in it is a bug here.
+An error answer is kept as its status alone: the statusline's request drops error bodies.
 """
 
-import contextlib
 import json
 import os
 import re
 import sys
-import urllib.error
-import urllib.request
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 API = "https://api.anthropic.com"
 UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I)
@@ -32,7 +34,8 @@ PERSONAL = {
     "created_at",
     "subscription_created_at",
 }
-KEEP_UNDER = {"model", "rows", "application"}  # display names here are product names
+KEEP_UNDER = {"model", "rows", "application"}  # names and ids here are product names
+PLACEHOLDER = "00000000-0000-4000-8000-000000000000"
 
 
 def token():
@@ -40,7 +43,6 @@ def token():
     CLAUDE_CONFIG_DIR and the env token are found too."""
     import time
 
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
     from dashline import account
 
     tok, why = account.read_token(os.environ, time.time())
@@ -50,22 +52,14 @@ def token():
 
 
 def get(path, tok):
-    req = urllib.request.Request(
-        API + path,
-        headers={
-            "Authorization": f"Bearer {tok}",
-            "anthropic-beta": "oauth-2025-04-20",
-            "User-Agent": "dashline-capture",
-        },
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=15) as r:
-            return {"status": r.status, "body": json.load(r)}
-    except urllib.error.HTTPError as e:
-        body = e.read().decode("utf-8", "replace")
-        with contextlib.suppress(ValueError):
-            body = json.loads(body)
-        return {"status": e.code, "body": body}
+    from dashline import usage
+
+    status, data, _retry = usage.get(API + path, tok, timeout=15)
+    return {"status": status, "body": data}
+
+
+def is_id(key):
+    return key in ("id", "uuid") or key.endswith(("_id", "_uuid"))
 
 
 def scrub(o, parent=""):
@@ -74,8 +68,13 @@ def scrub(o, parent=""):
         for k, v in o.items():
             if k in PERSONAL and isinstance(v, str) and parent not in KEEP_UNDER:
                 out[k] = f"<{k}>"
-            elif k == "uuid" or k.endswith("_uuid"):
-                out[k] = "00000000-0000-4000-8000-000000000000" if v else v
+            elif is_id(k) and v not in (None, "") and parent not in KEEP_UNDER:
+                if isinstance(v, (dict, list)):
+                    out[k] = scrub(v, k)
+                elif isinstance(v, str) and UUID.fullmatch(v):
+                    out[k] = PLACEHOLDER
+                else:
+                    out[k] = f"<{k}>"
             else:
                 out[k] = scrub(v, k)
         return out
@@ -83,7 +82,7 @@ def scrub(o, parent=""):
         return [scrub(v, parent) for v in o]
     if isinstance(o, str):
         o = EMAIL.sub("<email>", o)
-        o = UUID.sub("00000000-0000-4000-8000-000000000000", o)
+        o = UUID.sub(PLACEHOLDER, o)
         return URL.sub("https://example.invalid/", o)
     return o
 

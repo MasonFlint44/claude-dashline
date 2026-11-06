@@ -32,17 +32,17 @@ def spawned(monkeypatch):
 def setup_home(home, oauth, usage_name=None, fetched_at=NOW - 30):
     (home / ".claude.json").write_text(json.dumps({"oauthAccount": oauth}))
     if usage_name:
-        from dashline import account
+        from dashline import account, usage
 
-        env = {"HOME": str(home)}
+        who = account.identity({"HOME": str(home)})
         path = home / ".claude" / "cache" / "statusline"
         path.mkdir(parents=True)
         body = {
             "fetched_at": fetched_at,
-            "account": account.identity(env),
+            "account": who,
             "data": read_json(FIXTURES / "usage" / f"{usage_name}.json"),
         }
-        (path / "usage.json").write_text(json.dumps(body))
+        (path / usage.cache_name(who)).write_text(json.dumps(body))
 
 
 def render(home, stdin=None, columns=120, **extra_env):
@@ -84,13 +84,13 @@ def test_old_cache_fetches_and_tags_stale(isolated_home, spawned):
 
 
 def test_held_fetch_does_not_spawn(isolated_home, spawned):
-    from dashline import account
+    from dashline import account, usage
 
     setup_home(isolated_home, ULTRA_ACCOUNT)
     path = isolated_home / ".claude" / "cache" / "statusline"
     path.mkdir(parents=True)
     who = account.identity({"HOME": str(isolated_home)})
-    (path / "fetch.hold").write_text(json.dumps({"until": NOW + 60, "account": who}))
+    (path / usage.hold_name(who)).write_text(json.dumps({"until": NOW + 60, "account": who}))
     render(isolated_home)
     assert spawned == []
 

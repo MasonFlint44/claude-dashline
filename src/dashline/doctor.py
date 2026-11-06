@@ -5,7 +5,9 @@ a `fix:` line under it. The doctor skill reads this output, so names and wording
 stable. Exit 1 when something fails: the statusline or its plan bars won't show.
 
 Doctor fetches the usage endpoint once, in the foreground, the same way the background
-child does: it refreshes the cache, and on failure sets the same hold a render would.
+child does: it refreshes the cache, and on failure sets the same hold a render would. It
+doesn't while the server has asked this login to wait (Retry-After): it says until when
+instead, and `--fetch-now` (fetch_now) tries anyway.
 """
 
 from __future__ import annotations
@@ -46,6 +48,24 @@ def _span(seconds: float) -> str:
     return f"{seconds // 86400}d{seconds % 86400 // 3600}h"
 
 
+def _clock(when: float, now: float) -> str:
+    """A local time: `14:05`, or `Fri 14:05` when that isn't today."""
+    shown, today = time.localtime(when), time.localtime(now)
+    if shown[:3] == today[:3]:
+        return time.strftime("%H:%M", shown)
+    return time.strftime("%a %H:%M", shown)
+
+
+def stderr_reason(err: list) -> str | None:
+    """The line of a command's stderr that says what went wrong.
+
+    dashline's own errors start with `dashline:`; a usage error follows its line with
+    the help text, so the last line would be a line of help.
+    """
+    ours = [line for line in err if line.startswith("dashline:")]
+    return ours[0] if ours else (err[-1] if err else None)
+
+
 def summarize(data: dict) -> str:
     """The usage answer in a few words: `5h 22% · 7d 48% · Fable 24% · credits 12%`."""
     from dashline.stdin import _dig, _num, _str
@@ -81,6 +101,31 @@ def first_word(cmd: str) -> str:
 version_tuple = install.version_tuple
 
 
+KEYCHAIN_FIX = (
+    "unlock the login Keychain (Keychain Access, or `security unlock-keychain` over SSH) "
+    "and allow access if macOS asks; /login won't help"
+)
+
+
+def login_fix(why: str) -> str:
+    from dashline.account import KEYCHAIN_LOCKED
+
+    return KEYCHAIN_FIX if why == KEYCHAIN_LOCKED else "run /login in Claude Code"
+
+
+def unknown_glyphs(entry) -> str | None:
+    """The --glyphs value of an entry's command when it names no glyph set, else None.
+
+    install.glyphs_of reads such a value as unicode, but the statusline refuses it.
+    """
+    cmd = entry.get("command") if isinstance(entry, dict) else None
+    match = install.GLYPHS.search(cmd) if isinstance(cmd, str) else None
+    if not match:
+        return None
+    value = match.group(1).strip("'\"")
+    return None if value in install.GLYPH_SETS else value
+
+
 def font_guess(env, platform: str) -> tuple:
     """(True if a Nerd Font is likely to render, what was found)."""
     term = (env.get("TERM_PROGRAM") or "").lower()
@@ -113,12 +158,15 @@ def font_guess(env, platform: str) -> tuple:
 
 
 class Doctor:
-    def __init__(self, env, now: float, cwd: str, base_url: str = API_URL, platform=None):
+    def __init__(
+        self, env, now: float, cwd: str, base_url: str = API_URL, platform=None, fetch_now=False
+    ):
         self.env = env
         self.now = now
         self.cwd = cwd
         self.base_url = base_url
         self.platform = platform or sys.platform
+        self.fetch_now = fetch_now  # fetch even while the server has asked us to wait
         self.results = []  # (status, name, text, fix)
         self.entry = None  # dashline's statusLine entry, once found
         self.account = None
@@ -231,6 +279,17 @@ class Doctor:
             )
             return
         text = f"{where}: {install.describe(entry)}"
+        unknown = unknown_glyphs(entry)
+        if unknown is not None:
+            self.add(
+                WARN,
+                "settings",
+                f"{where}: --glyphs {unknown} isn't a glyph set (nerd, unicode or ascii)",
+                "run /dashline:install, which fixes the flag"
+                if is_user
+                else f"fix --glyphs in {where}",
+            )
+            return
         if not isinstance(entry.get("refreshInterval"), (int, float)):
             self.add(
                 WARN,
@@ -280,7 +339,7 @@ class Doctor:
             if source.startswith("token expired"):
                 self.add(WARN, "login", f"{label}; {source}")
             else:
-                self.add(FAIL, "login", f"{label}; {source}", "run /login in Claude Code")
+                self.add(FAIL, "login", f"{label}; {source}", login_fix(source))
             return
         del token
         where = (
@@ -293,22 +352,40 @@ class Doctor:
 
     def usage(self):
         from dashline import usage
+        from dashline.account import KEYCHAIN_LOCKED
 
         if self.account is None or self.account.mode != "subscription":
             self.add(INFO, "usage", "not fetched: plan bars are for Claude subscriptions")
+            return
+        who = self.account.fingerprint
+        held = usage.hold(self.env, who, self.now)
+        if not self.fetch_now and held and held.get("server") is True and held["until"] > self.now:
+            # Respect the server's Retry-After; the user can still choose to try now.
+            until = held["until"]
+            reason = held.get("reason") if isinstance(held.get("reason"), str) else "a wait"
+            self.add(
+                WARN,
+                "usage",
+                f"not fetched: the server asked to wait until {_clock(until, self.now)} "
+                f"({_span(until - self.now)} left) after {reason}",
+                "it retries on its own after that; to try now anyway, run doctor with --fetch-now",
+            )
             return
         start = time.monotonic()
         result = usage.refresh(self.env, self.now, self.base_url, self.platform)
         ms = (time.monotonic() - start) * 1000
         if result == "ok":
-            cache = usage._read_json(usage._path(self.env, "usage.json"))
-            self.add(OK, "usage", f"{ms:.0f} ms: {summarize(cache.get('data') or {})}")
+            data, _ = usage.cached(self.env, who, self.now)
+            self.add(OK, "usage", f"{ms:.0f} ms: {summarize(data or {})}")
             return
-        held = usage.hold(self.env, self.account.fingerprint) or {}
+        held = usage.hold(self.env, who) or {}
         until = held.get("until")
         wait = f"; renders retry in {_span(until - self.now)}" if until else ""
+        if held.get("server") is True:
+            wait += " (the server asked for that wait)"
         fixes = {
             "no Claude login found": "run /login in Claude Code",
+            KEYCHAIN_LOCKED: KEYCHAIN_FIX,
             "token rejected (401)": "run /login in Claude Code",
             "not allowed (403): the login may lack the profile scope": (
                 "a token from `claude setup-token` can't read usage; use /login instead"
@@ -348,7 +425,8 @@ class Doctor:
             self.add(FAIL, "cache", f"{where} isn't writable", f"check the owner of {where}")
             return
         notes = []
-        cache = usage._read_json(usage._path(self.env, "usage.json"))
+        who = self.account.fingerprint if self.account is not None else None
+        cache = usage._read_json(usage._path(self.env, usage.cache_name(who)))
         fetched = cache.get("fetched_at")
         if isinstance(fetched, (int, float)):
             notes.append(f"fetched {_ago(self.now - fetched)}")
@@ -365,7 +443,11 @@ class Doctor:
         # dashline's own files, not the folder: it may be shared with other tools, and a
         # folder others can list only shows them file names.
         exposed = []
-        for name in ("usage.json", "fetch.hold", "fetch.lock"):
+        try:
+            names = usage.own_files(os.listdir(path))
+        except OSError:
+            names = []
+        for name in names:
             try:
                 mode = os.stat(os.path.join(path, name)).st_mode
             except OSError:
@@ -419,7 +501,7 @@ class Doctor:
         lines = [line for line in r.stdout.splitlines() if line.strip()]
         err = r.stderr.strip().splitlines()
         if r.returncode != 0 or not lines or "internal error" in r.stdout:
-            why = err[-1] if err else f"exit {r.returncode}, {len(lines)} lines"
+            why = stderr_reason(err) or f"exit {r.returncode}, {len(lines)} lines"
             fix = "run /dashline:install"
             if "can't open file" in why:
                 fix = "the command's statusline.py is missing: run /dashline:install"
@@ -468,7 +550,9 @@ class Doctor:
     def font(self):
         likely, found = font_guess(self.env, self.platform)
         glyphs = install.glyphs_of(self.entry) if self.entry else None
-        if glyphs:
+        if glyphs and unknown_glyphs(self.entry) is not None:
+            text = f"{found}; the command names no glyph set (see the settings line)"
+        elif glyphs:
             text = f"{found}; using {glyphs} glyphs"
             if likely and glyphs != "nerd":
                 text += " (/dashline:install can switch to nerd)"
@@ -501,13 +585,17 @@ def write(results: list, out, palette=None) -> None:
         out.write("All good.\n")
 
 
-def run(env=None, out=None, cwd=None, base_url: str = API_URL, now=None) -> int:
+def run(
+    env=None, out=None, cwd=None, base_url: str = API_URL, now=None, fetch_now: bool = False
+) -> int:
+    """fetch_now: fetch even while the server has asked this login to wait."""
     from dashline import theme
 
     env = os.environ if env is None else env
     out = out or sys.stdout
     cwd = cwd or env.get("CLAUDE_PROJECT_DIR") or os.getcwd()
-    doctor = Doctor(env, time.time() if now is None else now, cwd, base_url)
+    now = time.time() if now is None else now
+    doctor = Doctor(env, now, cwd, base_url, fetch_now=fetch_now)
     results = doctor.run()
     palette = None
     if hasattr(out, "isatty") and out.isatty() and not env.get("NO_COLOR"):
