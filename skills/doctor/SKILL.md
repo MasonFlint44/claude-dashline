@@ -21,7 +21,9 @@ server asked dashline to wait, doctor doesn't fetch, and its `usage` line says
 `server asked to wait` and until when (see §3). `--fetch-now` makes it fetch anyway.
 
 Each run is a live request, so run doctor at most twice per request from the user:
-once, and once more after applying fixes from §3. Never in a loop.
+once, and once more after applying fixes from §3. Never in a loop. If the `usage` line
+says `a fetch is running`, a background fetch held the lock: tell the user, and don't
+run doctor again just for that (the second run, if any, still counts).
 
 ## 2. Report
 
@@ -41,7 +43,7 @@ What the checks mean:
 | `usage` | one live fetch of plan usage (none while the server asked to wait): the bars it would draw, or why it failed |
 | `cache` | `<config>/cache/statusline/`: writable, dashline's files private, when last fetched, fetch lock |
 | `command` | runs the exact settings command on a sample session, like Claude Code does |
-| `git` | git for the directory row (2.11 or newer) |
+| `git` | git for the directory row (2.15 or newer) |
 | `theme` | the Claude Code theme whose colors the statusline uses |
 | `font` | whether Nerd Font icons are likely to render, and the glyph set in use |
 
@@ -49,11 +51,16 @@ What the checks mean:
 
 After applying any of these, run doctor once more to confirm (§1: no more than that).
 
-Do this without asking, only when the `settings` line is `ok` (settings.json already
-runs dashline):
-- `install` warns that the copy is old or differs, or `command` says its statusline.py
-  is missing: run `DASHLINE --install`. With the entry already dashline's, it updates
-  the copy and keeps the command and glyph set as written.
+Do this without asking, only when the `settings` line is `ok` (or warns only about
+`refreshInterval`) AND names the user settings file: `~/.claude/settings.json`, or
+`settings.json` in `$CLAUDE_CONFIG_DIR`. When it names a project or managed file, ask
+first (next list): `--install` writes the user file, which would turn dashline on in
+every other project too.
+- `install` warns that the copy is old or differs, `command` says its statusline.py is
+  missing, or `settings` warns that there's no `refreshInterval`: run
+  `DASHLINE --install`. With the entry already dashline's, it updates the copy and
+  keeps the command and glyph set as written. If it exits 3 or 4 anyway, stop and
+  handle it as in the ask-first list below.
   Not when `install` says the installed copy is newer than this one: that means this
   plugin is out of date, so tell the user to update it (`/plugin`) instead.
 
@@ -73,6 +80,11 @@ Ask first (AskUserQuestion), and act only on a yes:
   run `DASHLINE --doctor --fetch-now`, once; it counts as the one re-run. If it's still
   refused, stop: don't retry.
 - `cache` says other users can read one of its files: run the `chmod 600` in its `fix:` line.
+- `settings` warns that `--glyphs <x> isn't a glyph set` (a typo like `Nerd`): don't
+  reset it to unicode. Run the glyph step of `/dashline:install` (the preview, then the
+  user picks), then `DASHLINE --install --glyphs <set>`. If that exits 1 saying it
+  can't change `--glyphs` automatically, show the user the edit its message gives;
+  editing settings.json is theirs to do.
 
 Explain, and leave to the user:
 - `settings` says a project file (`.claude/settings.json`, `settings.local.json`) or
@@ -80,9 +92,15 @@ Explain, and leave to the user:
   doctor's `fix:` line says what can. A project's statusLine is the user's to remove;
   managed settings only an administrator can change.
 - `disableAllHooks`: it turns off hooks too, so removing it is the user's decision.
-- `login` / `usage` asking for `/login`: only the user can sign in. A 403 with
+- `login` / `usage` asking for `/login` (also after a 401 or 403 where the server
+  asked to wait: follow the `fix:` line): only the user can sign in. A 403 with
   `CLAUDE_CODE_OAUTH_TOKEN` set means a `claude setup-token` token, which can't read
   plan usage. The statusline still works; only the plan bars are missing.
+- `login` / `usage` saying `the macOS Keychain is locked or denied access`: relay
+  doctor's fix (unlock the login Keychain, and allow access if macOS asks). `/login`
+  won't help.
+- `git` fails as too old (dashline needs 2.15 or newer): relay its fix; updating git is
+  the user's call. Until then the directory row shows the folder only.
 - `usage` network failures: the statusline keeps the last numbers (marked with their
   age) and retries on its own. Point at proxy settings (`HTTPS_PROXY`) only if the user
   is behind one.

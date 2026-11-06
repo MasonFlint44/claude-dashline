@@ -27,7 +27,12 @@ MARK = "/scripts/statusline/statusline.py"
 CONFIG_PREFIXES = ("}", "/.claude")  # ${CLAUDE_CONFIG_DIR:-…}, ~/.claude, $HOME/.claude
 REFRESH = 60
 GLYPH_SETS = ("nerd", "unicode", "ascii")
-GLYPHS = re.compile(r"\s*--glyphs(?:=|\s+)(\S+)")
+# Finds a --glyphs flag anywhere in a command, for reading: the value never takes in a
+# quote or a shell character. dashline_args() says which flag dashline itself gets.
+GLYPHS = re.compile(r"\s*--glyphs(?:=|\s+)['\"]?([A-Za-z0-9_.-]+)")
+# What may run statusline.py directly: python3, python3.12, py (Windows), with options.
+PYTHON = re.compile(r"(?i)^(?:python[0-9.]*|py)(?:\.exe)?$")
+ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 LEFTOVER = re.compile(r"^statusline\.(?:new|old)-(\d+)$")
 LEFTOVER_AGE = 3600  # where a process can't be asked whether it's alive (Windows)
 # What an install consists of, at the top of its folder. Anything else there is the
@@ -83,27 +88,173 @@ def is_ours(entry, env=None) -> bool:
 def glyphs_of(entry) -> str:
     """The glyph set an entry's command asks for: unicode when it names none or a bad one."""
     cmd = entry.get("command") if isinstance(entry, dict) else None
-    match = GLYPHS.search(cmd) if isinstance(cmd, str) else None
-    value = match.group(1).strip("'\"") if match else "unicode"
+    value = flag_value(cmd) if isinstance(cmd, str) else None
     return value if value in GLYPH_SETS else "unicode"
 
 
-def with_glyphs(cmd: str, glyphs: str) -> str:
-    """`cmd` asking for `glyphs`: any --glyphs flag replaced, the rest kept as written.
+def flag_value(cmd: str) -> str | None:
+    """The --glyphs value dashline gets from `cmd`, or None when it names none.
 
-    The flag goes right after the statusline.py argument, so a hand-edited command that
-    goes on (`… 2>/dev/null || echo off`) still passes it to dashline.
+    Read from dashline's own arguments when the command can be followed (a tail like
+    `|| echo --glyphs x` isn't dashline's); otherwise from the first flag anywhere.
     """
-    bare = GLYPHS.sub("", cmd).rstrip()
+    found = dashline_args(cmd)
+    if found is None:
+        match = GLYPHS.search(cmd)
+        return match.group(1) if match else None
+    value = None
+    for _, flag in found[1]:
+        value = flag
+    return value
+
+
+def _split(cmd: str) -> list | None:
+    """A shell command as words and operators: [(kind, text, start, end)].
+
+    A word's text has its quotes and escapes taken out; start and end are its place in
+    `cmd`. None for a command this can't follow: an unclosed quote, `$(…)` or a backtick.
+    """
+    out = []
+    i, n = 0, len(cmd)
+    while i < n:
+        c = cmd[i]
+        if c in " \t":
+            i += 1
+            continue
+        if c in "\n;|&()<>":
+            j = i + 1
+            while j < n and c in "|&<>" and cmd[j] in "|&<>":
+                j += 1  # ||, &&, >>, >&, 2>&1's >&
+            out.append(("op", cmd[i:j], i, j))
+            i = j
+            continue
+        start, text = i, []
+        while i < n and cmd[i] not in " \t\n;|&()<>":
+            c = cmd[i]
+            if c == "`" or cmd.startswith("$(", i):
+                return None
+            if c == "'":
+                end = cmd.find("'", i + 1)
+                if end < 0:
+                    return None
+                text.append(cmd[i + 1 : end])
+                i = end + 1
+            elif c == '"':
+                i += 1
+                while i < n and cmd[i] != '"':
+                    if cmd[i] == "`" or cmd.startswith("$(", i):
+                        return None
+                    if cmd[i] == "\\" and i + 1 < n and cmd[i + 1] in '"\\$`':
+                        i += 1
+                    text.append(cmd[i])
+                    i += 1
+                if i >= n:
+                    return None
+                i += 1
+            elif cmd.startswith("${", i):
+                end = cmd.find("}", i)
+                if end < 0:
+                    return None
+                text.append(cmd[i : end + 1])
+                i = end + 1
+            elif c == "\\":
+                text.append(cmd[i : i + 2])  # kept: a Windows path's separators
+                i += 2
+            else:
+                text.append(c)
+                i += 1
+        out.append(("word", "".join(text), start, i))
+    return out
+
+
+def _is_separator(token) -> bool:
+    """An operator that ends a simple command (not a redirection like `2>`)."""
+    return token[0] == "op" and token[1][0] not in "<>"
+
+
+def dashline_args(cmd: str) -> tuple | None:
+    """(end of the statusline.py argument, [(span, value)] of its --glyphs flags).
+
+    Only for a command that runs the script directly: in the last simple command naming
+    statusline.py, Python (with options, after any VAR=value) runs it as its script.
+    Anything else (the path inside `bash -lc '…'`, a `[ -f … ]` test) gives None:
+    there's no telling where dashline's own arguments are.
+    """
+    tokens = _split(cmd)
+    if tokens is None:
+        return None
+    script = None
+    for i, token in enumerate(tokens):
+        if token[0] == "word" and MARK in cmd[token[2] : token[3]].replace("\\", "/"):
+            script = i
+    if script is None:
+        return None
+    raw = cmd[tokens[script][2] : tokens[script][3]].replace("\\", "/")
+    if not raw.rstrip("'\"").endswith(MARK):
+        return None
+    first = script
+    while first > 0 and not _is_separator(tokens[first - 1]):
+        first -= 1
+    words = [t for t in tokens[first:script] if t[0] == "word"]
+    if any(t[0] == "op" for t in tokens[first:script]):
+        return None  # a redirection before the script: not a plain `python3 … script`
+    while words and (ASSIGNMENT.match(words[0][1]) or words[0][1] == "exec"):
+        words.pop(0)
+    if not words or not PYTHON.match(os.path.basename(words[0][1].replace("\\", "/"))):
+        return None
+    options = words[1:]
+    k = 0
+    while k < len(options):
+        if not options[k][1].startswith("-"):
+            return None
+        k += 2 if options[k][1] in ("-X", "-W") else 1
+    flags = []
+    j = script + 1
+    while j < len(tokens) and not _is_separator(tokens[j]):
+        kind, text = tokens[j][0], tokens[j][1]
+        if kind == "op":
+            j += 2  # a redirection and its target
+            continue
+        if text == "--glyphs" or text.startswith("--glyphs="):
+            start = tokens[j - 1][3]  # from the end of the word before: its space goes too
+            value, end = text[len("--glyphs=") :] or None, tokens[j][3]
+            if text == "--glyphs" and j + 1 < len(tokens) and tokens[j + 1][0] == "word":
+                j += 1
+                value, end = tokens[j][1], tokens[j][3]
+            flags.append(((start, end), value))
+        j += 1
+    return tokens[script][3], flags
+
+
+def with_glyphs(cmd: str, glyphs: str) -> str | None:
+    """`cmd` asking for `glyphs`, or None if that can't be done safely.
+
+    dashline's own --glyphs flags are taken out and the new one goes right after the
+    statusline.py argument, so a command that goes on (`… 2>/dev/null || echo off`)
+    keeps working; a --glyphs in that tail isn't dashline's and stays. The rest of the
+    command is kept as written.
+    """
+    found = dashline_args(cmd)
+    if found is None:
+        return None
+    end, flags = found
+    out = cmd
+    for (start, stop), _ in reversed(flags):
+        out = out[:start] + out[stop:]
     if glyphs == "unicode":
-        return bare
-    at = bare.replace("\\", "/").find(MARK)
-    if at < 0:
-        return f"{bare} --glyphs {glyphs}"
-    end = at + len(MARK)
-    while end < len(bare) and not bare[end].isspace() and bare[end] not in ";|&<>()":
-        end += 1  # a closing quote
-    return f"{bare[:end]} --glyphs {glyphs}{bare[end:]}"
+        return out
+    return f"{out[:end]} --glyphs {glyphs}{out[end:]}"
+
+
+def glyphs_edit(cmd: str, glyphs: str) -> str:
+    """The edit to make by hand when with_glyphs can't: words for a message."""
+    found = list(GLYPHS.finditer(cmd))
+    if len(found) == 1:
+        old = found[0].group(0).strip()
+        if glyphs == "unicode":
+            return f"remove `{old}`"
+        return f"change `{old}` to `--glyphs {glyphs}`"
+    return f"add `--glyphs {glyphs}` right after statusline.py, where dashline reads it"
 
 
 def home_short(path: str, env=None) -> str:
@@ -194,9 +345,15 @@ def newer_installed(env) -> str | None:
 
 
 def folder_state(target: str) -> str:
-    """ "missing" (or empty), "ours" (holds the dashline package) or "theirs"."""
+    """ "missing" (or empty), "ours" (holds the dashline package) or "theirs".
+
+    A link (dotfiles kept in a repo, say) counts as the folder it points to; one that
+    points nowhere yet is missing.
+    """
+    if os.path.islink(target) and not os.path.exists(target):
+        return "missing"
     if not os.path.isdir(target):
-        return "theirs" if os.path.lexists(target) and not os.path.islink(target) else "missing"
+        return "theirs" if os.path.lexists(target) else "missing"
     try:
         names = os.listdir(target)
     except OSError:
@@ -267,26 +424,48 @@ def set_aside(target: str) -> str:
     return aside
 
 
-def _extras(target: str) -> list:
+def _extras(folder: str) -> list:
     """Top-level names in an install folder that an install didn't put there."""
-    if os.path.islink(target) or not os.path.isdir(target):
+    if not os.path.isdir(folder):
         return []
     try:
-        return sorted(name for name in os.listdir(target) if name not in OWN_NAMES)
+        return sorted(name for name in os.listdir(folder) if name not in OWN_NAMES)
     except OSError:
         return []
 
 
-def _copy_entry(src: str, dst: str) -> None:
-    """Copy a file, folder or link as it is."""
-    import shutil
+def _unique(path: str) -> str:
+    """`path`, or `path-2`, `path-3`, … whichever doesn't exist yet."""
+    n, found = 1, path
+    while os.path.lexists(found):
+        n += 1
+        found = f"{path}-{n}"
+    return found
 
-    if os.path.islink(src):
-        os.symlink(os.readlink(src), dst)
-    elif os.path.isdir(src):
-        shutil.copytree(src, dst, symlinks=True)
-    else:
-        shutil.copy2(src, dst)
+
+def _move_back(moved: list, src: str, dst: str) -> list:
+    """Move `moved` names from src back to dst; returns those that couldn't go."""
+    stuck = []
+    for name in moved:
+        try:
+            os.rename(os.path.join(src, name), os.path.join(dst, name))
+        except OSError:
+            stuck.append(name)
+    return stuck
+
+
+def _keep(old: str) -> str:
+    """What's left of the old folder once only the user's files are in it: renamed to
+    statusline.kept (never removed, since those files are theirs). Returns its path."""
+    for name in OWN_NAMES:
+        path = os.path.join(old, name)
+        if os.path.isdir(path) and not os.path.islink(path):
+            _rmtree(path)
+        elif os.path.lexists(path):
+            os.unlink(path)
+    kept = _unique(os.path.join(os.path.dirname(old), "statusline.kept"))
+    os.rename(old, kept)
+    return kept
 
 
 def put_back(aside: str, target: str, env) -> str:
@@ -301,10 +480,12 @@ def put_back(aside: str, target: str, env) -> str:
 
 
 def copy(env) -> tuple:
-    """Copy this package into the install dir. Returns (target, what happened).
+    """Copy this package into the install dir. Returns (target, what happened, notes).
 
-    Files the user added at the top of the folder (notes, a wrapper script) are copied
-    into the new folder too, so an update doesn't lose them.
+    Files the user added at the top of the folder (notes, a wrapper script, a venv) are
+    moved into the new folder, so an update doesn't lose them or copy them. One that
+    can't be moved stays behind in statusline.kept, and a note says so. When the folder
+    is a link (dotfiles), the copy goes where it points and the link stays.
     """
     import shutil
     import time
@@ -313,44 +494,68 @@ def copy(env) -> tuple:
 
     root = source_root()
     target = install_dir(env)
-    if os.path.realpath(root) == os.path.realpath(target):
-        return target, "this is the installed copy"
+    real = os.path.realpath(target)
+    if os.path.realpath(root) == real:
+        return target, "this is the installed copy", []
     source = files(root, source_shim(root))
     if "statusline.py" not in source:
         raise InstallError(f"no statusline.py next to {root}")
-    clean_leftovers(os.path.dirname(target), time.time())
+    parent = os.path.dirname(real)
+    if os.path.islink(target) and not os.path.isdir(parent):
+        raise InstallError(f"{target} is a link to {real}, whose folder doesn't exist")
+    clean_leftovers(parent, time.time())
     if digest(source) == digest(installed_files(env)) and installed_version(env) == __version__:
-        return target, "unchanged"
+        return target, "unchanged", []
 
     # Build the new copy beside the old one, then swap folders with two renames. A render
     # never reads a half-copied folder, but one starting between the renames finds no
     # folder and draws nothing that once.
-    os.makedirs(os.path.dirname(target), exist_ok=True)
-    new, old = f"{target}.new-{os.getpid()}", f"{target}.old-{os.getpid()}"
+    os.makedirs(parent, exist_ok=True)
+    new, old = f"{real}.new-{os.getpid()}", f"{real}.old-{os.getpid()}"
     _rmtree(new)
     _rmtree(old)
-    had = os.path.lexists(target)
+    had = os.path.lexists(real)
+    moved, stuck = [], []
+    swapped = False
     try:
         os.makedirs(os.path.join(new, "dashline"))
         for rel, path in source.items():
             shutil.copyfile(path, os.path.join(new, *rel.split("/")))
         with open(os.path.join(new, "VERSION"), "w", encoding="utf-8") as f:
             f.write(__version__ + "\n")
-        for name in _extras(target):
-            _copy_entry(os.path.join(target, name), os.path.join(new, name))
+        for name in _extras(real):
+            try:
+                os.rename(os.path.join(real, name), os.path.join(new, name))
+                moved.append(name)
+            except OSError as e:
+                stuck.append((name, e.strerror or str(e)))
         if had:
-            os.rename(target, old)
+            os.rename(real, old)
         try:
-            os.rename(new, target)
-        except OSError:
+            os.rename(new, real)
+        except BaseException:
             if had:  # put the old copy back, so a render still finds one
-                os.rename(old, target)
+                os.rename(old, real)
             raise
-    except OSError as e:
-        _rmtree(new)
-        raise InstallError(f"couldn't copy to {target}: {e.strerror or e}") from e
-    _rmtree(old)
-    return target, "updated" if had else "installed"
+        swapped = True
+    except BaseException as e:
+        if not swapped:
+            home = real if os.path.isdir(real) else old
+            if _move_back(moved, new, home):  # never delete the user's files
+                os.rename(new, _unique(os.path.join(parent, "statusline.kept")))
+            else:
+                _rmtree(new)
+        if isinstance(e, OSError):
+            raise InstallError(f"couldn't copy to {target}: {e.strerror or e}") from e
+        raise
+    notes = []
+    if stuck:
+        kept = home_short(_keep(old), env)
+        for name, why in stuck:
+            notes.append(f"couldn't move {name} into the new copy ({why}); it's in {kept}")
+    else:
+        _rmtree(old)
+    return target, "updated" if had else "installed", notes
 
 
 # ---- settings.json ----
@@ -379,6 +584,8 @@ def read_settings(path: str) -> dict:
         data = json.loads(text)
     except ValueError as e:
         raise InstallError(f"{path} isn't valid JSON ({e}); fix it and run again") from e
+    except RecursionError as e:
+        raise InstallError(f"{path} isn't readable JSON (nested too deeply)") from e
     if not isinstance(data, dict):
         raise InstallError(f"{path} isn't a JSON object; fix it and run again")
     return data
@@ -415,9 +622,27 @@ def check_writable(path: str) -> None:
         )
 
 
-def write_settings(path: str, data: dict) -> None:
-    """Write atomically, through a symlink to the real file, keeping its permissions
-    and a byte-order mark if it had one."""
+def settings_text(path: str, data: dict) -> str:
+    """settings.json's new text. Made before anything is written, so a file that can't
+    be written back fails the install while nothing has changed yet.
+
+    Non-ASCII stays as written. A lone surrogate (a `\\ud83d` escape: valid JSON, but no
+    character) can't be UTF-8, so then every non-ASCII character is written as an escape.
+    """
+    try:
+        text = json.dumps(data, indent=2, ensure_ascii=False)
+        try:
+            text.encode("utf-8")
+        except UnicodeEncodeError:
+            text = json.dumps(data, indent=2)
+    except (RecursionError, ValueError) as e:
+        raise InstallError(f"{path} can't be written back ({e}); fix it and run again") from e
+    return text + "\n"
+
+
+def write_settings(path: str, text: str) -> None:
+    """Write `text` atomically, through a symlink to the real file, keeping its
+    permissions and a byte-order mark if it had one."""
     real = os.path.realpath(path)
     os.makedirs(os.path.dirname(real), exist_ok=True)
     try:
@@ -435,7 +660,7 @@ def write_settings(path: str, data: dict) -> None:
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600 if mode is not None else 0o666)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(bom + json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+            f.write(bom + text)
             if mode is not None:
                 os.chmod(tmp, mode)
         os.replace(tmp, real)
@@ -444,22 +669,37 @@ def write_settings(path: str, data: dict) -> None:
             os.unlink(tmp)
 
 
-def plan_entry(current, glyphs: str | None, replace: bool, ours: bool) -> tuple:
+def plan_entry(
+    current, glyphs: str | None, replace: bool, ours: bool, settings: str = "settings.json"
+) -> tuple:
     """(new entry or None, glyphs used). None means: the entry is someone else's.
 
     ours: `current` is dashline's (is_ours). It keeps its command as written (say, with
     a full path to Python): only the --glyphs flag changes, and only when asked for
-    another set or when it names an unknown one.
+    another set or when it names an unknown one. A command where dashline's arguments
+    can't be told apart (`bash -lc '…'`) is left as it is; asked for another set there,
+    this raises InstallError with the edit to make by hand.
     """
     if current is not None and not ours and not replace:
         return None, None
     if ours:
         entry = dict(current)
+        asked = glyphs
         glyphs = glyphs or glyphs_of(current)
         cmd = current["command"]
-        match = GLYPHS.search(cmd)
-        if (match.group(1).strip("'\"") if match else "unicode") != glyphs:
-            cmd = with_glyphs(cmd, glyphs)
+        if (flag_value(cmd) or "unicode") != glyphs:
+            changed = with_glyphs(cmd, glyphs)
+            if changed is not None:
+                cmd = changed
+            elif asked:
+                raise InstallError(
+                    "can't change --glyphs in this statusLine command automatically, "
+                    f"because it doesn't run statusline.py directly:\n  {cmd}\n"
+                    f"To use {glyphs} glyphs, edit {settings} yourself: "
+                    f"{glyphs_edit(cmd, glyphs)}. Nothing was changed."
+                )
+            else:
+                glyphs = glyphs_of(current)
         entry["command"] = cmd
     else:
         glyphs = glyphs or "unicode"
@@ -469,10 +709,9 @@ def plan_entry(current, glyphs: str | None, replace: bool, ours: bool) -> tuple:
     return entry, glyphs
 
 
-def write_entry(path: str, data: dict, entry: dict) -> None:
-    data["statusLine"] = entry
+def write_entry(path: str, text: str) -> None:
     try:
-        write_settings(path, data)
+        write_settings(path, text)
     except OSError as e:
         raise InstallError(f"couldn't write {path}: {e.strerror or e}") from e
 
@@ -531,7 +770,7 @@ def run(
         where = home_short(target, env)
         theirs_folder = folder_state(target) == "theirs"
         ours = runs_install_dir(current, env) and not theirs_folder
-        entry, _ = plan_entry(current, glyphs, replace, ours)
+        entry, _ = plan_entry(current, glyphs, replace, ours, settings)
         if not replace and (theirs_folder or entry is None):
             if theirs_folder:
                 out.write(
@@ -552,30 +791,38 @@ def run(
                 "Nothing was changed.\n"
             )
             return NEEDS_DOWNGRADE
+        text = None
         if entry != current:
             check_writable(path)
+            text = settings_text(path, {**data, "statusLine": entry})
     except InstallError as e:
         sys.stderr.write(f"dashline: {e}\n")
         return 1
-    aside = None
+    aside, done = None, False
     try:
         if theirs_folder:
             aside = set_aside(target)
             out.write(f"moved the files in {where} to {home_short(aside, env)}\n")
-        target, copied = copy(env)
+        target, copied, notes = copy(env)
         if copied == "unchanged":
             out.write(f"{where} already has dashline {__version__}\n")
         elif copied == "this is the installed copy":
             out.write(f"running from {where}: nothing to copy\n")
         else:
             out.write(f"{copied} dashline {__version__} in {where}\n")
-        if entry != current:
-            write_entry(path, data, entry)
-    except InstallError as e:
+        for note in notes:
+            out.write(f"note: {note}\n")
+        if text is not None:
+            write_entry(path, text)
+        done = True
+    except (InstallError, OSError) as e:
         sys.stderr.write(f"dashline: {e}\n")
-        if aside:  # the other tool's statusline still runs from its folder: put it back
-            out.write(put_back(aside, target, env))
         return 1
+    finally:
+        # Any failure, Ctrl-C included: the other tool's statusline still runs from its
+        # folder, so put it back.
+        if aside and not done:
+            out.write(put_back(aside, target, env))
     verb = "already runs" if entry == current else "now runs"
     out.write(f"{settings}: statusLine {verb} it with {describe(entry)}\n")
     other = overridden_by(env, project_dir(env, cwd))

@@ -5,7 +5,9 @@ updates:
     directory: /
     schedule:
       interval: weekly
-  # Dev tools only (ruff, pytest): the runtime has no dependencies.
+  # Dev tools only (ruff, pytest, fonttools): the runtime has no dependencies. pytest
+  # and fonttools are limited to Python 3.10+ in pyproject.toml, so raising their
+  # minimums can't break the 3.9 resolution.
   - package-ecosystem: uv
     directory: /
     schedule:

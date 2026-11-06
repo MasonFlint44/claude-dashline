@@ -1,5 +1,67 @@
 # Changelog
 
+## 0.1.8 — 2026-11-06
+
+Fixes from a third review, mostly of 0.1.7's new code.
+
+**Install**
+- Switching glyph sets no longer breaks a hand-edited command such as
+  `bash -lc '…statusline.py'` or one behind a `[ -f … ]` guard. Where `--glyphs` can't
+  be placed safely, install changes nothing and shows the edit to make by hand.
+- An odd escape in settings.json (`"\ud83d"`) no longer crashes install after it has
+  copied files, and deeply nested settings read as invalid JSON.
+- Any failure during `--replace`, Ctrl-C included, puts the other tool's files back.
+- Your own files in `scripts/statusline/` are moved into each update instead of copied,
+  so an unreadable file or a pipe no longer blocks updates and a big folder isn't
+  copied every time. One that can't be moved is kept in `scripts/statusline.kept`.
+- A symlinked install folder (a dotfiles setup, say) stays a link.
+
+**Doctor**
+- Doctor waits for a background fetch that's already running instead of fetching
+  beside it.
+- A server-asked wait after a 401 or 403 now points to `/login`, not `--fetch-now`.
+- The command check shows the error even when the command sends stderr away, and a
+  `NaN` fetch time no longer breaks the cache check.
+- The skill only skips asking when your user settings run dashline, and handles an
+  unknown glyph set, a locked Keychain, a running fetch and an old git.
+
+**Plan usage**
+- An error the fetch didn't foresee no longer prints a thread traceback or reads as a
+  network failure, and a timeout says "no answer within 30 s".
+- Another tool's `usage.json` or `fetch.hold` in the shared cache folder is no longer
+  deleted or reported, and dashline's own leftover `.tmp` files are cleaned up.
+- A stray module kept in the install folder can't break the background fetch.
+- `.claude.json` is found through the given home folder, and a deeply nested one no
+  longer shows `internal error`.
+
+**Statusline**
+- A stray `.py` file in the install folder can't stand in for a standard-library module.
+- Deeply nested settings no longer show `internal error` on Python 3.9–3.13.
+- A `COLUMNS` value thousands of digits long, a byte-order mark on stdin, and a closed
+  stdin are handled.
+- Flags are never cut in half, decomposed Korean names measure correctly, and the trial
+  countdown stops at 999 days.
+
+**Directory row**
+- git 2.15 or newer is needed. Older git shows the folder alone, because it can't run
+  `git status` without taking the index lock, which could make your `git commit` fail.
+- GitHub links for remotes without `git@` (`github-work:o/r`), `ssh.github.com` and
+  `<name>.github.com` aliases. `github.com-mirror.corp.example` no longer links to
+  github.com, and wiki clones get no link.
+- An emptied `.git` folder no longer passes for a repo, the search stops at mount points
+  as git's does, and an odd `GIT_CONFIG_NOSYSTEM` no longer prints a traceback.
+
+**Development**
+- The tests run on Python 3.10 and newer, since pytest has dropped 3.9; dashline
+  itself still supports 3.9. A new `scripts/smoke.sh` checks that on Python 3.9 and on
+  Apple's `/usr/bin/python3` (every module imports, preview, install, render, doctor),
+  and fails on a broken render.
+- pytest and fonttools are marked 3.10+, so Dependabot's weekly updates no longer fail.
+- A queued CI run on main is no longer cancelled.
+- `capture_fixtures.py` keeps only strings known to be safe and lists money amounts for
+  review.
+- CLAUDE.md lists every check CI runs; `.gitignore` covers agent worktrees.
+
 ## 0.1.7 — 2026-11-06
 
 Fixes from a second review of the whole project.

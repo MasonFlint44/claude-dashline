@@ -123,6 +123,76 @@ def test_stdin_that_isnt_utf8_still_renders(isolated_home, capsys):
     assert "Traceback" not in capsys.readouterr().err
 
 
+def test_a_byte_order_mark_on_stdin_is_ignored(isolated_home):
+    from dashline import __main__
+
+    data = b"\xef\xbb\xbf" + json.dumps({"model": {"display_name": "Opus 5.5"}}).encode()
+    env = {"HOME": str(isolated_home), "NO_COLOR": "1"}
+    stdout = latin1()
+    assert __main__.render(latin1(data), stdout, env=env) == 0
+    assert stdout.buffer.getvalue().decode("utf-8").startswith("Opus 5.5")
+    import io
+
+    out = io.StringIO()  # a text stream without a buffer
+    stdin = io.StringIO("\ufeff" + json.dumps({"model": {"display_name": "Opus 5.5"}}))
+    assert __main__.render(stdin, out, env=env) == 0
+    assert out.getvalue().startswith("Opus 5.5")
+
+
+def test_closed_stdin_prints_nothing(isolated_home, capsys):
+    import io
+
+    from dashline import __main__
+
+    out = io.StringIO()
+    assert __main__.render(None, out, env={"HOME": str(isolated_home)}) == 0
+    assert out.getvalue() == ""
+    assert "Traceback" not in capsys.readouterr().err
+
+
+def test_huge_columns_still_renders(isolated_home):
+    import io
+
+    from dashline import __main__
+
+    out = io.StringIO()
+    stdin = io.StringIO(json.dumps({"model": {"display_name": "Opus 5.5"}}))
+    env = {"HOME": str(isolated_home), "NO_COLOR": "1", "COLUMNS": "9" * 5000}
+    assert __main__.render(stdin, out, env=env) == 0
+    assert out.getvalue().startswith("Opus 5.5")
+    assert "internal error" not in out.getvalue()
+
+
+def test_stray_modules_in_the_install_folder_are_never_imported(tmp_path, stdin_fixture):
+    """Files the user keeps next to the installed copy can't stand in for the standard
+    library: as installed (-I -S) the folder comes last on sys.path."""
+    import os
+    import shutil
+
+    folder = tmp_path / "statusline"
+    shutil.copytree(ROOT / "src" / "dashline", folder / "dashline")
+    shutil.copy(ROOT / "statusline.py", folder / "statusline.py")
+    for name in ("json", "__future__", "subprocess", "functools", "unicodedata"):
+        (folder / f"{name}.py").write_text(f"raise SystemExit('stray {name}.py was imported')\n")
+    cmd = [sys.executable, "-I", "-S", str(folder / "statusline.py")]
+    env = {**os.environ, "NO_COLOR": "1"}
+
+    def run(*args, stdin=""):
+        return subprocess.run(
+            [*cmd, *args], input=stdin, capture_output=True, text=True, timeout=30, env=env
+        )
+
+    version = run("--version")
+    assert (version.returncode, version.stdout) == (0, f"dashline {__version__}\n")
+    preview = run("--preview", "pro")
+    assert preview.returncode == 0 and "stray" not in preview.stdout + preview.stderr
+    shown = run(stdin=stdin_fixture("after-first-response"))
+    assert shown.returncode == 0, shown.stderr
+    assert "stray" not in shown.stdout + shown.stderr
+    assert "internal error" not in shown.stdout
+    assert len(shown.stdout.splitlines()) >= 2
+
+
 def test_a_failed_spawn_still_prints_the_statusline(isolated_home, monkeypatch, capsys):
     import io
 
@@ -241,6 +311,10 @@ def test_help_lists_every_flag():
         ("120", 120),
         (" 90 ", 90),
         ("3000000", 1000),
+        ("0090", 90),
+        ("000", None),
+        ("9" * 5000, 1000),  # int() refuses more than 4300 digits
+        ("0" * 5000 + "80", 80),
         ("\u00b2", None),
         ("-5", None),
         ("0", None),

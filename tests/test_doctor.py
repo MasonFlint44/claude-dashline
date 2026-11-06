@@ -19,6 +19,12 @@ def usage_fixture(name):
     return read_json(FIXTURES / "usage" / f"{name}.json")
 
 
+@pytest.fixture(autouse=True)
+def no_lock_wait(monkeypatch):
+    """Doctor waits up to LOCK_WAIT for a running fetch; a test with a live lock doesn't."""
+    monkeypatch.setattr(doctor, "LOCK_WAIT", 0)
+
+
 @pytest.fixture
 def env(isolated_home):
     (isolated_home / ".claude").mkdir(exist_ok=True)
@@ -483,8 +489,8 @@ def test_cache_not_writable(sub, tmp_path):
         cache_path(sub).chmod(0o700)
 
 
-def test_cache_stale_lock(sub, server, tmp_path):
-    server.reply(200, json.dumps(usage_fixture("ultra")))
+def test_cache_stale_lock(sub, server, tmp_path, monkeypatch):
+    monkeypatch.setattr(doctor.Doctor, "usage", lambda self: None)  # it would clear the lock
     cache_path(sub).mkdir(mode=0o700, parents=True)
     lock = cache_path(sub) / "fetch.lock"
     lock.write_text("{}")
@@ -503,8 +509,8 @@ def test_cache_stale_lock(sub, server, tmp_path):
         (NOW + 3600, "a stale fetch.lock (the next render clears it)"),  # clock set back
     ],
 )
-def test_cache_lock_uses_its_time(sub, server, tmp_path, at, note):
-    server.reply(200, json.dumps(usage_fixture("ultra")))
+def test_cache_lock_uses_its_time(sub, server, tmp_path, monkeypatch, at, note):
+    monkeypatch.setattr(doctor.Doctor, "usage", lambda self: None)  # it would clear the lock
     cache_path(sub).mkdir(mode=0o700, parents=True)
     lock = cache_path(sub) / "fetch.lock"
     lock.write_text(json.dumps({"at": at, "pid": 1, "nonce": "n"}))
@@ -729,6 +735,111 @@ def test_usage_says_when_a_new_wait_is_the_servers(sub, server, tmp_path):
     assert text == "HTTP 429; renders retry in 2h00m (the server asked for that wait)"
 
 
+@pytest.mark.parametrize(
+    ("reason", "cure"),
+    [
+        ("token rejected (401)", "run /login in Claude Code"),
+        ("not allowed (403): the login may lack the profile scope", "run /login in Claude Code"),
+    ],
+)
+def test_servers_wait_on_a_login_problem_points_at_the_login(sub, server, tmp_path, reason, cure):
+    """Waiting out a 401's Retry-After won't fix the token: say what will."""
+    server_hold(sub, NOW + 3600, reason=reason)
+    status, text, fix = usage_check(sub, tmp_path, server.url)
+    assert server.requests == []
+    assert status == "warn"
+    assert text.endswith(f"left) after {reason}")
+    assert fix == f"{cure}, then run doctor with --fetch-now to check"
+
+
+# ---- the fetch lock ----
+
+
+def usage_only(env, tmp_path, base_url, fetch_now=False):
+    """The login and usage checks alone: the command check's real render, on the real
+    clock, would break a lock written at NOW and start a background fetch."""
+    d = doctor.Doctor(env, NOW, str(tmp_path), base_url, "linux", fetch_now=fetch_now)
+    d.login()
+    d.usage()
+    return d.results[-1][0], d.results[-1][2], d.results[-1][3]
+
+
+def live_lock(env, at=NOW - 10):
+    cache_path(env).mkdir(mode=0o700, parents=True, exist_ok=True)
+    lock = cache_path(env) / "fetch.lock"
+    lock.write_text(json.dumps({"at": at, "pid": 1, "nonce": "theirs"}))
+    return lock
+
+
+@pytest.mark.parametrize("fetch_now", [False, True])
+def test_usage_leaves_a_running_fetch_alone(sub, server, tmp_path, fetch_now):
+    lock = live_lock(sub)
+    server.reply(200, json.dumps(usage_fixture("ultra")))
+    status, text, fix = usage_only(sub, tmp_path, server.url, fetch_now=fetch_now)
+    assert server.requests == []
+    assert (status, text) == ("info", "not fetched: a fetch is running in the background")
+    assert fix == "run doctor again in a moment to see its result"
+    assert json.loads(lock.read_text())["nonce"] == "theirs"  # not taken, not removed
+
+
+def test_usage_waits_for_a_running_fetch_to_finish(sub, server, tmp_path, monkeypatch):
+    import threading
+
+    monkeypatch.setattr(doctor, "LOCK_WAIT", 3)
+    lock = live_lock(sub)
+    threading.Timer(0.3, lock.unlink).start()  # the background fetch finishes
+    server.reply(200, json.dumps(usage_fixture("ultra")))
+    assert usage_only(sub, tmp_path, server.url)[0] == "ok"
+    assert len(server.requests) == 1
+
+
+def test_usage_breaks_a_stale_lock_and_releases_its_own(sub, server, tmp_path):
+    live_lock(sub, at=NOW - 600)  # its child died
+    server.reply(200, json.dumps(usage_fixture("ultra")))
+    assert usage_only(sub, tmp_path, server.url)[0] == "ok"
+    assert len(server.requests) == 1
+    assert not (cache_path(sub) / "fetch.lock").exists()
+
+
+def test_usage_releases_the_lock_when_the_fetch_raises(sub, tmp_path, monkeypatch):
+    def boom(*args):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(usage, "refresh", boom)
+    d = doctor.Doctor(sub, NOW, str(tmp_path), CLOSED, "linux")
+    d.login()
+    with pytest.raises(RuntimeError):
+        d.usage()  # run() turns this into "the check itself failed"
+    assert not (cache_path(sub) / "fetch.lock").exists()
+
+
+# ---- the cache check and odd files ----
+
+
+@pytest.mark.parametrize("value", ["NaN", "Infinity", "-Infinity"])
+def test_cache_odd_fetch_time(sub, tmp_path, monkeypatch, value):
+    monkeypatch.setattr(doctor.Doctor, "usage", lambda self: None)
+    cache_path(sub).mkdir(mode=0o700, parents=True)
+    who = account.identity(sub)
+    body = '{"fetched_at": ' + value + ', "account": "' + who + '", "data": {}}'
+    (cache_path(sub) / usage.cache_name(who)).write_text(body)
+    (cache_path(sub) / usage.cache_name(who)).chmod(0o600)
+    status, text, _ = check(sub, "cache", tmp_path)
+    assert status == "ok"
+    assert "fetched" not in text
+
+
+def test_cache_leaves_another_tools_usage_json_alone(sub, tmp_path, monkeypatch):
+    monkeypatch.setattr(doctor.Doctor, "usage", lambda self: None)
+    cache_path(sub).mkdir(mode=0o700, parents=True)
+    foreign = cache_path(sub) / "usage.json"
+    foreign.write_text('{"another_tool": true}')
+    foreign.chmod(0o644)
+    status, text, fix = check(sub, "cache", tmp_path)
+    assert (status, fix) == ("ok", None)
+    assert "other users" not in text
+
+
 # ---- a locked Keychain ----
 
 
@@ -781,6 +892,22 @@ def test_stderr_reason(err, reason):
     assert doctor.stderr_reason(err) == reason
 
 
+def test_reason_from_stdout_when_stderr_is_sent_away():
+    out = ["dashline: unknown argument '--x' (run statusline.py --doctor)"]
+    assert doctor.stderr_reason([], out) == out[0]
+    assert doctor.stderr_reason([], ["Sonnet 5.5"]) is None
+    assert doctor.stderr_reason(["ValueError: z"], out) == "ValueError: z"  # stderr first
+
+
+def test_command_with_stderr_sent_away(installed, tmp_path):
+    data = get_settings(installed)
+    data["statusLine"]["command"] += " --bogus 2>/dev/null"
+    set_settings(installed, data)
+    status, text, _ = check(installed, "command", tmp_path)
+    assert status == "fail"
+    assert text == "dashline: unknown argument '--bogus' (run statusline.py --doctor)"
+
+
 # ---- the command and git checks when things go wrong ----
 
 
@@ -825,9 +952,10 @@ def test_command_slow(installed, tmp_path, monkeypatch):
 
 
 def test_git_too_old(installed, tmp_path, monkeypatch):
-    fake_run(monkeypatch, "git", stdout="git version 2.9.5\n")
+    fake_run(monkeypatch, "git", stdout="git version 2.14.6\n")
     status, text, fix = check(installed, "git", tmp_path)
-    assert (status, text) == ("warn", "2.9.5: too old for the git row (needs 2.11)")
+    assert status == "warn"
+    assert text == "2.14.6: too old for the git row, which shows the folder only (needs 2.15)"
     assert fix == "update git"
 
 

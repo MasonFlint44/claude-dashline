@@ -39,6 +39,7 @@ MAX_AGE = 86400  # older data is dropped, not drawn
 LOCK_STALE = 60  # a lock this old belongs to a child that died
 CLOCK_SLACK = 60  # a time further ahead than this means the clock was set back
 MAX_BODY = 1 << 20  # a usage answer is a few KB; anything past 1 MiB is not one
+LATE = -1  # get()'s status for a request that missed its deadline
 # Backoff after a failure: the first wait and the cap.
 BACKOFF_FIRST, BACKOFF_MAX = 60, 1800
 # The longest Retry-After honored: past it the value is nonsense, not a request.
@@ -64,8 +65,11 @@ def _path(env, name: str) -> str:
     return os.path.join(cache_dir(env), name)
 
 
-# The files dashline 0.1.6 and earlier shared between logins: removed on the next write.
-LEGACY = ("usage.json", "fetch.hold")
+# The files dashline 0.1.6 and earlier shared between logins: removed on the next write,
+# but only when they hold what dashline wrote (the folder may be shared with other tools).
+# The keys each one always had:
+LEGACY = {"usage.json": ("fetched_at", "account", "data"), "fetch.hold": ("until", "reason")}
+TMP_STALE = 300  # a write takes milliseconds: a .tmp this old was left by a killed writer
 
 
 def _tag(who: str | None) -> str:
@@ -108,14 +112,30 @@ def _per_login(name: str) -> bool:
     return False
 
 
-def own_files(names) -> list:
-    """The names in `names` that are dashline's: the cache folder may be shared."""
+def _legacy(folder: str, name: str) -> bool:
+    """`name` is one of 0.1.6's shared files and holds what dashline wrote there."""
+    keys = LEGACY.get(name)
+    if keys is None:
+        return False
+    data = _read_json(os.path.join(folder, name))
+    return all(k in data for k in keys) and ("account" in data or name != "fetch.hold")
+
+
+def own_files(names, folder: str | None = None) -> list:
+    """The names in `names` that are dashline's: the cache folder may be shared.
+
+    With `folder`, a 0.1.6 `usage.json` / `fetch.hold` counts only if its content is
+    dashline's; without it, by name alone.
+    """
     out = []
     for name in names:
         base = name
         if name.endswith(".tmp"):  # `usage-x.json.123.tmp`, left by a killed writer
             base = name.rsplit(".", 2)[0]
-        if base in LEGACY or base.startswith("fetch.lock") or _per_login(base):
+        if base in LEGACY:
+            if folder is None or base != name or _legacy(folder, name):
+                out.append(name)
+        elif base.startswith("fetch.lock") or _per_login(base):
             out.append(name)
     return sorted(out)
 
@@ -307,6 +327,15 @@ def release(env, nonce: str | None) -> None:
         _remove(path)
 
 
+# What the child runs: `python3 -I -S -c CHILD_CODE <folder holding dashline/> <nonce>`.
+# The folder is appended, not inserted: with -I -S nothing else on the path has a
+# `dashline`, and a stray json.py in the install folder can't stand in for the standard
+# library's.
+CHILD_CODE = (
+    "import sys; sys.path.append(sys.argv[1]); from dashline.usage import child; child(sys.argv[2])"
+)
+
+
 def spawn(env, now: float) -> bool:
     """Start the detached fetch child. Returns False if one is already running."""
     nonce = take_lock(env, now)
@@ -315,10 +344,6 @@ def spawn(env, now: float) -> bool:
     import subprocess
 
     package_parent = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    code = (
-        "import sys; sys.path.insert(0, sys.argv[1]); "
-        "from dashline.usage import child; child(sys.argv[2])"
-    )
     kwargs = {}
     if os.name == "nt":
         kwargs["creationflags"] = 0x00000008 | 0x00000200  # DETACHED | NEW_PROCESS_GROUP
@@ -326,7 +351,7 @@ def spawn(env, now: float) -> bool:
         kwargs["start_new_session"] = True
     try:
         subprocess.Popen(
-            [sys.executable, "-I", "-S", "-c", code, package_parent, nonce],
+            [sys.executable, "-I", "-S", "-c", CHILD_CODE, package_parent, nonce],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -401,13 +426,14 @@ def get(
     """GET the endpoint: (status, parsed JSON or None, Retry-After seconds or None).
 
     Status 0 means the request never got a whole HTTP answer (DNS, refused, timeout, a
-    connection cut mid-answer, or past `deadline`). Redirects are refused, so the token
-    only ever goes to `url`'s host: a 3xx comes back as its status.
+    connection cut mid-answer); LATE means it missed `deadline`. Redirects are refused,
+    so the token only ever goes to `url`'s host: a 3xx comes back as its status.
 
     `timeout` bounds each step and `deadline` the whole request: a server sending a byte
     every few seconds, or a slow DNS lookup, would outlast the steps. The request runs in
     a thread so the deadline holds even inside DNS; one that misses it dies with the
-    process.
+    process. An error the request didn't foresee is raised here, in the caller, as if
+    there were no thread: the child turns it into a backoff, doctor into a finding.
     """
     import threading
 
@@ -415,13 +441,20 @@ def get(
         import time
 
         now = time.time()
-    result = []
-    worker = threading.Thread(
-        target=lambda: result.append(_request(url, token, timeout, now)), daemon=True
-    )
+    result, error = [], []
+
+    def work():
+        try:
+            result.append(_request(url, token, timeout, now))
+        except BaseException as e:  # handed to the caller, never lost
+            error.append(e)
+
+    worker = threading.Thread(target=work, daemon=True)
     worker.start()
     worker.join(deadline)
-    return result[0] if result else (0, None, None)
+    if error:
+        raise error[0]
+    return result[0] if result else (LATE, None, None)
 
 
 def _request(url: str, token: str, timeout: float, now: float) -> tuple:
@@ -493,25 +526,32 @@ def _backoff(env, who, now: float, reason: str, retry: float | None = None) -> N
 
 
 def _tidy(env, now: float) -> None:
-    """Remove 0.1.6's shared files, and other logins' files too old to matter.
+    """Remove 0.1.6's shared files, other logins' files too old to matter, and temp
+    files a killed writer left.
 
     Data older than MAX_AGE isn't drawn and no hold outlasts RETRY_MAX, so a file left
     alone longer than both belongs to a login no longer used (a replaced token, say).
+    Only dashline's own files are touched: the folder may be shared.
     """
     folder = cache_dir(env)
     for name in LEGACY:
-        _remove(os.path.join(folder, name))
+        if _legacy(folder, name):
+            _remove(os.path.join(folder, name))
     try:
         names = os.listdir(folder)
     except OSError:
         return
     limit = max(MAX_AGE, RETRY_MAX) + CLOCK_SLACK
-    for name in names:
-        if not _per_login(name):
-            continue
+    for name in own_files(names):
+        if name.endswith(".tmp"):
+            age = TMP_STALE
+        elif _per_login(name):
+            age = limit
+        else:
+            continue  # the lock, and legacy files (handled above)
         path = os.path.join(folder, name)
         with contextlib.suppress(OSError):
-            if now - os.stat(path).st_mtime > limit:
+            if now - os.stat(path).st_mtime > age:
                 _remove(path)
 
 
@@ -548,11 +588,13 @@ def refresh(env, now: float, base_url: str | None = None, platform: str | None =
         reason = "unreadable answer"
     elif 300 <= status < 400:
         reason = f"redirect refused (HTTP {status})"
+    elif status == LATE:
+        reason = f"no answer within {DEADLINE} s"
     elif status:
         reason = f"HTTP {status}"
     else:
         reason = "no answer (network)"
-    _backoff(env, who, now, reason, retry if status else None)
+    _backoff(env, who, now, reason, retry if status > 0 else None)
     return reason
 
 

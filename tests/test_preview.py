@@ -111,7 +111,7 @@ def test_every_scenario_in_every_set_has_both_in_the_header():
     assert heads[-1].startswith("ascii · tiny: ")
 
 
-@pytest.mark.parametrize("columns", ["\u00b2", "3000000", "-5", ""])
+@pytest.mark.parametrize("columns", ["\u00b2", "3000000", "9" * 5000, "-5", ""])
 def test_odd_columns(columns, monkeypatch):
     import shutil
 

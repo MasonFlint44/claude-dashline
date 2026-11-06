@@ -1,7 +1,7 @@
 {
   "name": "dashline",
   "displayName": "dashline",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "One Claude Code statusline for every plan (Free, Pro, Max, Ultra, Team, Enterprise, API key): model, effort, cost, prompt-cache state, context and plan-limit bars, and a git row. Install with /dashline:install; check it with /dashline:doctor.",
   "author": { "name": "Mason Flint" },
   "license": "MIT",

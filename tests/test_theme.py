@@ -168,3 +168,15 @@ def test_settings_with_a_bom(home):
 def test_a_project_dir_with_a_nul_is_skipped(home):
     write(home / ".claude" / "settings.json", {"theme": "light"})
     assert theme.theme_setting(str(home) + "/\x00", {}) == "light"
+
+
+def test_deeply_nested_settings_are_skipped(home):
+    """Before Python 3.14 the json parser recurses, so nesting this deep raises
+    RecursionError, which isn't a ValueError."""
+    deep = "[" * 100000 + "]" * 100000
+    (home / ".claude" / "settings.json").write_text(deep)
+    (home / ".claude.json").write_text(deep)
+    write(home / "proj" / ".claude" / "settings.json", {"theme": "light"})
+    assert theme.theme_setting(str(home / "proj"), {}) == "light"
+    (home / "proj" / ".claude" / "settings.json").write_text(deep)
+    assert theme.theme_setting(str(home / "proj"), {}) == "dark"

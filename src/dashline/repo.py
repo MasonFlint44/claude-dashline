@@ -9,7 +9,9 @@ project and branch only.
 git runs with the repo's fsmonitor hook off and submodules' own changes ignored, in a
 process group of its own: at the timeout the whole group is killed, so a hung hook or
 filter can't hold the render. Every name shown goes through `text.clean`, so a folder or
-branch name can't put escape codes on the terminal. Any git from 2.11 works.
+branch name can't put escape codes on the terminal. git 2.15 or newer: status runs
+without taking index.lock (`--no-optional-locks`), which older git refuses, so there
+the row shows the folder alone.
 
 Links (OSC 8, chosen 11/4): the project opens its folder (`file://host/path`); a pushed
 branch on GitHub opens its compare page against the default branch, or the branch page
@@ -50,9 +52,11 @@ OPERATIONS = {
     "am": "applying patches",
 }
 MIN_BRANCH = 4  # a branch name never truncates below this many characters plus `…`
-# git@github.com:o/r.git, ssh://git@github.com/o/r, https://github.com/o/r.git
+# git@github.com:o/r.git, github-work:o/r (the user from ~/.ssh/config),
+# ssh://git@github.com/o/r, https://github.com/o/r.git. The scp form's path can't start
+# with `/`, so `C:/x` and `https://…` never match it.
 GITHUB = re.compile(
-    r"^(?:(?:ssh|https?|git)://(?:[^@/]+@)?(?P<h1>[^/:]+)(?::\d+)?/|[^@/]+@(?P<h2>[^/:]+):)"
+    r"^(?:(?:ssh|https?|git)://(?:[^@/]+@)?(?P<h1>[^/:]+)(?::\d+)?/|(?:[^@/]+@)?(?P<h2>[^/:]+):)"
     r"(?P<path>[^/]+/[^/]+?)(?:\.git)?/?$"
 )
 GITHUB_HOST = re.compile(r"^[a-z0-9-]+(?:\.[a-z0-9-]+)*$")
@@ -116,30 +120,60 @@ def ceiling_dirs(env) -> list:
     return out
 
 
-def find_git(start: str, ceilings: list = ()) -> tuple | None:
+def _common_dir(git_dir: str) -> str:
+    common = (_read(os.path.join(git_dir, "commondir")) or "").strip()
+    return os.path.normpath(os.path.join(git_dir, common)) if common else git_dir
+
+
+def is_git_dir(git_dir: str) -> bool:
+    """A real git directory, as git checks one: HEAD, and objects and refs (in the
+    common dir, for a linked worktree). An empty `.git` left by a half-deleted clone
+    isn't one."""
+    common = _common_dir(git_dir)
+    return (
+        os.path.isfile(os.path.join(git_dir, "HEAD"))
+        and os.path.isdir(os.path.join(common, "objects"))
+        and os.path.isdir(os.path.join(common, "refs"))
+    )
+
+
+def find_git(start: str, ceilings: list = (), across_filesystems: bool = False) -> tuple | None:
     """(top level, git dir, common dir) for the repo holding `start`, or None.
 
-    Like git, the walk up never enters a ceiling directory (it may start in one).
+    Like git: a `.git` folder that isn't a git directory is passed over; a `.git` file
+    that doesn't point at one ends the search (git stops there with an error); the walk
+    up never enters a ceiling directory (it may start in one), and stops at a mount
+    point unless `across_filesystems` (GIT_DISCOVERY_ACROSS_FILESYSTEM).
     """
     path = os.path.abspath(start)
+    device = None
     while True:
         dot_git = os.path.join(path, ".git")
         if os.path.isdir(dot_git):
-            git_dir = dot_git
-            break
-        if os.path.isfile(dot_git):
+            if is_git_dir(dot_git):
+                git_dir = dot_git
+                break
+        elif os.path.isfile(dot_git):
             text = (_read(dot_git) or "").strip()
             if not text.startswith("gitdir:"):
                 return None
             git_dir = os.path.normpath(os.path.join(path, text[len("gitdir:") :].strip()))
+            if not is_git_dir(git_dir):
+                return None
             break
         parent = os.path.dirname(path)
         if parent == path or parent in ceilings:
             return None
+        if not across_filesystems:
+            try:
+                if device is None:
+                    device = os.stat(path).st_dev
+                if os.stat(parent).st_dev != device:
+                    return None  # a mount point: git doesn't look past it
+            except OSError:
+                return None
         path = parent
-    common = (_read(os.path.join(git_dir, "commondir")) or "").strip()
-    common_dir = os.path.normpath(os.path.join(git_dir, common)) if common else git_dir
-    return path, git_dir, common_dir
+    return path, git_dir, _common_dir(git_dir)
 
 
 def _config_value(raw: str) -> tuple:
@@ -224,11 +258,32 @@ def parse_remotes(config) -> dict:
 
 
 def _env_bool(value: str | None) -> bool:
-    """A git boolean from the environment: unset, empty, 0, false, no and off are false."""
+    """A git boolean from the environment: unset, empty, false, no, off and any form of
+    zero are false. A value git can't read (git stops with an error) counts as true."""
     value = (value or "").strip().lower()
-    if value.lstrip("-").isascii() and value.lstrip("-").isdigit():
-        return int(value) != 0
-    return value not in ("", "false", "no", "off")
+    if value in ("", "false", "no", "off"):
+        return False
+    number = _git_int(value)
+    return number != 0 if number is not None else True
+
+
+def _git_int(text: str) -> int | None:
+    """An integer as git reads one (C's strtol in any base, then k, m or g), or None."""
+    if text[-1:] in ("k", "m", "g"):
+        text = text[:-1]
+    sign, digits = (text[0], text[1:]) if text[:1] in ("+", "-") else ("", text)
+    if not digits.isascii() or not digits.isalnum():
+        return None  # also rules out Python-only forms: `_`, a second sign, spaces
+    try:
+        if digits[:2] in ("0x", "0X"):
+            number = int(digits[2:], 16)
+        elif digits[:1] == "0" and len(digits) > 1:
+            number = int(digits[1:], 8)
+        else:
+            number = int(digits, 10)
+    except ValueError:
+        return None
+    return -number if sign == "-" else number
 
 
 def config_files(env) -> list:
@@ -312,16 +367,19 @@ def configured_upstream(entries: list, branch: str, common_dir: str, git=None) -
 def github_host(host: str) -> str | None:
     """The web host for a GitHub remote's host, or None when it isn't GitHub.
 
-    github.com itself, also as `www.github.com` or an SSH alias from ~/.ssh/config like
-    `github-work` or `github.com-work` (the usual way to use two accounts); GitHub
+    github.com itself, also as `www.github.com`, `ssh.github.com` (SSH over port 443) or
+    another `<name>.github.com`, or an SSH alias from ~/.ssh/config like `github-work`
+    or `github.com-work` (the usual way to use two accounts; an alias has no dot after
+    the dash, so `github.com-mirror.corp.example` is some other host); GitHub
     Enterprise Server at `github.<domain>`; Enterprise Cloud at `<name>.ghe.com`.
     """
     if not GITHUB_HOST.match(host):
         return None  # not a name GitHub allows, so not a page to link to
-    if host in ("github.com", "www.github.com") or host.startswith("github.com-"):
+    if host == "github.com" or host.endswith(".github.com"):
         return "github.com"
-    if host.startswith("github-") and "." not in host:
-        return "github.com"
+    for alias in ("github.com-", "github-"):
+        if host.startswith(alias):
+            return "github.com" if "." not in host[len(alias) :] else None
     if host.startswith("github.") or host.endswith(".ghe.com"):
         return host
     return None
@@ -333,8 +391,11 @@ def github_web(url: str) -> str | None:
     if not m:
         return None
     host = github_host((m.group("h1") or m.group("h2")).lower())
-    if not host or not GITHUB_PATH.match(m.group("path")):
+    path = m.group("path")
+    if not host or not GITHUB_PATH.match(path):
         return None
+    if path.lower().endswith(".wiki"):
+        return None  # a wiki clone: its pages live at /owner/repo/wiki, with no branches
     return f"https://{host}/{m.group('path')}"
 
 
@@ -456,11 +517,12 @@ def _start(args: list, cwd: str, env: dict):
     import subprocess
 
     return subprocess.Popen(
+        # --no-optional-locks: status never takes index.lock, so a render can't make the
+        # user's own `git commit` fail. git before 2.15 has no such switch and refuses
+        # it (exit 129), so there the row shows the folder alone (PLAN §5).
         # No fsmonitor: its hook is a program the repo's config names, run on each status.
-        # Empty means off on every git: a hook path before 2.36, a boolean since. No
-        # --no-optional-locks: git before 2.15 refuses it, and GIT_OPTIONAL_LOCKS=0
-        # does the same where it exists.
-        ["git", "-c", "core.fsmonitor=", *args],
+        # Empty means off on every git: a hook path before 2.36, a boolean since.
+        ["git", "--no-optional-locks", "-c", "core.fsmonitor=", *args],
         cwd=cwd,
         env=env,
         stdin=subprocess.DEVNULL,
@@ -553,6 +615,18 @@ def inspect(project_dir: str, current_dir: str | None, env) -> RepoState:
     return state
 
 
+def _run_git(args: list, root: str, env: dict, deadline: float) -> str | None:
+    """One more git command within the deadline: its output, or None."""
+    import time
+
+    if time.monotonic() >= deadline:
+        return None
+    try:
+        return _finish(_start(args, root, env), deadline)
+    except OSError:
+        return None
+
+
 def _repo_name(common_dir: str, root: str) -> str:
     """The main checkout's folder name, or a bare repo's name without `.git`."""
     base = os.path.basename(common_dir)
@@ -572,7 +646,8 @@ def _inspect(state: RepoState, env) -> None:
     state.folder_url = folder_url(os.path.abspath(project_dir))
     # git itself works from the resolved path: a symlink into a repo is still in it.
     state.real_dir = os.path.realpath(project_dir)
-    found = find_git(state.real_dir, ceiling_dirs(env))
+    across = _env_bool(env.get("GIT_DISCOVERY_ACROSS_FILESYSTEM"))
+    found = find_git(state.real_dir, ceiling_dirs(env), across)
     if not found:
         return
     root, git_dir, common_dir = found
@@ -608,13 +683,7 @@ def _inspect(state: RepoState, env) -> None:
         state.upstream_gone = True
 
     def run_git(args):
-        """One more git command within the deadline: its output, or None."""
-        if time.monotonic() >= deadline:
-            return None
-        try:
-            return _finish(_start(args, root, genv), deadline)
-        except OSError:
-            return None
+        return _run_git(args, root, genv, deadline)
 
     if state.dirty:
         if numstat_text is None and state.oid is None and time.monotonic() < deadline:

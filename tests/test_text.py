@@ -22,6 +22,13 @@ from dashline.text import clean, cols, cut
         ("\u26a0\ufe0f main", 7),
         ("▆▁│·…", 5),  # ambiguous width: one column, as Claude Code draws them
         ("\U000f02a2", 1),  # a Nerd Font icon (private use)
+        ("\U0001f1fa\U0001f1f8", 2),  # a flag: two regional indicators, one emoji
+        ("\U0001f1fa", 2),  # a lone indicator is still drawn as an emoji
+        ("\U0001f1fa\U0001f1f8\U0001f1ef\U0001f1f5", 4),
+        # Decomposed Hangul (NFD): the vowel and final join the initial consonant.
+        ("\u1111\u1173\u1105\u1169\u110c\u1166\u11a8\u1110\u1173", 8),
+        ("\ud504\ub85c\uc81d\ud2b8", 8),  # the same name composed (NFC)
+        ("\ud7b0", 0),  # an extended-B vowel
         ("", 0),
     ],
 )
@@ -67,3 +74,25 @@ def test_zwj_sequences_stay_sane():
     assert cols(family) == 6
     for limit in range(8):
         assert cols(cut(family, limit)) <= limit
+
+
+def test_cut_never_splits_a_flag():
+    flags = "\U0001f1fa\U0001f1f8\U0001f1ef\U0001f1f5"
+    assert cut(flags, 1) == ""
+    assert cut(flags, 2) == flags[:2]
+    assert cut(flags, 3) == flags[:2]
+    assert cut(flags, 4) == flags
+    assert cut("a\U0001f1fa\U0001f1f8", 2) == "a"
+
+
+def test_decomposed_hangul_measures_like_composed():
+    import unicodedata
+
+    for word in ("\ud504\ub85c\uc81d\ud2b8", "\ud55c\uae00", "\uc800\uc7a5\uc18c"):
+        decomposed = unicodedata.normalize("NFD", word)
+        assert decomposed != word
+        assert cols(decomposed) == cols(word)
+        # A syllable's jamo stay together: cut keeps whole syllables.
+        for limit in range(cols(word) + 1):
+            kept = cut(decomposed, limit)
+            assert unicodedata.normalize("NFC", kept) == word[: limit // 2]

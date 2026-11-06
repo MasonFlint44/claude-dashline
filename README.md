@@ -24,7 +24,7 @@ shows you dashline in each glyph set so you can pick the one your terminal draws
 correctly.
 
 Needs Python 3.9 or newer as `python3`. macOS's command-line tools are enough. git is
-optional; without it the third line shows just the folder. Built on Linux with Claude
+optional (2.15 or newer); without it the third line shows just the folder. Built on Linux with Claude
 Code 2.1.318; CI runs the tests on Linux and macOS.
 
 ## What it shows
@@ -52,8 +52,8 @@ is gone, a rebase, merge, cherry-pick, revert, bisect or `am` in progress, and
 conflicts. It also shows where Claude's shell has moved to if that's outside the
 project. In terminals that support links, the project name opens its folder, and a
 branch pushed to GitHub opens its compare page. That includes GitHub Enterprise
-(`github.<company>.com`, `<name>.ghe.com`), SSH host aliases like `github-work`, and
-`insteadOf` shorthands like `gh:owner/repo`.
+(`github.<company>.com`, `<name>.ghe.com`), SSH host aliases like `github-work` or
+`work.github.com`, and `insteadOf` shorthands like `gh:owner/repo`.
 
 When the terminal is narrow, detail goes in a fixed order. Bars stay on their own
 line: plan bars turn into text from the last one back (`credits 12%`), then all of
@@ -110,8 +110,8 @@ dashline catches up; the rest of the statusline keeps working.
 ## Uninstall
 
 Remove the `statusLine` entry from `~/.claude/settings.json`, delete
-`~/.claude/scripts/statusline/` (and `statusline.backup` next to it, if
-`/dashline:install` set another tool's files aside there), then
+`~/.claude/scripts/statusline/` (and `statusline.backup` or `statusline.kept` next to
+it, if `/dashline:install` set another tool's files or one of yours aside there), then
 `/plugin uninstall dashline@claude-toolbox`. dashline's cache is `usage-*.json`,
 `fetch-*.hold` and `fetch.lock*` in `~/.claude/cache/statusline/`, plus `usage.json` and
 `fetch.hold` from 0.1.6 and earlier, and any of these ending in `.tmp`. Delete those
@@ -124,6 +124,7 @@ of these are under that folder instead of `~/.claude`.
 uv run ruff format && uv run ruff check
 uv run pytest
 uv run python scripts/preview.py     # redraw docs/*.svg after a visual change
+scripts/smoke.sh "$(uv python find 3.9)"   # the shipped files on Python 3.9
 python3 statusline.py --preview      # every built-in scenario in your terminal
 ```
 

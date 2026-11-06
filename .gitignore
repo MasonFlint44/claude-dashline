@@ -9,3 +9,5 @@ htmlcov/
 .DS_Store
 # scripts/capture_fixtures.py output: review it before it goes anywhere
 fixture-*.json
+# Claude Code's agent worktrees
+.claude/worktrees/

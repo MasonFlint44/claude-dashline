@@ -46,7 +46,10 @@ def parse_columns(value) -> int | None:
     # isdigit alone takes "²", which int() rejects.
     if not (value.isascii() and value.isdigit()):
         return None
-    return min(int(value), MAX_COLUMNS) or None
+    value = value.lstrip("0")
+    if len(value) > 4:  # past MAX_COLUMNS; int() refuses over 4300 digits anyway
+        return MAX_COLUMNS
+    return min(int(value), MAX_COLUMNS) if value else None
 
 
 def parse_args(argv: list[str]) -> dict:
@@ -201,11 +204,14 @@ def render(stdin, stdout, glyphs: str = "unicode", env=None, now: float | None =
 
 def read(stdin) -> str:
     """stdin as UTF-8 whatever the locale says: Claude Code writes UTF-8. Bytes that
-    aren't UTF-8 become U+FFFD instead of an error."""
+    aren't UTF-8 become U+FFFD instead of an error, and a byte-order mark is dropped.
+    A closed stdin (sys.stdin is None) reads as nothing."""
+    if stdin is None:
+        return ""
     buffer = getattr(stdin, "buffer", None)
     if buffer is None:
-        return stdin.read()
-    return buffer.read().decode("utf-8", "replace")
+        return stdin.read().lstrip("\ufeff")
+    return buffer.read().decode("utf-8-sig", "replace")
 
 
 def write(stdout, lines: list) -> None:

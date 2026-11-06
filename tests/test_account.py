@@ -266,7 +266,7 @@ def test_keychain_names():
     assert account.keychain_service({"CLAUDE_CONFIG_DIR": "/tmp/conf"}) == (
         f"Claude Code-credentials-{digest}"
     )
-    assert account.keychain_account({"USER": "mason"}) == "mason"
+    assert account.keychain_account({"USER": "user"}) == "user"
     assert account.keychain_account({"USER": "bad user"}) == "claude-code-user"
     assert account.keychain_account({}) == "claude-code-user"
 
@@ -333,13 +333,13 @@ def test_keychain_reader_runs_security(monkeypatch):
         return Done()
 
     monkeypatch.setattr(subprocess, "run", run)
-    env = {"USER": "mason"}
+    env = {"USER": "user"}
     assert account._read_keychain(env) == {"claudeAiOauth": {"accessToken": "k"}}
     assert seen["argv"] == [
         "security",
         "find-generic-password",
         "-a",
-        "mason",
+        "user",
         "-w",
         "-s",
         "Claude Code-credentials",
@@ -412,3 +412,44 @@ def test_locked_keychain_still_falls_back_to_file(isolated_home, monkeypatch):
     write_credentials(isolated_home, accessToken="file-token")
     monkeypatch.setattr(account, "_read_keychain", locked)
     assert account.read_token(env_for(isolated_home), NOW, "darwin") == ("file-token", None)
+
+
+# ---- 0.1.7 review ----
+
+
+def test_claude_json_comes_from_the_envs_home(tmp_path, isolated_home):
+    """The caller's env decides where ~ is, never the process's HOME."""
+    import os
+
+    other = tmp_path / "elsewhere"
+    other.mkdir()
+    (other / ".claude.json").write_text(
+        json.dumps(
+            {
+                "oauthAccount": {
+                    "planDisplayName": "Pro",
+                    "accountUuid": "a",
+                    "organizationUuid": "o",
+                }
+            }
+        )
+    )
+    env = {"HOME": str(other)}
+    assert os.environ["HOME"] != str(other)
+    assert account.claude_json_path(env) == str(other / ".claude.json")
+    assert account.load(env).label == "Pro"
+    assert account.identity(env) is not None
+    assert account.identity({"HOME": str(isolated_home)}) is None  # nothing there
+
+
+def test_deeply_nested_claude_json_reads_as_empty(isolated_home):
+    (isolated_home / ".claude.json").write_text('{"a": ' * 100000 + "1" + "}" * 100000)
+    acct = account.load({"HOME": str(isolated_home)})
+    assert acct.mode == "api"
+
+
+def test_trial_countdown_is_capped():
+    acct = account.Account("subscription", "Pro", trial_ends_at=NOW + 1e12)
+    assert account.trial_text(acct, NOW) == "trial 999d"
+    acct = account.Account("subscription", "Pro", trial_ends_at=NOW + 998 * 86400)
+    assert account.trial_text(acct, NOW) == "trial 998d"

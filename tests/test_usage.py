@@ -870,16 +870,65 @@ def test_two_logins_keep_their_own_cache_and_hold(server, logged_in):
     assert usage.load(other, acct, NOW + 500).fetch is False
 
 
+LEGACY_CACHE = {"fetched_at": NOW - 600, "account": "abc", "data": {"limits": []}}
+LEGACY_HOLD = {"until": NOW + 60, "reason": "HTTP 500", "failures": 1, "account": "abc"}
+
+
 def test_success_removes_the_shared_files_of_older_versions(server, logged_in):
     folder = Path(usage.cache_dir(logged_in))
     folder.mkdir(parents=True)
-    (folder / "usage.json").write_text("{}")
-    (folder / "fetch.hold").write_text("{}")
+    (folder / "usage.json").write_text(json.dumps(LEGACY_CACHE))
+    (folder / "fetch.hold").write_text(json.dumps(LEGACY_HOLD))
     (folder / "plan-usage").write_text("{}")  # another tool's
     server.reply(200, "{}")
     usage.refresh(logged_in, NOW, server.url, "linux")
     names = sorted(p.name for p in folder.iterdir())
     assert names == ["plan-usage", usage.cache_name(account.identity(logged_in))]
+
+
+@pytest.mark.parametrize(
+    "body",
+    ['{"another_tool": true}', '{"until": 1, "reason": "x"}', "not json", "[]"],
+)
+def test_another_tools_usage_json_and_fetch_hold_are_left_alone(server, logged_in, body):
+    """The folder may be shared: only files holding what dashline 0.1.6 wrote go."""
+    folder = Path(usage.cache_dir(logged_in))
+    folder.mkdir(parents=True)
+    for name in ("usage.json", "fetch.hold"):
+        (folder / name).write_text(body)
+    server.reply(200, "{}")
+    usage.refresh(logged_in, NOW, server.url, "linux")
+    assert (folder / "usage.json").read_text() == body
+    assert (folder / "fetch.hold").read_text() == body
+    assert usage.own_files(["usage.json", "fetch.hold"], str(folder)) == []
+
+
+def test_own_files_reads_legacy_files_when_given_the_folder(tmp_path):
+    (tmp_path / "usage.json").write_text(json.dumps(LEGACY_CACHE))
+    (tmp_path / "fetch.hold").write_text('{"another_tool": true}')
+    names = ["usage.json", "fetch.hold", "usage.json.12.tmp"]
+    assert usage.own_files(names, str(tmp_path)) == ["usage.json", "usage.json.12.tmp"]
+    assert usage.own_files(names) == sorted(names)  # by name alone
+
+
+def test_temp_files_left_by_a_killed_writer_are_removed(server, logged_in):
+    import os
+
+    folder = Path(usage.cache_dir(logged_in))
+    folder.mkdir(parents=True)
+    tag = "0123456789abcdef"
+    old, recent = folder / f"usage-{tag}.json.99.tmp", folder / f"fetch-{tag}.hold.98.tmp"
+    foreign = folder / "notes.json.97.tmp"  # not a name dashline writes
+    for path in (old, recent, foreign):
+        path.write_text("{")
+    long_ago = NOW - usage.TMP_STALE - 10
+    for path in (old, foreign):
+        os.utime(path, (long_ago, long_ago))
+    os.utime(recent, (NOW - 5, NOW - 5))  # a write in progress
+    server.reply(200, "{}")
+    usage.refresh(logged_in, NOW, server.url, "linux")
+    assert not old.exists()
+    assert recent.exists() and foreign.exists()
 
 
 def test_old_files_of_unused_logins_are_removed(server, logged_in):
@@ -928,11 +977,74 @@ def test_deadline_bounds_a_trickling_answer():
     url = f"http://127.0.0.1:{listener.getsockname()[1]}/"
     start = time.monotonic()
     try:
-        assert usage.get(url, "tok", timeout=2, now=NOW, deadline=0.5) == (0, None, None)
+        assert usage.get(url, "tok", timeout=2, now=NOW, deadline=0.5) == (usage.LATE, None, None)
         assert time.monotonic() - start < 2
     finally:
         stop.set()
         listener.close()
+
+
+def test_a_missed_deadline_has_its_own_reason(logged_in, monkeypatch):
+    monkeypatch.setattr(usage, "get", lambda *args, **kwargs: (usage.LATE, None, None))
+    reason = usage.refresh(logged_in, NOW, "http://127.0.0.1:9", "linux")
+    assert reason == f"no answer within {usage.DEADLINE} s"
+    held = cache_files(logged_in)["hold"]
+    assert (held["reason"], held["server"]) == (reason, False)
+
+
+def test_a_surprise_in_the_request_reaches_the_caller(monkeypatch, capsys):
+    """Raised where get() was called, as if there were no thread: no thread traceback
+    on stderr, and the child's catch-all still names it."""
+
+    def broken(*args):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(usage, "_request", broken)
+    with pytest.raises(RuntimeError, match="boom"):
+        usage.get("http://127.0.0.1:9/", "tok", now=NOW)
+    assert capsys.readouterr().err == ""
+
+
+def test_child_backs_off_on_a_surprise_in_the_request(logged_in, monkeypatch):
+    import os
+    import time
+
+    def broken(*args):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(usage, "_request", broken)
+    monkeypatch.setattr(os, "environ", logged_in)
+    fresh_credentials(logged_in)
+    nonce = usage.take_lock(logged_in, time.time())
+    usage.child(nonce)
+    held = usage.hold(logged_in, account.identity(logged_in))
+    assert held["reason"] == "fetch failed (RuntimeError)"
+    assert not Path(usage._path(logged_in, "fetch.lock")).exists()
+
+
+def test_child_ignores_a_stray_module_in_the_install_folder(tmp_path, isolated_home):
+    """A json.py beside dashline/ (install keeps a user's files) can't replace the
+    standard library's in the child that holds the token."""
+    import os
+    import shutil
+    import subprocess
+    import sys
+
+    folder = tmp_path / "statusline"
+    shutil.copytree(Path(usage.__file__).parent, folder / "dashline")
+    (folder / "json.py").write_text("raise RuntimeError('the stray json.py was imported')\n")
+    env = dict(env_for(isolated_home), PATH=os.environ.get("PATH", ""))
+    r = subprocess.run(
+        [sys.executable, "-I", "-S", "-c", usage.CHILD_CODE, str(folder), "no-lock"],
+        env=env,
+        cwd=str(folder),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert r.returncode == 0, r.stderr
+    held = usage.hold(env, None)  # no login in this home: the child holds, no fetch
+    assert held["reason"] == "no Claude login found"
 
 
 def test_deeply_nested_answer_is_unreadable(server, logged_in):

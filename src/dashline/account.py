@@ -17,7 +17,7 @@ import sys
 
 from dashline.stdin import _num, iso_time
 from dashline.text import clean
-from dashline.theme import config_dir
+from dashline.theme import config_dir, home_dir
 
 # Third-party providers: no plan, no usage endpoint.
 PROVIDERS = (
@@ -49,13 +49,14 @@ def _read_json(path: str) -> dict:
     try:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):  # RecursionError: nested past the limit
         return {}
     return data if isinstance(data, dict) else {}
 
 
 def claude_json_path(env) -> str:
-    return os.path.join(env.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~"), ".claude.json")
+    """`.claude.json`: in CLAUDE_CONFIG_DIR, else in HOME (`env`'s, not the process's)."""
+    return os.path.join(env.get("CLAUDE_CONFIG_DIR") or home_dir(env), ".claude.json")
 
 
 def credentials_path(env) -> str:
@@ -171,11 +172,13 @@ def plan_label(oauth: dict, env) -> str | None:
 
 def trial_text(account: Account, now: float) -> str | None:
     """`trial 5d` while a Claude Code trial runs, `trial 7h` on its last day."""
+    from dashline.bars import DAYS_MAX
+
     if account.trial_ends_at is None or account.trial_ends_at <= now:
         return None
     left = account.trial_ends_at - now
     if left >= 86400:
-        return f"trial {-(-int(left) // 86400)}d"
+        return f"trial {min(-(-int(left) // 86400), DAYS_MAX)}d"  # 999d at most
     return f"trial {max(1, -(-int(left) // 3600))}h"
 
 

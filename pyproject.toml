@@ -1,6 +1,6 @@
 [project]
 name = "dashline"
-version = "0.1.7"
+version = "0.1.8"
 description = "One Claude Code statusline for every plan: session, plan-limit bars and a git row."
 readme = "README.md"
 license = "MIT"
@@ -8,9 +8,11 @@ requires-python = ">=3.9"
 dependencies = []
 
 [dependency-groups]
+# The tests and the preview script run on 3.10+, as their tools now require; dashline
+# itself supports 3.9, which scripts/smoke.sh checks in CI.
 dev = [
-    "fonttools>=4.60.2",
-    "pytest>=8",
+    "fonttools>=4.60.2; python_version >= '3.10'",
+    "pytest>=8; python_version >= '3.10'",
     "ruff>=0.14",
 ]
 

@@ -47,11 +47,15 @@ uses `unicode`.
 - **Exit 1:** relay the error: usually settings.json that isn't valid JSON, or is
   read-only (the file or its folder). Don't fix settings.json yourself unless the user
   asks. If `--replace` had moved another tool's files aside, the output says they were
-  moved back.
+  moved back. With `--glyphs`, it can also say it can't change `--glyphs` in this
+  command automatically (a hand-edited command like `bash -lc '…'`): nothing was
+  changed, and its message gives the edit to make; show it to the user.
 - **Exit 2:** a usage error (a mistyped flag or glyph set). Relay the message; nothing
   was changed.
 
 An update keeps files the user added to `scripts/statusline/` (notes, a wrapper script).
+A `note:` line names any it couldn't move, and where they are now
+(`scripts/statusline.kept`); pass it on.
 
 An entry that is already dashline's keeps its command as written (for example a full
 path to Python); only the `--glyphs` flag changes.

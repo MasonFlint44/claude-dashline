@@ -1059,3 +1059,169 @@ def test_repo_name_fallbacks():
     assert repo._repo_name("/srv/tool.git", "/w/a") == "tool"
     assert repo._repo_name("/srv/tool", "/w/a") == "tool"  # a bare repo without .git
     assert repo._repo_name("/srv/tool/", "/w/a") == "a"
+
+
+# ---- hosts, discovery and old git (third review) ----
+
+
+@pytest.mark.parametrize(
+    ("url", "web"),
+    [
+        # scp form without a user (`User git` in ~/.ssh/config)
+        ("github-work:o/r.git", "https://github.com/o/r"),
+        ("github.com:o/r.git", "https://github.com/o/r"),
+        # SSH over port 443, and other aliases under github.com
+        ("ssh://git@ssh.github.com:443/o/r.git", "https://github.com/o/r"),
+        ("git@ssh.github.com:o/r.git", "https://github.com/o/r"),
+        ("git@work.github.com:o/r.git", "https://github.com/o/r"),
+        # an alias has no dot after its dash: this is some other host
+        ("git@github.com-mirror.corp.example:o/r.git", None),
+        # a wiki clone has no branch pages
+        ("git@github.com:o/r.wiki.git", None),
+        ("https://github.com/o/r.wiki", None),
+        # gists and other paths that aren't owner/repo
+        ("https://gist.github.com/abc123.git", None),
+        # not scp form: a Windows path, a relative path, other URL schemes
+        ("C:/src/o/r", None),
+        ("c:o/r", None),
+        ("./github.com:o/r", None),
+        ("file:///srv/o/r.git", None),
+    ],
+)
+def test_github_web_hosts(url, web):
+    assert repo.github_web(url) == web
+
+
+def test_an_empty_dot_git_is_passed_over(project):
+    """A half-deleted clone's empty `.git` isn't a repo; git keeps walking up."""
+    inner = project / "inner"
+    (inner / ".git").mkdir(parents=True)
+    found = repo.find_git(str(inner))
+    assert found and os.path.realpath(found[0]) == os.path.realpath(project)
+    head_only = project / "head-only" / ".git"
+    head_only.mkdir(parents=True)
+    (head_only / "HEAD").write_text("ref: refs/heads/main\n")
+    found = repo.find_git(str(head_only.parent))
+    assert found and os.path.realpath(found[0]) == os.path.realpath(project)
+
+
+def test_a_dot_git_file_to_nowhere_ends_the_search(project):
+    """git stops with "not a git repository" there; so does the row."""
+    sub = project / "sub"
+    sub.mkdir()
+    (sub / ".git").write_text("gitdir: /nonexistent/x\n")
+    assert repo.find_git(str(sub)) is None
+
+
+@pytest.fixture
+def mounted(project, monkeypatch):
+    """`project` on a filesystem of its own, as if `sub` were mounted under it."""
+    real_stat = os.stat
+    top = os.path.realpath(project)
+
+    def stat(path, *args, **kwargs):
+        result = real_stat(path, *args, **kwargs)
+        if isinstance(path, (str, os.PathLike)) and os.path.realpath(path) == top:
+            fields = list(result[:10])
+            fields[2] += 1  # st_dev
+            return os.stat_result(fields)
+        return result
+
+    monkeypatch.setattr(os, "stat", stat)
+    sub = project / "sub"
+    sub.mkdir()
+    return sub
+
+
+def test_the_search_stops_at_a_mount_point(mounted, project, monkeypatch):
+    assert repo.find_git(str(mounted)) is None
+    found = repo.find_git(str(mounted), across_filesystems=True)
+    assert found and os.path.realpath(found[0]) == os.path.realpath(project)
+    assert row(mounted, columns=1000) == str(mounted)
+    monkeypatch.setenv("GIT_DISCOVERY_ACROSS_FILESYSTEM", "true")
+    assert row(mounted).startswith("proj")
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (None, False),
+        ("", False),
+        (" 0 ", False),
+        ("false", False),
+        ("No", False),
+        ("off", False),
+        ("0x0", False),
+        ("00", False),
+        ("-0", False),
+        ("0k", False),
+        ("1", True),
+        ("2", True),
+        ("true", True),
+        ("yes", True),
+        ("on", True),
+        ("0x10", True),
+        ("010", True),
+        ("+1", True),
+        ("1k", True),
+        # git stops with "bad boolean" on these; they read as set, and never raise
+        ("--1", True),
+        ("1_0", True),
+        ("0x", True),
+        ("08", True),
+        ("junk", True),
+        ("\u0661", True),  # a non-ASCII digit
+    ],
+)
+def test_env_bool(value, expected):
+    assert repo._env_bool(value) is expected
+
+
+def test_odd_git_config_nosystem_is_quiet(cloned, monkeypatch, capsys):
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "--1")
+    assert row(cloned).startswith("work")
+    assert "Traceback" not in capsys.readouterr().err
+
+
+def test_git_before_2_15_shows_the_folder_alone(project, monkeypatch, tmp_path):
+    """Old git refuses --no-optional-locks (exit 129) and so never locks the index."""
+    import shutil
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "git"
+    fake.write_text(
+        "#!/bin/sh\n"
+        'for a in "$@"; do\n'
+        '  [ "$a" = --no-optional-locks ] && { echo "unknown option" >&2; exit 129; }\n'
+        "done\n"
+        f'exec "{shutil.which("git")}" "$@"\n'
+    )
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    assert row(project) == "proj"
+
+
+def test_run_git_within_the_deadline(project, monkeypatch):
+    import time
+
+    env = dict(os.environ)
+    later = time.monotonic() + 5
+    assert repo._run_git(["rev-parse", "--abbrev-ref", "HEAD"], str(project), env, later)
+    assert repo._run_git(["status"], str(project), env, time.monotonic() - 1) is None
+
+    def no_git(*args):
+        raise OSError("no git")
+
+    monkeypatch.setattr(repo, "_start", no_git)
+    assert repo._run_git(["status"], str(project), env, later) is None
+
+
+def test_branch_url_of_a_name_that_cannot_be_encoded(tmp_path):
+    state = repo.RepoState(str(tmp_path))
+    state.branch = "x"
+    remotes = {"origin": "git@github.com:o/r.git"}
+    state.upstream = "origin/feat"
+    assert repo.branch_url(state, remotes, str(tmp_path)) == "https://github.com/o/r/tree/feat"
+    state.upstream = "origin/\ud800"  # a lone surrogate from a broken name
+    assert repo.branch_url(state, remotes, str(tmp_path)) is None

@@ -49,7 +49,7 @@ def _read_json(path: str | None) -> dict:
     try:
         with open(path, encoding="utf-8-sig") as f:  # -sig: a BOM some editors add
             data = json.load(f)
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):  # deep nesting recurses before 3.14
         return {}
     return data if isinstance(data, dict) else {}
 

@@ -8,8 +8,11 @@ Unicode line separators and the bidirectional overrides that reorder what follow
 A terminal draws East Asian Wide and Fullwidth characters (CJK, most emoji) two columns
 wide and combining marks over the character before them, so `cols` counts columns, not
 characters. A character followed by VS16 (U+FE0F, "draw as emoji", as in ❤️) is drawn as
-an emoji, two columns. Ambiguous-width characters count 1, as Claude Code draws them
-(PLAN §7), and so do Nerd Font icons (private use). ASCII, the usual case, skips the
+an emoji, two columns. A flag is a pair of regional indicators drawn as one emoji, two
+columns, and never cut in half; a lone indicator counts 2 too. Hangul jamo vowels and
+finals join the initial consonant before them (decomposed Hangul, as some file systems
+store names), so they count 0. Ambiguous-width characters count 1, as Claude Code draws
+them (PLAN §7), and so do Nerd Font icons (private use). ASCII, the usual case, skips the
 lookup.
 """
 
@@ -44,20 +47,30 @@ def _cols(text: str) -> int:
 
 
 def _units(text: str):
-    """(end index, columns) per drawn unit: a character, with its VS16 if one follows."""
+    """(end index, columns) per drawn unit: a character with its VS16 if one follows, or
+    a flag (two regional indicators)."""
     i, n = 0, len(text)
     while i < n:
-        w = _char_cols(text[i])
+        c = text[i]
+        w = _char_cols(c)
         i += 1
-        if w and i < n and text[i] == VS16:
+        if _regional(c) and i < n and _regional(text[i]):
+            i += 1  # the second half of a flag
+        elif w and i < n and text[i] == VS16:
             w, i = 2, i + 1
         yield i, w
+
+
+def _regional(c: str) -> bool:
+    return "\U0001f1e6" <= c <= "\U0001f1ff"
 
 
 def _char_cols(c: str) -> int:
     import unicodedata
 
-    if unicodedata.east_asian_width(c) in ("W", "F"):
+    if "\u1160" <= c <= "\u11ff" or "\ud7b0" <= c <= "\ud7ff":
+        return 0  # a Hangul vowel or final, joined to the syllable before it
+    if _regional(c) or unicodedata.east_asian_width(c) in ("W", "F"):
         return 2
     if unicodedata.combining(c) or unicodedata.category(c) in ("Mn", "Me", "Cf"):
         return 0  # drawn over the character before it (or not at all: ZWJ, VS16)

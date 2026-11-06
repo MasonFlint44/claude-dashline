@@ -5,9 +5,9 @@ a `fix:` line under it. The doctor skill reads this output, so names and wording
 stable. Exit 1 when something fails: the statusline or its plan bars won't show.
 
 Doctor fetches the usage endpoint once, in the foreground, the same way the background
-child does: it refreshes the cache, and on failure sets the same hold a render would. It
-doesn't while the server has asked this login to wait (Retry-After): it says until when
-instead, and `--fetch-now` (fetch_now) tries anyway.
+child does: it takes the same lock, refreshes the cache, and on failure sets the same
+hold a render would. It doesn't while the server has asked this login to wait
+(Retry-After): it says until when instead, and `--fetch-now` (fetch_now) tries anyway.
 """
 
 from __future__ import annotations
@@ -25,7 +25,8 @@ from dashline.usage import API_URL
 OK, WARN, FAIL, INFO = "ok", "warn", "fail", "info"
 STATUS_TOKENS = {OK: "success", WARN: "warning", FAIL: "error", INFO: "inactive"}
 MIN_PYTHON = (3, 9)
-MIN_GIT = (2, 11)  # porcelain v2
+MIN_GIT = (2, 15)  # porcelain v2 (2.11) and --no-optional-locks (2.15)
+LOCK_WAIT = 5.0  # seconds doctor waits for a background fetch to finish
 SLOW_MS = 500
 NERD_TERMINALS = {"ghostty": "Ghostty", "wezterm": "WezTerm"}  # bundle the symbols
 
@@ -56,14 +57,21 @@ def _clock(when: float, now: float) -> str:
     return time.strftime("%a %H:%M", shown)
 
 
-def stderr_reason(err: list) -> str | None:
-    """The line of a command's stderr that says what went wrong.
+def stderr_reason(err: list, out: list = ()) -> str | None:
+    """The line of a command's output that says what went wrong.
 
     dashline's own errors start with `dashline:`; a usage error follows its line with
-    the help text, so the last line would be a line of help.
+    the help text, so the last line would be a line of help. Otherwise the last line of
+    stderr (a traceback's ends with the error). A command that sends stderr away
+    (`2>/dev/null`) still prints its `dashline:` line on stdout, where the statusline
+    shows it.
     """
-    ours = [line for line in err if line.startswith("dashline:")]
-    return ours[0] if ours else (err[-1] if err else None)
+    for line in err:
+        if line.startswith("dashline:"):
+            return line
+    if err:
+        return err[-1]
+    return next((line for line in out if line.startswith("dashline:")), None)
 
 
 def summarize(data: dict) -> str:
@@ -350,9 +358,24 @@ class Doctor:
             text += f", renews in {_span(expires - self.now)}"
         self.add(OK, "login", text)
 
+    def user_fix(self, reason) -> str | None:
+        """The fix for a fetch that failed for `reason`, when it is the user's to make."""
+        from dashline.account import KEYCHAIN_LOCKED
+
+        relogin = "run /login in Claude Code"
+        return {
+            "no Claude login found": relogin,
+            KEYCHAIN_LOCKED: KEYCHAIN_FIX,
+            "token rejected (401)": relogin,
+            "not allowed (403): the login may lack the profile scope": (
+                "a token from `claude setup-token` can't read usage; use /login instead"
+                if self.env.get("CLAUDE_CODE_OAUTH_TOKEN")
+                else relogin
+            ),
+        }.get(reason)
+
     def usage(self):
         from dashline import usage
-        from dashline.account import KEYCHAIN_LOCKED
 
         if self.account is None or self.account.mode != "subscription":
             self.add(INFO, "usage", "not fetched: plan bars are for Claude subscriptions")
@@ -363,17 +386,33 @@ class Doctor:
             # Respect the server's Retry-After; the user can still choose to try now.
             until = held["until"]
             reason = held.get("reason") if isinstance(held.get("reason"), str) else "a wait"
+            fix = "it retries on its own after that; to try now anyway, run doctor with --fetch-now"
+            cure = self.user_fix(reason)
+            if cure:  # waiting won't help: the login needs fixing first
+                fix = f"{cure}, then run doctor with --fetch-now to check"
             self.add(
                 WARN,
                 "usage",
                 f"not fetched: the server asked to wait until {_clock(until, self.now)} "
                 f"({_span(until - self.now)} left) after {reason}",
-                "it retries on its own after that; to try now anyway, run doctor with --fetch-now",
+                fix,
             )
             return
-        start = time.monotonic()
-        result = usage.refresh(self.env, self.now, self.base_url, self.platform)
-        ms = (time.monotonic() - start) * 1000
+        nonce = self.take_lock(usage)
+        if nonce is None:
+            self.add(
+                INFO,
+                "usage",
+                "not fetched: a fetch is running in the background",
+                "run doctor again in a moment to see its result",
+            )
+            return
+        try:
+            start = time.monotonic()
+            result = usage.refresh(self.env, self.now, self.base_url, self.platform)
+            ms = (time.monotonic() - start) * 1000
+        finally:
+            usage.release(self.env, nonce)
         if result == "ok":
             data, _ = usage.cached(self.env, who, self.now)
             self.add(OK, "usage", f"{ms:.0f} ms: {summarize(data or {})}")
@@ -383,27 +422,29 @@ class Doctor:
         wait = f"; renders retry in {_span(until - self.now)}" if until else ""
         if held.get("server") is True:
             wait += " (the server asked for that wait)"
-        fixes = {
-            "no Claude login found": "run /login in Claude Code",
-            KEYCHAIN_LOCKED: KEYCHAIN_FIX,
-            "token rejected (401)": "run /login in Claude Code",
-            "not allowed (403): the login may lack the profile scope": (
-                "a token from `claude setup-token` can't read usage; use /login instead"
-                if self.env.get("CLAUDE_CODE_OAUTH_TOKEN")
-                else "run /login in Claude Code"
-            ),
-            "no answer (network)": "check the network or proxy (HTTPS_PROXY) to api.anthropic.com",
-        }
         if result.startswith("token expired"):
             self.add(WARN, "usage", result + wait)
             return
-        fix = fixes.get(result, "run doctor again later")
-        if result.startswith("redirect refused"):
+        fix = self.user_fix(result) or "run doctor again later"
+        if result.startswith("no answer"):
+            fix = "check the network or proxy (HTTPS_PROXY) to api.anthropic.com"
+        elif result.startswith("redirect refused"):
             # api.anthropic.com doesn't redirect: a proxy or network is rewriting traffic.
             fix = "something between here and api.anthropic.com redirects it: check HTTPS_PROXY"
         elif result.startswith("fetch failed"):
             fix = "run doctor again later; report it if it keeps happening"
         self.add(FAIL, "usage", result + wait, fix)
+
+    def take_lock(self, usage):
+        """The fetch lock, waiting up to LOCK_WAIT for a background fetch to finish; None
+        if one still holds it. A stale lock is broken as a render would break it."""
+        waited, step = 0.0, 0.2
+        while True:
+            nonce = usage.take_lock(self.env, self.now + waited)
+            if nonce is not None or waited >= LOCK_WAIT:
+                return nonce
+            time.sleep(step)
+            waited += step
 
     def cache(self):
         from dashline import usage
@@ -427,8 +468,8 @@ class Doctor:
         notes = []
         who = self.account.fingerprint if self.account is not None else None
         cache = usage._read_json(usage._path(self.env, usage.cache_name(who)))
-        fetched = cache.get("fetched_at")
-        if isinstance(fetched, (int, float)):
+        fetched = usage._num(cache.get("fetched_at"))  # never NaN or infinite
+        if fetched is not None:
             notes.append(f"fetched {_ago(self.now - fetched)}")
         # The lock says when it was taken (`at`), else its mtime does. One from the
         # future means the clock was set back; either way the next render breaks it.
@@ -444,7 +485,7 @@ class Doctor:
         # folder others can list only shows them file names.
         exposed = []
         try:
-            names = usage.own_files(os.listdir(path))
+            names = usage.own_files(os.listdir(path), path)
         except OSError:
             names = []
         for name in names:
@@ -501,7 +542,7 @@ class Doctor:
         lines = [line for line in r.stdout.splitlines() if line.strip()]
         err = r.stderr.strip().splitlines()
         if r.returncode != 0 or not lines or "internal error" in r.stdout:
-            why = stderr_reason(err) or f"exit {r.returncode}, {len(lines)} lines"
+            why = stderr_reason(err, lines) or f"exit {r.returncode}, {len(lines)} lines"
             fix = "run /dashline:install"
             if "can't open file" in why:
                 fix = "the command's statusline.py is missing: run /dashline:install"
@@ -530,7 +571,12 @@ class Doctor:
             return
         version = match.group(0)
         if (int(match.group(1)), int(match.group(2))) < MIN_GIT:
-            self.add(WARN, "git", f"{version}: too old for the git row (needs 2.11)", "update git")
+            self.add(
+                WARN,
+                "git",
+                f"{version}: too old for the git row, which shows the folder only (needs 2.15)",
+                "update git",
+            )
             return
         self.add(OK, "git", version)
 
