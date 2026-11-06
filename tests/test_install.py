@@ -1046,7 +1046,7 @@ def test_an_extra_that_wont_move_is_kept_aside(conf, env, monkeypatch):
     )
     assert sorted(p.name for p in kept.iterdir()) == ["stuck.txt"]
     assert (target / "notes.txt").read_text() == "also mine\n"
-    assert (target / "dashline" / "layout.py").read_text() != "# old\n"
+    assert (target / "dashline" / "layout.py").read_text(encoding="utf-8") != "# old\n"
 
 
 def test_failed_swap_moves_the_users_files_back(conf, env, monkeypatch, capsys):

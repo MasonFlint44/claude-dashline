@@ -84,7 +84,7 @@ def test_not_a_repo(tmp_path, isolated_home):
     notes.mkdir(parents=True)
     assert row(notes) == "~/Documents/notes"
     assert row(notes, glyph_set="nerd") == "\U000f0770 ~/Documents/notes"
-    assert row(tmp_path, columns=1000) == str(tmp_path)
+    assert row(tmp_path, columns=1000) == tmp_path.as_posix()  # `/` on Windows too
 
 
 def test_clean_main(project):
@@ -256,7 +256,7 @@ def test_sibling_dir_is_not_inside(project):
     sibling = project.parent / (project.name + "-old")
     sibling.mkdir()
     # Wide enough for macOS's long temp paths: drift is the first thing a narrow row drops.
-    assert row(project, columns=400, current=sibling) == f"proj  ↳ {sibling}  ⎇ main"
+    assert row(project, columns=400, current=sibling) == f"proj  ↳ {sibling.as_posix()}  ⎇ main"
 
 
 def test_colors(project):
@@ -336,7 +336,7 @@ def test_slow_git_times_out(project, monkeypatch):
 
 
 def test_missing_project_dir(tmp_path):
-    assert row(tmp_path / "gone", columns=1000) == str(tmp_path / "gone")
+    assert row(tmp_path / "gone", columns=1000) == (tmp_path / "gone").as_posix()
 
 
 def test_no_project_dir_no_row():
@@ -921,7 +921,7 @@ def test_config_files(tmp_path):
     ]
     assert repo.config_files(
         {"HOME": home, "GIT_CONFIG_NOSYSTEM": "1", "XDG_CONFIG_HOME": "/x"}
-    ) == [str(Path("/x") / "git" / "config"), str(tmp_path / ".gitconfig")]
+    ) == [os.path.join("/x", "git", "config"), str(tmp_path / ".gitconfig")]  # noqa: PTH118
     assert repo.config_files({"GIT_CONFIG_GLOBAL": "/g", "GIT_CONFIG_SYSTEM": "/s"}) == [
         "/s",
         "/g",
@@ -1015,7 +1015,7 @@ def test_ceiling_directories_stop_the_walk(project, monkeypatch, tmp_path):
     sub = project / "sub"
     sub.mkdir()
     monkeypatch.setenv("GIT_CEILING_DIRECTORIES", f"relative/dir{os.pathsep}{project}")
-    assert row(sub, columns=1000) == str(sub)  # the repo is above the ceiling
+    assert row(sub, columns=1000) == sub.as_posix()  # the repo is above the ceiling
     assert row(project) == "proj  ⎇ main"  # a walk may start in a ceiling
 
 
@@ -1038,6 +1038,7 @@ def test_config_nosystem_set(value):
 
 
 @pytest.mark.parametrize("value", ["0", "false", "no", "off", ""])
+@posix_only  # Windows: no system file without GIT_CONFIG_SYSTEM
 def test_config_nosystem_unset(value):
     assert "/etc/gitconfig" in repo.config_files({"GIT_CONFIG_NOSYSTEM": value})
 
@@ -1167,7 +1168,7 @@ def test_the_search_stops_at_a_mount_point(mounted, project, monkeypatch):
     assert repo.find_git(str(mounted)) is None
     found = repo.find_git(str(mounted), across_filesystems=True)
     assert found and os.path.realpath(found[0]) == os.path.realpath(project)
-    assert row(mounted, columns=1000) == str(mounted)
+    assert row(mounted, columns=1000) == mounted.as_posix()
     monkeypatch.setenv("GIT_DISCOVERY_ACROSS_FILESYSTEM", "true")
     assert row(mounted).startswith("proj")
 

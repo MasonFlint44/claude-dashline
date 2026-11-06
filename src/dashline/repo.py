@@ -589,8 +589,10 @@ def _finish(proc, deadline: float) -> str | None:
         try:
             proc.communicate(timeout=KILL_WAIT)
         except subprocess.TimeoutExpired:
-            # Something left the group and still holds the pipe: don't wait for it.
-            proc.stdout.close()
+            # Something left the group and still holds the pipe: don't wait for it. On
+            # Windows a thread is reading it, and closing would wait for that read.
+            if os.name != "nt":
+                proc.stdout.close()
         return None
     return out.decode("utf-8", "replace") if proc.returncode == 0 else None
 

@@ -249,7 +249,7 @@ def test_project_dashline_without_refresh(installed, tmp_path):
     (tmp_path / ".claude" / "settings.json").write_text(json.dumps({"statusLine": entry}))
     status, _, fix = check(installed, "settings", tmp_path)
     assert status == "warn"
-    assert fix.endswith("add one to " + str(tmp_path / ".claude" / "settings.json"))
+    assert fix.endswith("add one to " + (tmp_path / ".claude" / "settings.json").as_posix())
 
 
 def test_someone_elses_folder(installed, isolated_home, tmp_path):
@@ -285,7 +285,7 @@ def test_disable_all_hooks_follows_precedence(installed, tmp_path):
     project.write_text(json.dumps({"disableAllHooks": True}))
     status, text, _ = check(installed, "settings", tmp_path)
     assert status == "fail"
-    assert f"disableAllHooks is on in {project}" in text
+    assert f"disableAllHooks is on in {project.as_posix()}" in text
 
 
 def test_no_refresh_interval(installed, tmp_path):
@@ -469,6 +469,7 @@ def test_chmod_fix_is_quoted(sub, isolated_home, tmp_path):
     assert fix == f"chmod 600 ~/'My Claude/cache/statusline/{name}'"
 
 
+@posix_only
 def test_chmod_fix_outside_home(sub, tmp_path):
     conf = tmp_path / "other place"
     env = dict(sub, CLAUDE_CONFIG_DIR=str(conf))
@@ -1000,6 +1001,7 @@ def test_command_without_sh(installed, tmp_path, monkeypatch):
 
 def test_command_slow(installed, tmp_path, monkeypatch):
     monkeypatch.setattr(doctor, "SLOW_MS", -1)
+    monkeypatch.setattr(doctor, "SLOW_MS_WINDOWS", -1)
     status, text, fix = check(installed, "command", tmp_path)
     assert status == "warn"
     assert text.endswith("(slow)")

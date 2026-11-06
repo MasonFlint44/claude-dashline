@@ -28,6 +28,8 @@ MIN_PYTHON = (3, 9)
 MIN_GIT = (2, 15)  # porcelain v2 (2.11) and --no-optional-locks (2.15)
 LOCK_WAIT = 5.0  # seconds doctor waits for a background fetch to finish
 SLOW_MS = 500
+# On Windows starting the shell alone (Git Bash, PowerShell) takes most of that.
+SLOW_MS_WINDOWS = 2500
 NERD_TERMINALS = {"ghostty": "Ghostty", "wezterm": "WezTerm"}  # bundle the symbols
 WSL_DRIVES = "/mnt"  # where WSL mounts the Windows drives (its default)
 # Font files with the Nerd Font icons: Nerd Fonts' own, and Cascadia Code / Mono NF
@@ -610,7 +612,7 @@ class Doctor:
         text = f"printed {len(lines)} line{'s' if len(lines) != 1 else ''} in {ms:.0f} ms"
         if os.name == "nt":
             text += f" ({shell_name})"
-        if ms > SLOW_MS:
+        if ms > (SLOW_MS_WINDOWS if os.name == "nt" else SLOW_MS):
             self.add(WARN, "command", text + " (slow)", "a slow git repo or disk; see the git line")
             return
         self.add(OK, "command", text)

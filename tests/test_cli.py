@@ -179,7 +179,12 @@ def test_stray_modules_in_the_install_folder_are_never_imported(tmp_path, stdin_
 
     def run(*args, stdin=""):
         return subprocess.run(
-            [*cmd, *args], input=stdin, capture_output=True, text=True, timeout=30, env=env
+            [*cmd, *args],
+            input=stdin,
+            capture_output=True,
+            encoding="utf-8",
+            timeout=30,
+            env=env,
         )
 
     version = run("--version")
