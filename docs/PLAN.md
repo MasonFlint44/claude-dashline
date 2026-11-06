@@ -30,7 +30,7 @@ from live calls to the endpoints on 2026-11-03.
 | Install path | `${CLAUDE_CONFIG_DIR:-~/.claude}/scripts/statusline/` |
 | Config file | none in v1; if ever needed, `${CLAUDE_CONFIG_DIR:-~/.claude}/config/statusline/` |
 | Layout | E3 (§4): line 1 session + `context` bar, line 2 plan name + plan bars, line 3 repo |
-| Bar widths | plan bars share line 2's free space: 1/n each, at most 1/3 (three bars fill the row), minimum 8; `context` = plan width (line 1's room permitting; 2× until 0.1.2); overflow moves trailing bars up only when needed; never wraps (changed 11/5, was a 24/48 cap) |
+| Bar widths | plan bars share line 2's free space: 1/n each, at most 1/3 (three bars fill the row), minimum 8; `context` = plan width (line 1's room permitting; 2× until 0.1.2); overflow turns trailing plan bars into text, one at a time, on line 2; bars never change lines; never wraps (changed 11/5, was a 24/48 cap; bars moved up to line 1 until 0.1.5) |
 | Separators | `·` between items, `│` between groups, both in theme gray (ascii: `/`, `\|`) |
 | Directory row | option C (§5): icons + uncommitted line delta only |
 | Glyphs | `--glyphs nerd\|unicode\|ascii` flag in the statusLine command, default `unicode`; no config file in v1 |
@@ -254,8 +254,7 @@ how a new meter shows up without a release.
 ### Rules
 
 - **Widths, no wrapping (settled 11/4; widths changed 11/5 by the author).** Plan bars
-  share one width, so they stay comparable side by side; `credits` keeps that width
-  even when it moves to line 1. The width scales with the row: line 2's **free space**
+  share one width, so they stay comparable side by side. The width scales with the row: line 2's **free space**
   is its width less everything but bar cells (plan name, each bar's label, percent and
   countdown, gaps, the age tag), and each bar gets **1/n of it, at most 1/3**, where n
   counts the bars on line 2. So three bars
@@ -265,20 +264,25 @@ how a new meter shows up without a release.
   limited by the room left on line 1 (e.g. a cold-cache message can shrink it). With
   no plan bars, it sizes as if line 2 existed: at most a third of an empty line 2.
   (Until 0.1.1: plan bars capped at 24, context at 48.)
-  1. If every plan bar fits on line 2 at ≥ 8 and `context` fits on line 1 at
-     ≥ 8, use the largest widths that fit.
-  2. Otherwise the trailing plan bars move to the end of line 1, after
-     `context`, one at a time (`credits` first, since it's last), until both
-     lines fit at ≥ 8. Bars move only when needed.
-  3. If nothing fits at 8, every bar collapses to `label NN%` (text only) on
-     its usual line. Nothing moves.
-  4. Extremely narrow (the text-only line still doesn't fit): drop reset countdowns,
-     then cut the line short with `…`.
+  **Line 1 is the session, line 2 the plan: bars never change lines** (changed 11/5
+  by the author; until 0.1.5 trailing plan bars moved up to line 1, which squeezed the
+  context bar and blurred the two lines). Each line fits on its own:
+  1. Line 2: if every plan bar fits at ≥ 8, use the largest width that fits.
+     Otherwise the last bar drawn turns into `label NN%` (text only), then the one
+     before it, until the rest fit at ≥ 8 (`credits` first, since it's last). If
+     none do, every plan bar is text.
+  2. Line 1: `context` takes the plan-bar width, limited by line 1's room, after the
+     drop order below. If it can't fit at 8, it turns into `context NN%`. When line 2
+     has plan bars but they're all text, `context` is 8 cells.
+  3. Extremely narrow (line 2's text still doesn't fit): drop reset countdowns, then
+     cut the line short with `…`. Line 1 is cut short once its context is text.
   Bars resizing when line-1 text changes (e.g. the cache warning) is fine
-  (settled 11/3). Known quirk, accepted 11/4: moving a bar up can make the bars *wider*
-  at a narrower terminal (e.g. with four bars, once `credits` moves up the three left on
-  line 2 get a third of the free space each instead of a quarter). Bars move only when
-  needed, never just to get wider.
+  (settled 11/3). Known quirk, accepted 11/4: turning a bar into text can make the
+  others *wider* at a narrower terminal (e.g. with four bars, once `credits` is text
+  the three bars left get a third of the free space each instead of a quarter). Below
+  three bars the 1/3 cap holds, so each further bar turned into text frees only its
+  cells: with four bars (Ultra, no countdowns) all are drawn from 86 columns, three
+  from 77, then two, one and none within the next three columns.
 - Terminal width = `COLUMNS` minus the TUI frame reserve: **4** in 2.1.318 (E5:
   2-col indent + 2 at the right; a line of exactly `COLUMNS − 4` fits, one more is
   cut with `…`). `COLUMNS` is passed to the command as the full terminal width.
@@ -302,8 +306,8 @@ how a new meter shows up without a release.
 ### Narrow terminals
 
 Line 1 drop order: agent → cache text (glyph stays). Model, effort, cost and
-the context bar never drop. Bars follow the overflow rule above. They never wrap
-to a fourth line.
+the context bar never drop (it turns into text last). Bars follow the overflow rule
+above. They never wrap to a fourth line.
 
 ---
 
@@ -583,7 +587,8 @@ writes. If hiding elements ever earns its keep, a file goes in
 - `--glyphs all` (preview only) prints each set in turn, for the install skill.
 - `--preview [SCENARIO|all]`: built-in scenarios with fake data at a fixed clock:
   `pro-trial`, `pro`, `ultra-fable`, `team`, `enterprise`, `api`, `limit`, `rebase`,
-  `narrow` (80 columns: `credits` moves up), `tiny` (64 columns: text-only bars). Uses
+  `narrow` (80 columns: `credits` turns into text), `tiny` (64 columns: text-only plan
+  bars). Uses
   the active theme and `NO_COLOR`; reads no account, network or git. The README SVG
   and the install skill both use it. (Phase 5: `free-trial` became `pro-trial`, since
   the trial is a Pro trial; `limit` and `tiny` added.)
@@ -634,7 +639,7 @@ src/dashline/
   account.py    auth mode, plan label (.claude.json), token (file + macOS Keychain)
   usage.py      usage fetch, cache, lock, hold, background refresh
   bars.py       bar cells, ramp color, countdown
-  layout.py     lines 1–2: widths, overflow to line 1, text-only fallback, drop order
+  layout.py     lines 1–2: widths, text-only fallback, drop order
   repo.py       directory row
   glyphs.py     nerd / unicode / ascii
   theme.py      which Claude Code theme is active; tokens → SGR

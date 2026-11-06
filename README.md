@@ -51,8 +51,9 @@ conflicts. It also shows where Claude's shell has moved to if that's outside the
 project. In terminals that support links, the project name opens its folder, and a
 branch pushed to GitHub opens its compare page.
 
-When the terminal is narrow, detail goes in a fixed order. Plan bars move up to line 1
-if there's room; otherwise every bar turns into text (`5h 81%`). Line 3 drops line counts
+When the terminal is narrow, detail goes in a fixed order. Bars stay on their own
+line: plan bars turn into text from the last one back (`credits 12%`), then all of
+them (`5h 81%`); the context bar does once line 1 has no room. Line 3 drops line counts
 before names. Nothing wraps.
 
 ## Glyph sets

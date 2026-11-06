@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.5 — 2026-11-05
+
+- Plan bars stay on line 2. In a narrow terminal, the last bar turns into text
+  (`credits 12%`) instead of moving up to line 1, then the rest do. Line 1 keeps just
+  the session, and the context bar no longer shrinks to make room for a plan bar. It
+  turns into text only when line 1 itself is too narrow.
+
 ## 0.1.4 — 2026-11-05
 
 - A model's weekly bar (e.g. `Fable`) also shows on other models once it has any use

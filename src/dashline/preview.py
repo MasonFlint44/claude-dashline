@@ -166,7 +166,7 @@ def scenarios() -> dict:
             None,
         ),
         "narrow": (
-            "Ultra with four bars at 80 columns: credits moves up to line 1",
+            "Ultra with four bars at 80 columns: credits turns into text",
             _session(
                 model={"id": "claude-fable-5-1", "display_name": "Fable 5.1"},
                 context_window={"used_percentage": 22},
@@ -182,7 +182,7 @@ def scenarios() -> dict:
             80,
         ),
         "tiny": (
-            "ultra-fable at 64 columns: every bar becomes text",
+            "ultra-fable at 64 columns: the plan bars become text",
             *_ultra_fable(dirty=True, added=120, removed=45),
             64,
         ),

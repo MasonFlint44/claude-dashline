@@ -116,13 +116,29 @@ def test_context_alone_sizes_as_if_line_2_existed():
     assert cells(lines_text(s, make_ctx(52), [])[0], "context") == 48 - 25 - 3 - 11
 
 
-def test_credits_moves_up_only_when_needed():
-    at_90 = lines_text(make_session(**BUSY), make_ctx(90), FOUR, "Ultra")
-    assert "credits" in at_90[1]
-    at_80 = lines_text(make_session(**{**BUSY, "agent": None}), make_ctx(80), FOUR, "Ultra")
-    assert "credits" in at_80[0]
-    assert "credits" not in at_80[1]
-    assert cells(at_80[0], "credits") == cells(at_80[1], "5h")  # keeps the plan width
+def test_bars_never_leave_line_2():
+    no_agent = make_session(**{**BUSY, "agent": None})
+    for columns in range(30, 201):
+        first, *rest = lines_text(no_agent, make_ctx(columns), FOUR, "Ultra")
+        assert not any(label in first for label in ("5h", "7d", "Fable", "credits"))
+        assert rest and rest[0].startswith("Ultra │ 5h ")
+
+
+def test_trailing_bar_turns_into_text_first():
+    no_agent = make_session(**{**BUSY, "agent": None})
+    at_86 = lines_text(no_agent, make_ctx(86), FOUR, "Ultra")[1]
+    # 82 - 8 (plan name) - 36 (labels and percents) - 6 (gaps) = 32 free: 8 each.
+    assert {cells(at_86, b.label) for b in FOUR} == {8}
+    at_85 = lines_text(no_agent, make_ctx(85), FOUR, "Ultra")[1]
+    # Credits as text frees its cells and a column; three bars get a third of 32.
+    assert at_85.endswith("  credits 12%")
+    assert {cells(at_85, b.label) for b in FOUR[:3]} == {10}
+
+
+def test_context_keeps_the_smallest_bar_beside_text_plan_bars():
+    first, second = lines_text(make_session(**{**BUSY, "agent": None}), make_ctx(70), FOUR, "Ultra")
+    assert second == "Ultra │ 5h 22%  7d 48%  Fable 24%  credits 12%"
+    assert cells(first, "context") == 8
 
 
 def test_agent_drops_before_bars_shrink_to_text():
@@ -131,8 +147,14 @@ def test_agent_drops_before_bars_shrink_to_text():
     assert "▆" in lines[0]
 
 
-def test_text_only_when_nothing_fits_at_8():
+def test_each_line_turns_bars_into_text_on_its_own():
     assert lines_text(make_session(**BUSY), make_ctx(50)) == [
+        # Line 1 has 2 columns left for cells: the context bar is text.
+        "Sonnet 5.5 · xhigh ↯ · $11.80 │ context 41%",
+        # Line 2: 46 - 2 (gap) - 7 - 13 (7d as text) = 24 free, a third is 8.
+        "5h ▆▆▁▁▁▁▁▁ 22%  7d 74% (2d4h)",
+    ]
+    assert lines_text(make_session(**BUSY), make_ctx(48)) == [
         "Sonnet 5.5 · xhigh ↯ · $11.80 │ context 41%",
         "5h 22%  7d 74% (2d4h)",
     ]
@@ -141,8 +163,10 @@ def test_text_only_when_nothing_fits_at_8():
 def test_extremely_narrow_drops_countdowns_then_cuts():
     assert lines_text(make_session(**BUSY), make_ctx(40)) == [
         "Sonnet 5.5 · xhigh ↯ · $11.80 │ con…",
-        "5h 22%  7d 74%",
+        "5h 22%  7d 74% (2d4h)",
     ]
+    assert lines_text(make_session(**BUSY), make_ctx(24))[1] == "5h 22%  7d 74%"
+    assert lines_text(make_session(**BUSY), make_ctx(17))[1] == "5h 22%  7d 7…"
 
 
 def test_plan_label_moves_to_line_1_without_plan_bars():
