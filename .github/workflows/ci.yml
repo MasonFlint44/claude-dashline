@@ -65,3 +65,16 @@ jobs:
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
       - run: uv python install 3.9
       - run: scripts/smoke.sh "$(uv python find 3.9)"
+  windows-python:
+    # The oldest supported Python on Windows, installed and run the way Claude Code
+    # would: a `python` command in settings.json, run in Git Bash.
+    runs-on: windows-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      - run: uv python install 3.9
+      - run: scripts/smoke.sh "$(uv python find 3.9)"

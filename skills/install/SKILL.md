@@ -11,17 +11,26 @@ user settings, and picks the glyph set. `statusline.py --install` does the copyi
 the settings edit. Don't edit settings.json by hand.
 
 The plugin copy is at `${CLAUDE_PLUGIN_ROOT}/statusline.py`. Below, `DASHLINE` stands
-for `python3 -I -S "${CLAUDE_PLUGIN_ROOT}/statusline.py"`.
+for `PYTHON -I -S "${CLAUDE_PLUGIN_ROOT}/statusline.py"`, where `PYTHON` is `python3`,
+or on Windows the name step 1 found.
 
 ## 1. Python
 
-Run `python3 -c 'import sys; print(sys.version)'`. dashline needs Python 3.9 or newer,
-reachable as `python3`, because that is the command settings.json runs.
+dashline needs Python 3.9 or newer, by a name settings.json's command can run.
 
-If it's missing or older, stop and tell the user how to get it:
+- **macOS, Linux and WSL:** run `python3 -c 'import sys; print(sys.version)'`. It must
+  work as `python3`, because that is what settings.json runs.
+- **Windows** (not WSL): try `py -3`, then `python`, then `python3`, each with
+  `-c "import sys; print(sys.version)"`, and use the first that prints 3.9 or newer as
+  `PYTHON`. `--install` picks the same way and writes that name into settings.json. A
+  `python3` that opens the Microsoft Store instead of printing a version doesn't count.
+
+If none works, stop and tell the user how to get it:
 - **macOS:** `brew install python` if `brew` exists; otherwise `xcode-select --install`,
   whose command-line tools include Python 3.9.
 - **Linux:** the distro's package, e.g. `sudo apt install python3`.
+- **Windows:** `winget install Python.Python.3.13`, or the installer from python.org;
+  then restart Claude Code so it sees the new PATH.
 
 Don't install it yourself.
 
@@ -45,7 +54,8 @@ uses `unicode`.
   then `/dashline:install` again. Only if the user wants the older version anyway,
   run `DASHLINE --install --downgrade` (add `--replace` if exit 3 asked for it too).
 - **Exit 1:** relay the error: usually settings.json that isn't valid JSON, or is
-  read-only (the file or its folder). Don't fix settings.json yourself unless the user
+  read-only (the file or its folder). On Windows it can also say no Python 3.9 or newer
+  runs as `py -3`, `python` or `python3`: give step 1's Windows advice. Don't fix settings.json yourself unless the user
   asks. If `--replace` had moved another tool's files aside, the output says they were
   moved back. With `--glyphs`, it can also say it can't change `--glyphs` in this
   command automatically (a hand-edited command like `bash -lc '…'`): nothing was
@@ -99,6 +109,8 @@ pass `--glyphs` in step 2.
      ```
      ! python3 -I -S "${CLAUDE_PLUGIN_ROOT}/statusline.py" --preview ultra-fable --glyphs all
      ```
+
+     (on Windows, with step 1's `PYTHON` in place of `python3`)
 3. **Install the pick:** `DASHLINE --install --glyphs <set>`, unless that set is already
    in use.
 4. **Tell the user what to check**, since the statusline itself is the real test (a font

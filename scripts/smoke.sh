@@ -5,6 +5,9 @@
 #   scripts/smoke.sh /usr/bin/python3              # Apple's, on macOS
 #   scripts/smoke.sh "$(uv python find 3.9)"       # the oldest supported Python
 #
+# On Windows it runs in Git Bash: the install there names Python by `python` (this one,
+# first on PATH) and the doctor runs the command in Git Bash, as Claude Code would.
+#
 # The test suite runs on 3.10 and newer (its tools have dropped 3.9), so this is what
 # keeps dashline itself working on 3.9. Exits 1 on any failure.
 set -euo pipefail
@@ -31,14 +34,32 @@ print("imported", len(list(pkgutil.iter_modules(dashline.__path__))), "modules")
 "$py" -I -S statusline.py --version
 "$py" -I -S statusline.py --preview all > /dev/null
 
-# Doctor's command check runs settings.json's `python3`: make that this Python.
+# Doctor's command check runs the Python settings.json names: make that this one.
 mkdir -p "$tmp/bin" "$tmp/home"
-ln -s "$py" "$tmp/bin/python3"
-export HOME="$tmp/home" PATH="$tmp/bin:/usr/bin:/bin"
-python3 -I -S statusline.py --install
+case "$(uname -s)" in
+  MINGW* | MSYS* | CYGWIN*)
+    # No symlinks to lean on: this Python's own folder goes first, and the PATH leaves
+    # out C:\Windows, so `py` (the launcher, which would pick another Python) isn't
+    # found and `python` is this one. System32 stays for taskkill and PowerShell.
+    home=$(cygpath -w "$tmp/home")
+    sys32=$(cygpath -u "$SYSTEMROOT")/System32
+    export HOME="$home" USERPROFILE="$home"
+    export PATH="$(dirname "$(cygpath -u "$py")"):/usr/bin:/bin:$sys32:$sys32/WindowsPowerShell/v1.0"
+    export CLAUDE_CODE_GIT_BASH_PATH="$(cygpath -w /usr/bin/bash.exe)"
+    run=("$py" -I -S)
+    installed="$tmp/home/.claude/scripts/statusline/statusline.py"
+    ;;
+  *)
+    ln -s "$py" "$tmp/bin/python3"
+    export HOME="$tmp/home" PATH="$tmp/bin:/usr/bin:/bin"
+    run=(python3 -I -S)
+    installed="$HOME/.claude/scripts/statusline/statusline.py"
+    ;;
+esac
+"${run[@]}" statusline.py --install
 
 # A render that fails still exits 0 with a one-line error, so read what it printed.
-python3 -I -S "$HOME/.claude/scripts/statusline/statusline.py" \
+"${run[@]}" "$installed" \
   < tests/fixtures/stdin/after-first-response.json > "$tmp/out" 2> "$tmp/err"
 cat "$tmp/out"
 if [ -s "$tmp/err" ]; then
@@ -52,4 +73,4 @@ if [ "$(wc -l < "$tmp/out")" -lt 2 ]; then
 fi
 
 # With no login every check is ok or info, so exit 1 is a real failure.
-python3 -I -S statusline.py --doctor
+"${run[@]}" statusline.py --doctor

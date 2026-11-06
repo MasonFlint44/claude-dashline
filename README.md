@@ -24,10 +24,14 @@ it asks which glyph set you want, recommending `nerd` for its icons, tells you h
 get a Nerd Font if your terminal doesn't seem to have one, and what to look for in the
 statusline to confirm it draws correctly.
 
-Needs Python 3.9 or newer as `python3`. macOS's command-line tools are enough. git is
-optional (2.15 or newer); without it the third line shows just the folder. Built on Linux with Claude
-Code 2.1.318; CI runs the tests on Linux and macOS. On Windows, use it from WSL;
-native Windows isn't tested.
+Works on macOS, Linux, Windows and WSL. Needs Python 3.9 or newer as `python3`; on
+Windows, as `py`, `python` or `python3` (`winget install Python.Python.3.13`).
+macOS's command-line tools are enough. git is optional (2.15 or newer); without it the
+third line shows just the folder. Built on Linux with Claude Code 2.1.318; CI runs the
+tests on Linux, macOS and Windows.
+
+On Windows, Claude Code runs the statusline in Git Bash, or in PowerShell if Git isn't
+installed; dashline's command works in either.
 
 ## What it shows
 
@@ -83,7 +87,8 @@ turns them off.
 Run `/dashline:doctor`. It checks Python, the installed copy, which settings file's
 statusline wins, your login, one live usage fetch, the cache, the statusline command
 itself, git, the theme and fonts, then explains each problem and fixes what's safe.
-Outside Claude Code: `python3 ~/.claude/scripts/statusline/statusline.py --doctor`.
+Outside Claude Code: `python3 ~/.claude/scripts/statusline/statusline.py --doctor`
+(on Windows, `py -3` or `python` in place of `python3`).
 
 ## How plan usage is fetched
 
@@ -102,7 +107,8 @@ Keychain, or `~/.claude/.credentials.json`.
 - The token goes only to `api.anthropic.com`: redirects are refused, so it can't follow
   one elsewhere. It is never written anywhere, passed on a command line or put in an
   environment variable.
-- The answer is cached in `~/.claude/cache/statusline/` (files only you can read) and tagged
+- The answer is cached in `~/.claude/cache/statusline/` (files only you can read; on
+  Windows, as private as your user folder) and tagged
   with your account (or, with `CLAUDE_CODE_OAUTH_TOKEN`, a hash of that token), so
   switching logins never shows someone else's numbers.
 
@@ -118,7 +124,8 @@ it, if `/dashline:install` set another tool's files or one of yours aside there)
 `fetch-*.hold` and `fetch.lock*` in `~/.claude/cache/statusline/`, plus `usage.json` and
 `fetch.hold` from 0.1.6 and earlier, and any of these ending in `.tmp`. Delete those
 files, and the folder only if nothing else uses it. With `CLAUDE_CONFIG_DIR` set, all
-of these are under that folder instead of `~/.claude`.
+of these are under that folder instead of `~/.claude`. On Windows, `~` is your user
+folder (`%USERPROFILE%`).
 
 ## Development
 

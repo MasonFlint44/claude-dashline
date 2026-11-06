@@ -594,11 +594,12 @@ def test_kill_survives_a_pipe_held_open(monkeypatch):
     proc = subprocess.Popen(
         ["sh", "-c", "sleep 30"], stdout=subprocess.PIPE, start_new_session=True
     )
+    real_kill = repo._kill
     monkeypatch.setattr(repo, "_kill", lambda p: None)  # pretend the kill missed
     began = time.monotonic()
     assert repo._finish(proc, time.monotonic()) is None
     assert time.monotonic() - began < 1
-    proc.kill()
+    real_kill(proc)  # sh and its sleep: on Windows a reader thread still waits on the pipe
     proc.wait()
 
 

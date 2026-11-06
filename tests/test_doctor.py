@@ -999,6 +999,18 @@ def test_command_without_sh(installed, tmp_path, monkeypatch):
     assert text.startswith(f"couldn't run {SHELL_NAME}:")
 
 
+def test_command_slow_in_powershell_suggests_git(installed, tmp_path, monkeypatch):
+    monkeypatch.setattr(doctor, "SLOW_MS", -1)
+    monkeypatch.setattr(doctor, "SLOW_MS_WINDOWS", -1)
+    monkeypatch.setattr(doctor, "WINDOWS", True)
+    monkeypatch.setattr(
+        doctor, "windows_shell", lambda env, which=None: (["sh", "-c"], "PowerShell")
+    )
+    status, text, fix = check(installed, "command", tmp_path)
+    assert (status, text.endswith("(PowerShell) (slow)")) == ("warn", True)
+    assert "Git for Windows" in fix
+
+
 def test_command_slow(installed, tmp_path, monkeypatch):
     monkeypatch.setattr(doctor, "SLOW_MS", -1)
     monkeypatch.setattr(doctor, "SLOW_MS_WINDOWS", -1)
@@ -1067,6 +1079,7 @@ def test_windows_command_runs_in_either_shell(installed, tmp_path, monkeypatch, 
         )
     elif doctor.windows_shell(os.environ)[1] != "Git Bash":
         pytest.skip("no Git Bash here")
+    monkeypatch.setattr(doctor, "SLOW_MS_WINDOWS", 60_000)  # it runs; CI's speed varies
     status, text, fix = check(installed, "command", tmp_path)
     assert (status, fix) == ("ok", None), text
     assert text.endswith(f"({shell})")

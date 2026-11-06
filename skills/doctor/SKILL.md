@@ -6,7 +6,9 @@ description: Diagnose and fix the dashline statusline — run its checks, explai
 # dashline doctor
 
 Below, `DASHLINE` stands for `python3 -I -S "${CLAUDE_PLUGIN_ROOT}/statusline.py"`.
-Running it from the plugin lets doctor compare the installed copy with this version.
+On Windows (not WSL), use the first of `py -3`, `python` or `python3` that runs Python
+3.9 or newer in place of `python3`. Running it from the plugin lets doctor compare the
+installed copy with this version.
 
 ## 1. Run it
 
@@ -36,7 +38,7 @@ What the checks mean:
 
 | check | what it covers |
 |---|---|
-| `python` | the Python running doctor; the statusline runs `python3` from the PATH Claude Code sees |
+| `python` | the Python running doctor; the statusline runs the Python its command names (`python3`, or on Windows `py -3`, `python` or `python3`) from the PATH Claude Code sees |
 | `install` | the copy in `<config>/scripts/statusline/` and whether it matches this plugin version |
 | `settings` | which settings file's `statusLine` wins, and whether it runs dashline; `disableAllHooks` |
 | `login` | subscription vs API key / Bedrock / Vertex / Foundry; where the token comes from |
@@ -80,6 +82,7 @@ Ask first (AskUserQuestion), and act only on a yes:
   run `DASHLINE --doctor --fetch-now`, once; it counts as the one re-run. If it's still
   refused, stop: don't retry.
 - `cache` says other users can read one of its files: run the `chmod 600` in its `fix:` line.
+  (Windows has no such check: files there take the profile folder's access.)
 - `settings` warns that `--glyphs <x> isn't a glyph set` (a typo like `Nerd`): don't
   reset it to unicode. Run the glyph step of `/dashline:install` (the preview, then the
   user picks), then `DASHLINE --install --glyphs <set>`. If that exits 1 saying it
@@ -111,10 +114,14 @@ Explain, and leave to the user:
   its own; worth reporting only if it keeps happening.
 - An expired token (`warn`): Claude Code renews it on its next request. No action
   needed.
-- `command` failing with `python3` not found: Claude Code's PATH lacks `python3`. The
-  user can install Python (see `/dashline:install` step 1) or edit the command to use
-  a full path to Python 3.9+; `--install` keeps that edit.
+- `command` failing with `python3` not found (on Windows, also `is not recognized`):
+  Claude Code's PATH lacks the Python the command names. The user can install Python
+  (see `/dashline:install` step 1) or edit the command to use a full path to Python
+  3.9+; `--install` keeps that edit. On Windows, the path must have no spaces, since
+  PowerShell won't run a quoted program name.
 - `command` slow: usually a large git repo or slow disk. Mention it, nothing to fix.
+  On Windows the line also names the shell it ran in (Git Bash, or PowerShell when
+  Git Bash isn't installed); starting the shell is part of the time.
 - Icons showing as boxes or `?`, or the user wants icons: run the glyph step of
   `/dashline:install`.
 - API key, Bedrock, Vertex, Foundry or a gateway: no plan bars is expected, because
@@ -124,7 +131,7 @@ Explain, and leave to the user:
 
 Ask what they see, and compare it with
 `! python3 -I -S "${CLAUDE_PLUGIN_ROOT}/statusline.py" --preview` (write in the real
-path), which shows how each plan should look. Things to know:
+path, and on Windows the Python from above), which shows how each plan should look. Things to know:
 - The `·12m` style tag after the plan bars means the numbers are that old: fetches are
   failing, and the `usage` line says why.
 - Bars are hidden when the terminal is too narrow and turn into short text instead.

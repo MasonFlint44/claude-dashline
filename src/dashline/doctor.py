@@ -30,6 +30,7 @@ LOCK_WAIT = 5.0  # seconds doctor waits for a background fetch to finish
 SLOW_MS = 500
 # On Windows starting the shell alone (Git Bash, PowerShell) takes most of that.
 SLOW_MS_WINDOWS = 2500
+WINDOWS = os.name == "nt"
 NERD_TERMINALS = {"ghostty": "Ghostty", "wezterm": "WezTerm"}  # bundle the symbols
 WSL_DRIVES = "/mnt"  # where WSL mounts the Windows drives (its default)
 # Font files with the Nerd Font icons: Nerd Fonts' own, and Cascadia Code / Mono NF
@@ -542,7 +543,7 @@ class Doctor:
         # Windows has no such mode bits (files inherit the profile folder's access).
         exposed = []
         try:
-            names = [] if os.name == "nt" else usage.own_files(os.listdir(path), path)
+            names = [] if WINDOWS else usage.own_files(os.listdir(path), path)
         except OSError:
             names = []
         for name in names:
@@ -568,7 +569,7 @@ class Doctor:
             self.add(INFO, "command", "not run: settings don't run dashline")
             return
         shell, shell_name = ["sh", "-c"], "sh"
-        if os.name == "nt":
+        if WINDOWS:
             shell, shell_name = windows_shell(self.env)
         sample = {
             "session_id": "dashline-doctor",
@@ -610,10 +611,16 @@ class Doctor:
             self.add(FAIL, "command", why, fix)
             return
         text = f"printed {len(lines)} line{'s' if len(lines) != 1 else ''} in {ms:.0f} ms"
-        if os.name == "nt":
+        if WINDOWS:
             text += f" ({shell_name})"
-        if ms > (SLOW_MS_WINDOWS if os.name == "nt" else SLOW_MS):
-            self.add(WARN, "command", text + " (slow)", "a slow git repo or disk; see the git line")
+        if ms > (SLOW_MS_WINDOWS if WINDOWS else SLOW_MS):
+            fix = "a slow git repo or disk; see the git line"
+            if shell_name == "PowerShell":
+                fix = (
+                    "PowerShell is slow to start; with Git for Windows installed, Claude Code "
+                    "runs the statusline in Git Bash instead"
+                )
+            self.add(WARN, "command", text + " (slow)", fix)
             return
         self.add(OK, "command", text)
 

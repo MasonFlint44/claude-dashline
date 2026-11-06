@@ -1,6 +1,6 @@
 # dashline — plan
 
-Status: built; 0.1.10 on 2026-11-06. Draft 4 (2026-11-04) was the design the build followed;
+Status: built; 0.2.0 on 2026-11-06. Draft 4 (2026-11-04) was the design the build followed;
 later changes are marked with their date.
 
 Repo `~/git/claude-dashline`; plugin `dashline` (skills `/dashline:install`,
@@ -119,7 +119,8 @@ It's undocumented, so any shape change must degrade to a hidden bar, never a cra
 
 ## 2. Runtime and tooling
 
-- Python ≥ 3.9 (macOS command-line tools ship 3.9.6), standard library only. Imports are lazy in
+- Python ≥ 3.9 (macOS command-line tools ship 3.9.6), standard library only. Runs on
+  macOS, Linux, WSL and (since 0.2.0) Windows. Imports are lazy in
   `__main__`. Budget: 40 ms per render with a warm cache.
 - No tqdm: we draw the bar ourselves (a few lines: `▆` fill and `▁` empty in
   whole cells, one color; see §4).
@@ -197,6 +198,37 @@ another user still resolves it:
 
 The package is copied, not symlinked, because the plugin cache path changes per version. Doctor
 flags a stale copy.
+
+### Windows (0.2.0, asked by the author)
+
+Native Windows is supported alongside macOS, Linux and WSL (WSL is Linux). Claude Code
+there runs a statusLine command in Git Bash when it's installed, else in PowerShell
+(Git for Windows is optional), so the entry has to read the same in both. PowerShell
+has no `${VAR:-default}` and runs a quoted first word as a string, not a program; Git
+Bash eats unquoted backslashes. The Windows entry is therefore a Python by bare name
+and the copy's full path in forward slashes, double-quoted:
+
+```json
+"command": "py -3 -I -S \"C:/Users/pat/.claude/scripts/statusline/statusline.py\""
+```
+
+`--install` picks the name by running each of `py -3`, `python`, `python3` (first
+that prints 3.9+; the Store's `python3` stub doesn't run anything) and stops with
+advice if none works. The path is fixed at install time (no `CLAUDE_CONFIG_DIR`
+expansion). An entry already dashline's keeps its command as written, as everywhere.
+Checked in CI: the installed command runs and prints in both shells.
+
+Other Windows differences: home is `USERPROFILE` first (Node's `os.homedir`; HOME can
+be Git Bash's own); credentials are in `.credentials.json` as on Linux; paths shown in
+the statusline and in messages use `/` (both shells read it, and a `fix:` line may be
+pasted into Git Bash); the folder link is `file:///C:/…`, the drive form Windows
+Terminal opens; a timed-out git is ended with `taskkill /T` (no process groups), and
+its pipe isn't closed while a reader thread holds it; there's no file-mode check (files
+take the profile folder's access); git's system config isn't read without
+`GIT_CONFIG_SYSTEM`; doctor and install write UTF-8 to a pipe (Python there defaults
+to the ANSI code page); doctor runs the command in the same shell Claude Code would
+(`CLAUDE_CODE_GIT_BASH_PATH`, else `bash.exe` next to git, else PowerShell) and calls
+it slow only past 2.5 s, since starting either shell takes much of 500 ms.
 
 ---
 
@@ -822,10 +854,10 @@ clear the developer's proxy, provider and git variables (a global `commit.gpgsig
 hook's `GIT_INDEX_FILE`), and stub the macOS `security` command as "not found"
 (`@pytest.mark.real_keychain` opts out).
 
-CI (0.1.7): lint, the preview `--check`, and the tests on Linux and macOS for
-Python 3.10, 3.12 and 3.14 (3.9 until 0.1.8), all through `uv run --locked`; plus
-`scripts/smoke.sh` on Apple's `/usr/bin/python3` and on a uv-installed 3.9 (since
-0.1.8): every module imports, preview, install into a throwaway home, render, and
+CI (0.1.7): lint, the preview `--check`, and the tests on Linux, macOS and (since
+0.2.0) Windows for Python 3.10, 3.12 and 3.14 (3.9 until 0.1.8), all through
+`uv run --locked`; plus `scripts/smoke.sh` on Apple's `/usr/bin/python3` and on a
+uv-installed 3.9 on Linux (since 0.1.8) and on Windows in Git Bash (0.2.0): every module imports, preview, install into a throwaway home, render, and
 doctor with that Python as `python3`; any stderr, an `internal error` line, fewer than
 2 lines or a failing check fails it. On main each commit has its own concurrency
 group, so no run is cancelled; a newer push to a PR cancels the older run.

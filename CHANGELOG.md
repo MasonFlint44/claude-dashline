@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.2.0 — 2026-11-06
+
+**Windows**
+- dashline now runs on Windows itself, not only in WSL. Claude Code runs the statusline
+  there in Git Bash, or in PowerShell when Git isn't installed, and the command
+  `/dashline:install` writes works in both: a Python by name (`py -3`, `python` or
+  `python3`, whichever runs Python 3.9 or newer) and the full path to the copy, in
+  forward slashes. With no such Python, the install stops and says how to get one.
+- Your home folder is `%USERPROFILE%`, as Claude Code has it.
+- Paths in the statusline and in doctor's and install's messages use `/`, which both
+  shells read.
+- The project name links to its folder as `file:///C:/…`, which Windows Terminal opens.
+- A git command that hangs is ended along with everything it started, so the
+  statusline isn't held up.
+- `/dashline:doctor` runs the statusline command in the shell Claude Code would use and
+  names it, and allows Windows' slower shell start before calling the command slow.
+  It skips the file-permission check, which doesn't apply there.
+- doctor's and install's output is UTF-8 when Claude Code reads it.
+- The install and doctor skills find Python on Windows (`py -3`, `python`, `python3`)
+  and say how to install it (`winget install Python.Python.3.13`).
+
+**CI**
+- The tests run on Windows too, and the Python 3.9 smoke test runs on Windows in Git
+  Bash.
+
 ## 0.1.10 — 2026-11-06
 
 **Install**

@@ -17,8 +17,11 @@ uv run python scripts/preview.py --check   # the README images match the scenari
 uv lock --check                            # uv.lock matches pyproject.toml
 ```
 
-CI runs the tests on 3.10 / 3.12 / 3.14 (pytest has dropped 3.9), and `scripts/smoke.sh`
-on Python 3.9 and on macOS with Apple's `/usr/bin/python3`.
+CI runs the tests on 3.10 / 3.12 / 3.14 (pytest has dropped 3.9) on Linux, macOS and
+Windows, and `scripts/smoke.sh` on Python 3.9 (Linux, and Windows in Git Bash) and on
+macOS with Apple's `/usr/bin/python3`. There's no Windows machine here: Windows
+behavior is checked in CI only. Tests that need POSIX file modes or signals are marked
+`@posix_only` (conftest); paths a test expects to see printed use `.as_posix()`.
 
 ## Rules
 
