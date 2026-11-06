@@ -1,6 +1,6 @@
 # dashline — plan
 
-Status: built; 0.1.9 on 2026-11-06. Draft 4 (2026-11-04) was the design the build followed;
+Status: built; 0.1.10 on 2026-11-06. Draft 4 (2026-11-04) was the design the build followed;
 later changes are marked with their date.
 
 Repo `~/git/claude-dashline`; plugin `dashline` (skills `/dashline:install`,
@@ -521,7 +521,10 @@ Details:
 terminator, colors intact, `file://` links included (checked 11/4).
 
 **Links (chosen 11/4: branch and folder):** the project name (or plain folder) links to
-`file://<hostname><project dir>`; the branch links to GitHub when it has a live upstream
+`file://<hostname><project dir>`, or under WSL (`WSL_DISTRO_NAME` set)
+`file://wsl.localhost/<distro><project dir>` (0.1.10, asked by the author): Windows
+Terminal opens a `file://` link only to a drive path or WSL's share, so the Linux
+hostname form did nothing there. The branch links to GitHub when it has a live upstream
 on a GitHub remote: `github.com`, any `<name>.github.com` (`www`, `ssh.github.com`), an
 SSH alias `github-<name>` or `github.com-<name>` with no dot after the dash (all linking
 to github.com), `github.<domain>` (Enterprise Server) or `<name>.ghe.com` (Enterprise
@@ -607,8 +610,10 @@ Settled 11/4. Ascii items use ` / `, groups use ` | `:
 | minus sign | `−` | `−` | `-` |
 
 Nerd codepoints are listed in §5 (directory row) and below (line 1). **Default set: `unicode`**
-(most people have no Nerd Font). The install skill moves people to `nerd` when it renders,
-and helps them get there (§9).
+(most people have no Nerd Font), for an install that doesn't go through the skill. The
+install skill recommends `nerd` (changed 11/6 by the author for 0.1.10: the best
+experience, and the font guess misses fonts on the Windows side of WSL) and helps people
+get there (§9).
 
 | Line-1 slot | Nerd glyph |
 |---|---|
@@ -738,11 +743,13 @@ Skills (model-invocable, so a plain-language request like "fix my statusline" tr
 - `install`: check python ≥ 3.9 (macOS: Homebrew first, else command-line tools), copy the
   package, write the settings entry, run `--doctor`. Glyph setup:
   1. **Guess:** Ghostty and WezTerm bundle Nerd Font symbols (`$TERM_PROGRAM`);
-     otherwise look for an installed Nerd Font (`fc-list` on Linux, font dirs on macOS).
-     Kitty and others: verify before claiming.
+     otherwise look for an installed Nerd Font (`fc-list` on Linux, font dirs on macOS;
+     under WSL and on Windows, Windows' system and per-user font folders, since the
+     terminal is a Windows program; 0.1.10). Kitty and others: verify before claiming.
+     The guess shapes what the skill says about `nerd`, not which set it recommends.
   2. **Ask** (changed 11/6 by the author for 0.1.9; until then the skill had the user
-     run `--preview --glyphs all` and pick): offer the three sets in words, with the
-     guess as the recommendation, install the pick, and say what to look for in the
+     run `--preview --glyphs all` and pick): offer the three sets in words, with `nerd`
+     as the recommendation (since 0.1.10; until then the guess picked it), install the pick, and say what to look for in the
      live statusline (nerd: the git or folder icon on line 3; every icon is from one
      font, so that one decides). The live statusline is the real test, since a font
      can be installed but not selected. The side-by-side preview stays as a "compare
@@ -751,8 +758,11 @@ Skills (model-invocable, so a plain-language request like "fix my statusline" tr
   3. **Suggest, don't install** (settled 11/4) when nerd doesn't render: print a short note
      on what a Nerd Font adds, a link to the Symbols Nerd Font ("Symbols Only"), and the
      one-line install for the OS (Linux: `~/.local/share/fonts` + `fc-cache`; macOS:
-     `brew install --cask font-symbols-only-nerd-font`; Windows Terminal: pick a Nerd Font
-     as the face). The skill never installs fonts or edits terminal config.
+     `brew install --cask font-symbols-only-nerd-font`; Windows, WSL included: Cascadia
+     Code NF on Windows, from Cascadia's releases, picked as the face (author's choice,
+     11/6; its NF build carries all 25 nerd-set icons, checked on 2407.24). Given right
+     away when `nerd` is picked and no Nerd Font was found. Doctor counts Cascadia
+     `*NF*` files and ` NF` families as Nerd Fonts. The skill never installs fonts or edits terminal config.
   4. Re-running `install` after setting up a font can switch to `--glyphs nerd`.
   Default without any of this: `unicode`. If settings.json already has a `statusLine`
   entry, show it and ask before replacing it.

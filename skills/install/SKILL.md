@@ -80,14 +80,16 @@ set. On a plain update, keep the set in use and don't ask; if doctor's `font` li
 If the user already named a set (e.g. "install with nerd fonts"), skip the question and
 pass `--glyphs` in step 2.
 
-1. **Recommend from doctor's `font` line** (step 3; don't run doctor again for it):
-   `nerd` when it says a terminal bundles Nerd Font symbols or `found …` a Nerd Font,
-   otherwise `unicode`.
-2. **Ask** (AskUserQuestion, header "Glyphs"), with the recommended set first and marked
+1. **Recommend `nerd`** every time: its icons are the best statusline. Doctor's `font`
+   line (step 3; don't run doctor again for it) only changes what you say about it:
+   whether this terminal has a Nerd Font already (`bundles Nerd Font symbols` or
+   `found …`) or probably needs one (`no Nerd Font …`). It's a guess either way: a font
+   can be installed but not picked in the terminal, or picked but not seen from here.
+2. **Ask** (AskUserQuestion, header "Glyphs"), with `nerd` first and marked
    "(Recommended)". Describe the sets in words; don't print sample icons, since the
    reply may not be drawn in the terminal's font:
-   - `nerd`: icons for git, branches, tags and fast mode. Needs a Nerd Font; Ghostty
-     and WezTerm include one.
+   - `nerd`: icons for git, branches, tags and fast mode. Needs a Nerd Font: say
+     whether this terminal seems to have one; if not, that you'll say how to add one.
    - `unicode`: simple symbols such as ⎇ for the branch and ✎ for changes, which any
      modern font draws.
    - `ascii`: plain text only, such as `(main)` and `* +12`. Works in any terminal.
@@ -104,18 +106,26 @@ pass `--glyphs` in step 2.
    after their next message.
    - `nerd`: line 3 starts with a git logo (in a repo) or a folder icon before the
      project name. Every icon comes from the same font, so if that one draws, they all
-     do. If it's an empty box or `?`, run `/dashline:install` again and choose
-     `unicode`.
+     do. If it's an empty box or `?`, the terminal needs a Nerd Font (step 5), or
+     `/dashline:install` again can switch to `unicode`. When doctor's `font` line said
+     `no Nerd Font …`, give step 5's install line now, with this check.
    - `unicode`: in a git repo the branch shows as `⎇ main`. If that's a box, choose
      `ascii`.
-5. **Icons wanted without a Nerd Font:** if the user chose `unicode` or `ascii` but
-   wants icons, explain briefly that a Nerd Font adds icons for the branch, commits,
-   tags and fast mode. Only the "Symbols Only" font is needed:
+5. **Getting a Nerd Font:** when `nerd` was picked without one, or the user chose
+   `unicode` or `ascii` but wants icons, explain briefly that a Nerd Font adds icons for
+   the branch, commits, tags and fast mode. Only the "Symbols Only" font is needed:
    <https://github.com/ryanoasis/nerd-fonts/releases/latest> (`NerdFontsSymbolsOnly`).
-   Give the one-line install for their OS:
+   Give the one-line install for where the terminal runs:
    - Linux: `mkdir -p ~/.local/share/fonts && curl -fsSL https://github.com/ryanoasis/nerd-fonts/releases/latest/download/NerdFontsSymbolsOnly.tar.xz | tar -xJ -C ~/.local/share/fonts && fc-cache -f`
    - macOS: `brew install --cask font-symbols-only-nerd-font`
-   - Windows Terminal: install any Nerd Font and choose it as the profile's font face.
+   - Windows, including WSL (doctor's `font` line mentions `Windows' fonts`): the
+     terminal is a Windows program, so the font goes on Windows, not in Linux. Suggest
+     Cascadia Code NF, the Nerd Font version of Windows Terminal's own Cascadia (Cascadia
+     Mono NF is the same without ligatures): download the zip from
+     <https://github.com/microsoft/cascadia-code/releases/latest>, open
+     `ttf\CascadiaCodeNF.ttf` and click Install. Then in Windows Terminal: Settings → the
+     profile → Appearance → Font face → `Cascadia Code NF`, and restart the terminal if
+     it isn't listed yet.
 
    Some terminals need the font picked in their settings, or a restart. Afterwards,
    `/dashline:install` can switch to `nerd`. Never install fonts or edit terminal

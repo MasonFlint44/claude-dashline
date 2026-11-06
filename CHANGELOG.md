@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.1.10 — 2026-11-06
+
+**Install**
+- `/dashline:install` now recommends the nerd glyph set every time, for its icons. When
+  your terminal doesn't seem to have a Nerd Font, it says so and gives the one-line
+  install along with what to check.
+- On Windows and WSL, the font advice is Cascadia Code NF, the Nerd Font version of
+  Windows Terminal's own Cascadia, installed on Windows and picked as the profile's
+  font face. Before, WSL got the Linux command, which installs a font the terminal
+  never sees.
+
+**Doctor**
+- The `font` check looks in Windows' font folders under WSL and on Windows (system-wide
+  and your own), instead of in Linux's.
+- Cascadia Code NF and Cascadia Mono NF count as Nerd Fonts.
+
+**Statusline**
+- On WSL, the project name links to `file://wsl.localhost/<distro>/…`, so clicking it
+  in Windows Terminal opens the folder in Explorer. Windows Terminal ignores the
+  `file://<hostname>/…` link used before.
+
 ## 0.1.9 — 2026-11-06
 
 **Install**

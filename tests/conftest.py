@@ -94,6 +94,7 @@ SHELL_VARS = (
     "COLORFGBG",
     "COLUMNS",
     "CLAUDE_PROJECT_DIR",
+    "WSL_DISTRO_NAME",
 )
 
 

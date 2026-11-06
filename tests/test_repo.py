@@ -439,6 +439,21 @@ def test_folder_url_of_odd_paths():
     assert repo.folder_url("/tmp/\ud800") is None  # a lone surrogate from the JSON
 
 
+def test_folder_url_under_wsl():
+    # Windows Terminal opens only drive paths and WSL's share (\\wsl.localhost\<distro>).
+    wsl = {"WSL_DISTRO_NAME": "Ubuntu-24.04"}
+    url = "file://wsl.localhost/Ubuntu-24.04/home/pat/my%20proj"
+    assert repo.folder_url("/home/pat/my proj", wsl) == url
+    assert repo.folder_url("/tmp/\ud800", wsl) is None
+    host = os.uname().nodename
+    assert repo.folder_url("/tmp/x", {"WSL_DISTRO_NAME": ""}) == f"file://{host}/tmp/x"
+
+
+def test_folder_link_under_wsl(project, monkeypatch):
+    monkeypatch.setenv("WSL_DISTRO_NAME", "Debian")
+    assert links(row(project, color=True)) == {"proj": f"file://wsl.localhost/Debian{project}"}
+
+
 def test_folder_link(project, isolated_home):
     host = os.uname().nodename
     assert links(row(project, color=True)) == {"proj": f"file://{host}{project}"}

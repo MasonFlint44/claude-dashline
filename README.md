@@ -20,12 +20,14 @@ where you are in git, in three lines that fit the terminal's width.
 `statusLine` setting at it. It asks first if you already have a statusline, if
 that folder holds another tool's files, or if a newer dashline is already installed
 there. Updates keep any files of your own you put in that folder. On a first install
-it asks which glyph set you want, recommending one from what your terminal has, and
-tells you what to look for in the statusline to confirm it draws correctly.
+it asks which glyph set you want, recommending `nerd` for its icons, tells you how to
+get a Nerd Font if your terminal doesn't seem to have one, and what to look for in the
+statusline to confirm it draws correctly.
 
 Needs Python 3.9 or newer as `python3`. macOS's command-line tools are enough. git is
 optional (2.15 or newer); without it the third line shows just the folder. Built on Linux with Claude
-Code 2.1.318; CI runs the tests on Linux and macOS.
+Code 2.1.318; CI runs the tests on Linux and macOS. On Windows, use it from WSL;
+native Windows isn't tested.
 
 ## What it shows
 

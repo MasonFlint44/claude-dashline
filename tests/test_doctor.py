@@ -632,6 +632,15 @@ def test_font_fc_list(monkeypatch):
     assert doctor.font_guess({}, "linux") == (True, "found Hack Nerd Font (+1 more)")
 
 
+def test_font_fc_list_cascadia(monkeypatch):
+    def fake(args, **kwargs):
+        out = "Cascadia Code\nCascadia Mono NF,Cascadia Mono NF SemiBold\n"
+        return subprocess.CompletedProcess(args, 0, out, "")
+
+    monkeypatch.setattr(subprocess, "run", fake)
+    assert doctor.font_guess({}, "linux") == (True, "found Cascadia Mono NF")
+
+
 def test_font_none(monkeypatch):
     monkeypatch.setattr(
         subprocess, "run", lambda args, **kw: subprocess.CompletedProcess(args, 0, "", "")
@@ -648,6 +657,40 @@ def test_font_macos(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", "/nonexistent")
     found = doctor.font_guess({"HOME": str(tmp_path)}, "darwin")  # the env's HOME wins
     assert found == (True, "found SymbolsNerdFontMono-Regular.ttf")
+
+
+def test_font_wsl(tmp_path, monkeypatch):
+    monkeypatch.setattr(doctor, "WSL_DRIVES", str(tmp_path))
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("fc-list ran"))
+    wsl = {"WSL_DISTRO_NAME": "Ubuntu"}
+    none = (False, "no Nerd Font in Windows' fonts (the terminal draws with those)")
+    assert doctor.font_guess(wsl, "linux") == none  # Linux fonts don't count
+    user = tmp_path / "c" / "Users" / "pat" / "AppData" / "Local" / "Microsoft" / "Windows"
+    (user / "Fonts").mkdir(parents=True)
+    (user / "Fonts" / "JetBrainsMonoNerdFont-Regular.ttf").write_text("")
+    found = (True, "found JetBrainsMonoNerdFont-Regular.ttf in Windows' fonts")
+    assert doctor.font_guess(wsl, "linux") == found
+    (user / "Fonts" / "JetBrainsMonoNerdFont-Regular.ttf").unlink()
+    (tmp_path / "c" / "Windows" / "Fonts").mkdir(parents=True)
+    (tmp_path / "c" / "Windows" / "Fonts" / "CascadiaCodeNF.ttf").write_text("")
+    (tmp_path / "c" / "Windows" / "Fonts" / "CascadiaCode.ttf").write_text("")  # no icons
+    found = (True, "found CascadiaCodeNF.ttf in Windows' fonts")
+    assert doctor.font_guess(wsl, "linux") == found
+    assert doctor.font_guess(dict(wsl, TERM_PROGRAM="WezTerm"), "linux")[1] == (
+        "WezTerm bundles Nerd Font symbols"
+    )
+
+
+def test_font_windows(tmp_path):
+    fonts = tmp_path / "Windows" / "Fonts"
+    fonts.mkdir(parents=True)
+    env = {"WINDIR": str(tmp_path / "Windows"), "LOCALAPPDATA": str(tmp_path / "none")}
+    assert doctor.font_guess(env, "win32")[0] is False
+    (fonts / "SymbolsNerdFont-Regular.ttf").write_text("")
+    assert doctor.font_guess(env, "win32") == (
+        True,
+        "found SymbolsNerdFont-Regular.ttf in Windows' fonts",
+    )
 
 
 def test_shim_doctor_exit_code(isolated_home):

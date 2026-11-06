@@ -29,6 +29,10 @@ MIN_GIT = (2, 15)  # porcelain v2 (2.11) and --no-optional-locks (2.15)
 LOCK_WAIT = 5.0  # seconds doctor waits for a background fetch to finish
 SLOW_MS = 500
 NERD_TERMINALS = {"ghostty": "Ghostty", "wezterm": "WezTerm"}  # bundle the symbols
+WSL_DRIVES = "/mnt"  # where WSL mounts the Windows drives (its default)
+# Font files with the Nerd Font icons: Nerd Fonts' own, and Cascadia Code / Mono NF
+# (CascadiaCodeNF.ttf), which carry every icon in the nerd set (checked 11/6, 2407.24).
+NERD_FILES = ("*Nerd*", "Cascadia*NF*")
 
 
 def _ago(seconds: float) -> str:
@@ -139,6 +143,8 @@ def font_guess(env, platform: str) -> tuple:
     term = (env.get("TERM_PROGRAM") or "").lower()
     if term in NERD_TERMINALS:
         return True, f"{NERD_TERMINALS[term]} bundles Nerd Font symbols"
+    if env.get("WSL_DISTRO_NAME") or platform == "win32":
+        return _windows_fonts(env, platform)
     if platform.startswith("linux"):
         import subprocess
 
@@ -149,7 +155,10 @@ def font_guess(env, platform: str) -> tuple:
             families = r.stdout.splitlines() if r.returncode == 0 else []
         except (OSError, subprocess.SubprocessError):
             families = []
-        nerd = sorted({f.split(",")[0] for f in families if "Nerd Font" in f})
+        names = {f.split(",")[0] for f in families}
+        nerd = sorted(
+            n for n in names if "Nerd Font" in n or (n.startswith("Cascadia") and n.endswith(" NF"))
+        )
         if nerd:
             more = f" (+{len(nerd) - 1} more)" if len(nerd) > 1 else ""
             return True, f"found {nerd[0]}{more}"
@@ -159,10 +168,34 @@ def font_guess(env, platform: str) -> tuple:
         from dashline.theme import home_dir
 
         dirs = [os.path.join(home_dir(env), "Library", "Fonts"), "/Library/Fonts"]
-        found = [p for d in dirs for p in glob.glob(os.path.join(d, "*Nerd*"))]
+        found = [p for d in dirs for n in NERD_FILES for p in glob.glob(os.path.join(d, n))]
         if found:
             return True, f"found {os.path.basename(sorted(found)[0])}"
     return False, "no Nerd Font found"
+
+
+def _windows_fonts(env, platform: str) -> tuple:
+    """font_guess where the terminal is a Windows program: Windows' own font folders.
+
+    Under WSL those are on the Windows drives (`/mnt/<drive>/`): system-wide and each
+    user's own. The Linux side's fonts don't reach the terminal.
+    """
+    import glob
+
+    if platform == "win32":
+        local = env.get("LOCALAPPDATA") or ""
+        dirs = [os.path.join(env.get("WINDIR") or r"C:\Windows", "Fonts")]
+        dirs += [os.path.join(local, "Microsoft", "Windows", "Fonts")] if local else []
+    else:
+        dirs = glob.glob(os.path.join(WSL_DRIVES, "*", "Windows", "Fonts"))
+        user = ("Users", "*", "AppData", "Local", "Microsoft", "Windows", "Fonts")
+        dirs += glob.glob(os.path.join(WSL_DRIVES, "*", *user))
+    found = sorted(
+        os.path.basename(p) for d in dirs for n in NERD_FILES for p in glob.glob(os.path.join(d, n))
+    )
+    if found:
+        return True, f"found {found[0]} in Windows' fonts"
+    return False, "no Nerd Font in Windows' fonts (the terminal draws with those)"
 
 
 class Doctor:

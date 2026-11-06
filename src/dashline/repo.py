@@ -13,9 +13,9 @@ branch name can't put escape codes on the terminal. git 2.15 or newer: status ru
 without taking index.lock (`--no-optional-locks`), which older git refuses, so there
 the row shows the folder alone.
 
-Links (OSC 8, chosen 11/4): the project opens its folder (`file://host/path`); a pushed
-branch on GitHub opens its compare page against the default branch, or the branch page
-when it is the default.
+Links (OSC 8, chosen 11/4): the project opens its folder (`file://host/path`, or under
+WSL `file://wsl.localhost/<distro>/path`); a pushed branch on GitHub opens its compare
+page against the default branch, or the branch page when it is the default.
 """
 
 from __future__ import annotations
@@ -423,8 +423,19 @@ def quote(text: str) -> str:
     return "".join(chr(b) if b in URL_SAFE else f"%{b:02X}" for b in raw)
 
 
-def folder_url(path: str) -> str | None:
-    """`file://host/path` for the folder, or None when the path can't be encoded."""
+def folder_url(path: str, env=None) -> str | None:
+    """`file://host/path` for the folder, or None when the path can't be encoded.
+
+    Under WSL (`WSL_DISTRO_NAME` set) the terminal is a Windows program, which can't open
+    a Linux path: the link goes through Windows' share for the distro instead. Windows
+    Terminal opens no other `file://` host.
+    """
+    distro = (env or {}).get("WSL_DISTRO_NAME") or ""
+    if distro and "/" not in distro and path.startswith("/"):
+        try:
+            return f"file://wsl.localhost/{quote(distro)}{quote(path)}"
+        except UnicodeEncodeError:
+            return None
     host = os.uname().nodename if hasattr(os, "uname") else ""
     path = path.replace(os.sep, "/")
     if not path.startswith("/"):
@@ -643,7 +654,7 @@ def _inspect(state: RepoState, env) -> None:
     project_dir = state.project_dir
     if not os.path.isdir(project_dir):
         return
-    state.folder_url = folder_url(os.path.abspath(project_dir))
+    state.folder_url = folder_url(os.path.abspath(project_dir), env)
     # git itself works from the resolved path: a symlink into a repo is still in it.
     state.real_dir = os.path.realpath(project_dir)
     across = _env_bool(env.get("GIT_DISCOVERY_ACROSS_FILESYSTEM"))
