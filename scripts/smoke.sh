@@ -6,8 +6,9 @@
 #   scripts/smoke.sh "$(uv python find 3.9)"       # the oldest supported Python
 #
 # On Windows it runs in Git Bash: the install there names Python by `python` (this one,
-# first on PATH) and the doctor runs the command in Git Bash, as Claude Code would,
-# finding it from git on PATH (Git Bash's own, in ucrt64\bin or mingw64\bin).
+# first on PATH) and the doctor runs the command in Git Bash, as Claude Code would. With
+# Program Files hidden from it, doctor has to find Git Bash from git on PATH (Git Bash's
+# own, in ucrt64\bin or mingw64\bin), the way Claude Code finds a Git installed elsewhere.
 #
 # The test suite runs on 3.10 and newer (its tools have dropped 3.9), so this is what
 # keeps dashline itself working on 3.9. Exits 1 on any failure.
@@ -50,6 +51,10 @@ case "$(uname -s)" in
     export HOME="$home" USERPROFILE="$home"
     export PATH="$(dirname "$(cygpath -u "$py")"):$git_dir:/usr/bin:/bin:$sys32:$sys32/WindowsPowerShell/v1.0"
     unset CLAUDE_CODE_GIT_BASH_PATH
+    mkdir -p "$tmp/empty"
+    empty=$(cygpath -w "$tmp/empty")
+    # Names with parentheses can't be exported from Bash; env sets them for one command.
+    hide=(env "ProgramFiles=$empty" "ProgramW6432=$empty" "ProgramFiles(x86)=$empty")
     shell="(Git Bash)"
     run=("$py" -I -S)
     installed="$tmp/home/.claude/scripts/statusline/statusline.py"
@@ -60,6 +65,7 @@ case "$(uname -s)" in
     export HOME="$tmp/home" PATH="$tmp/bin:/usr/bin:/bin"
     run=(python3 -I -S)
     installed="$HOME/.claude/scripts/statusline/statusline.py"
+    hide=(env)
     shell=""
     ;;
 esac
@@ -80,7 +86,7 @@ if [ "$(wc -l < "$tmp/out")" -lt 2 ]; then
 fi
 
 # With no login every check is ok or info, so exit 1 is a real failure.
-"${run[@]}" statusline.py --doctor | tee "$tmp/doctor"
+"${hide[@]}" "${run[@]}" statusline.py --doctor | tee "$tmp/doctor"
 if ! grep -q "command  *printed .*${shell:+ $shell}" "$tmp/doctor"; then
   echo "::error::doctor didn't run the command${shell:+ in $shell}"; exit 1
 fi

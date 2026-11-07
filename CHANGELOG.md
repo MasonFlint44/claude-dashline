@@ -35,6 +35,15 @@
   denied" for a lock that's being removed; one that stays denied is reported, not
   taken for a fetch in progress.
 - settings.json keeps `\n` line endings when `/dashline:install` rewrites it.
+- `--replace`'s move of another statusline's folder, and its move back after a failed
+  install, also try again while a file in it is open. A successful fetch clears the
+  last wait even while a render is reading it, so the next failure waits 1 min again,
+  not longer.
+- `--install --replace --glyphs <set>` rewrites a hand-wrapped dashline command (such
+  as `bash -lc '…'`) in the Windows form with that set, instead of refusing to change
+  its `--glyphs`; the note then says it used shell variables. The old command is also
+  recognized with a quoted glyph set (`--glyphs "nerd"`). Install checks that
+  settings.json can be written before it looks for Python, which can take seconds.
 - A `CLAUDE_CONFIG_DIR` spelled in another case is still recognized as the same folder.
 - `/dashline:doctor` runs the statusline command in the shell Claude Code would use,
   found the way Claude Code finds it (Git Bash, Git in Program Files, PowerShell 7,
@@ -44,14 +53,44 @@
   statusline's symbols (on some code pages), when a policy blocks Python, and that a
   Python missing from PATH needs PATH and a restart there. It checks git and the cache
   folder as they really are on Windows, and skips the file-permission check, which
-  doesn't apply there.
+  doesn't apply there. PowerShell 7's short error form gets its own reason and fix,
+  and an error text that only mentions a PowerShell record no longer stops the check.
 - The install and doctor skills find Python on Windows (`py -3`, `python`, `python3`)
   and tell Windows from WSL; the install skill says how to get Python
   (`winget install Python.Python.3.13`).
 
+**Everywhere**
+- An update that can't set aside a file of yours in `scripts/statusline/` after the
+  new copy is in place no longer reports a failed install: a note says where the file
+  is, and the next install moves it to `statusline.kept`. A folder an interrupted
+  install left behind with your files in it is kept that way, never deleted.
+- A render reads `.claude.json`, which grows with your project history, once instead
+  of twice.
+- Doctor: a statusLine whose type isn't `"command"` isn't run (Claude Code wouldn't run
+  it); a `--glyphs` after the end of dashline's command (`… || echo --glyphs x`) is no
+  longer taken for dashline's; the command runs at a 120-column width, so a narrow
+  terminal doesn't make it look broken; `statusline.py is missing` is told apart from
+  nothing installed; and a fetch error dashline didn't foresee reads `fetch failed
+  (…)` with its fix, and waits like the background fetch, instead of "the check itself
+  failed".
+- macOS: doctor gives the Keychain's "allow access" prompt a minute to be answered
+  (Always Allow ends it); the background fetch still waits only 5 s.
+- Team and Enterprise spend is drawn as the monthly cap also when an older
+  `.claude.json` names the plan without its organization type.
+- A working folder outside the project shows as a path without `..` segments, and a
+  machine or server name a link can't hold no longer loses the folder link (it
+  becomes `file:///…`, this machine; a share with such a name has no link).
+- The doctor skill no longer contradicts itself when only `statusline.py` is missing,
+  says git warns (not fails), and covers a statusLine of another type and a cache
+  folder that can't be written.
+
 **CI**
 - The tests run on Windows too, and the Python 3.9 smoke test runs on Windows in Git
-  Bash, and in PowerShell with Git for Windows hidden.
+  Bash (finding Git Bash from git on PATH, with Program Files hidden), and in
+  PowerShell with Git for Windows hidden, where a render must also write nothing to
+  stderr. The Windows command test runs in Git Bash, PowerShell 7 and Windows
+  PowerShell, and fails on CI if one is missing. The Apple-Python job fails when that
+  Python is missing instead of passing, and pytest names every skipped test.
 
 ## 0.1.10 — 2026-11-06
 

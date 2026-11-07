@@ -51,8 +51,8 @@ jobs:
         run: |
           if ! /usr/bin/python3 -c 'import sys; assert sys.version_info >= (3, 9)' 2>/dev/null
           then
-            echo "::notice::no usable /usr/bin/python3 on this runner; skipped"
-            exit 0
+            echo "::error::no usable /usr/bin/python3 on this runner"
+            exit 1
           fi
           scripts/smoke.sh /usr/bin/python3
   oldest-python:

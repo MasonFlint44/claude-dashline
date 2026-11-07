@@ -7,8 +7,6 @@ from __future__ import annotations
 
 import sys
 
-GLYPH_SETS = ("nerd", "unicode", "ascii")
-
 USAGE = """\
 usage: statusline.py [--glyphs SET] [--doctor [--fetch-now]
                      | --install [--replace] [--downgrade] | --preview [SCENARIO]
@@ -87,7 +85,9 @@ def parse_args(argv: list[str]) -> dict:
                 if i >= len(argv):
                     raise UsageError("--glyphs needs a value: nerd, unicode or ascii")
                 value = argv[i]
-            if value not in (*GLYPH_SETS, "all"):
+            from dashline.glyphs import SETS
+
+            if value not in (*SETS, "all"):
                 raise UsageError(f"unknown glyph set {value!r}: use nerd, unicode or ascii")
             opts["glyphs"] = value
         elif arg in ("--replace", "--downgrade", "--fetch-now"):
@@ -184,8 +184,9 @@ def render(stdin, stdout, glyphs: str = "unicode", env=None, now: float | None =
         if session.model is None:
             return 0  # not Claude Code's input: nothing to show
         glyph_set = glyph_sets.get(glyphs)
-        palette = theme.load(session.project_dir, env)
-        acct = account.load(env, session)
+        claude_json = account.read_claude_json(env)  # read once: it can be megabytes
+        palette = theme.load(session.project_dir, env, claude_json)
+        acct = account.load(env, session, claude_json)
         state = usage.load(env, acct, now)
         columns = parse_columns(env.get("COLUMNS"))
         repo_state = None

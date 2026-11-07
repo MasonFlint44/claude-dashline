@@ -26,8 +26,9 @@ dashline needs Python 3.9 or newer, by a name settings.json's command can run.
   `python3` that opens the Microsoft Store instead of printing a version doesn't count;
   if it may have opened the Store window, tell the user they can close it.
 
-To tell Windows from WSL: in Claude's shell `uname -s` prints `MINGW…` or `MSYS…` on Windows (Git Bash) and
-`Linux` in WSL. Where `uname` isn't found, the shell is PowerShell: that's Windows too.
+To tell Windows from WSL: in Claude's shell `uname -s` prints `MINGW…` or `MSYS…` on
+Windows (Git Bash) and `Linux` in WSL. Where `uname` isn't found, the shell is
+PowerShell: that's Windows too.
 
 If none works, stop and tell the user how to get it:
 - **macOS:** `brew install python` if `brew` exists; otherwise `xcode-select --install`,
@@ -70,8 +71,8 @@ uses `unicode`.
   was changed.
 
 An update keeps files the user added to `scripts/statusline/` (notes, a wrapper script).
-A `note:` line names any it couldn't move, and where they are now
-(`scripts/statusline.kept`); pass it on.
+A `note:` line names any it couldn't move, and where they are now (usually
+`scripts/statusline.kept`); pass it on.
 
 An entry that is already dashline's keeps its command as written (for example a full
 path to Python); only the `--glyphs` flag changes. One exception, on Windows: the

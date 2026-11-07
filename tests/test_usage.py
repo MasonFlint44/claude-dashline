@@ -692,7 +692,7 @@ def test_child_releases_the_lock_and_holds_on_a_surprise(isolated_home, monkeypa
     import os
     import time
 
-    monkeypatch.setattr(usage, "refresh", lambda env, now: 1 / 0)
+    monkeypatch.setattr(usage, "refresh", lambda env, now, who=None: 1 / 0)
     monkeypatch.setattr(os, "environ", env_for(isolated_home))
     env = env_for(isolated_home)
     nonce = usage.take_lock(env, time.time())
@@ -1262,3 +1262,71 @@ def test_a_cache_write_retries_a_file_held_open_on_windows(isolated_home, monkey
     monkeypatch.setattr(host, "WINDOWS", False)  # elsewhere it's a real error
     with pytest.raises(PermissionError):
         usage._write_json(path, {"a": 2})
+
+
+# ---- found in the third review ----
+
+
+def test_a_success_clears_a_hold_held_open_on_windows(server, logged_in, monkeypatch):
+    """A render reading the hold as the fetch succeeds: it's removed anyway, so the
+    next failure starts the backoff over."""
+    who = account.identity(logged_in)
+    write_hold(logged_in_home(logged_in), until=NOW - 1, who=who, failures=3)
+    calls = held_once(monkeypatch, "unlink", lambda path: path.endswith(".hold"))
+    server.reply(200, json.dumps(usage_fixture("ultra")))
+    assert usage.refresh(logged_in, NOW, server.url, "linux") == "ok"
+    assert len(calls) == 2
+    assert cache_files(logged_in)["hold"] is None
+    server.reply(503)
+    usage.refresh(logged_in, NOW + 1, server.url, "linux")
+    assert cache_files(logged_in)["hold"]["until"] == NOW + 1 + 60
+
+
+@pytest.mark.parametrize("token", ["tok\nX-Evil: 1", "tok\u2019", "tok\r"])
+def test_a_token_no_header_can_hold_is_refused_unsent(server, logged_in, token):
+    """http.client puts the header, token and all, in its error: it's never shown."""
+    env = dict(logged_in, CLAUDE_CODE_OAUTH_TOKEN=token)
+    reason = usage.refresh(env, NOW, server.url, "linux")
+    assert reason == "no answer (network)"
+    assert server.requests == []
+    for path in Path(usage.cache_dir(env)).iterdir():
+        assert "tok" not in path.read_text()
+
+
+def test_a_cache_write_that_fails_for_good_leaves_no_temp_file(isolated_home, monkeypatch):
+    monkeypatch.setattr(host, "WINDOWS", True)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+
+    def held(src, dst):
+        raise PermissionError(13, "in use")
+
+    monkeypatch.setattr(os, "replace", held)
+    folder = isolated_home / "cache"
+    with pytest.raises(PermissionError):
+        usage._write_json(str(folder / "x.json"), {"a": 1})
+    assert list(folder.iterdir()) == []
+
+
+def test_a_file_held_for_good_is_an_error_after_a_few_tries(monkeypatch):
+    """retry_held gives up after HELD_TRIES, waiting a little longer each time."""
+    waits = []
+    monkeypatch.setattr(host, "WINDOWS", True)
+    monkeypatch.setattr("time.sleep", waits.append)
+    tries = []
+
+    def held():
+        tries.append(1)
+        raise PermissionError(13, "in use")
+
+    with pytest.raises(PermissionError):
+        host.retry_held(held)
+    assert len(tries) == host.HELD_TRIES
+    assert waits == [host.HELD_WAIT * n for n in range(1, host.HELD_TRIES)]
+
+
+def test_a_probe_file_left_by_an_earlier_run_is_removed(tmp_path, monkeypatch):
+    monkeypatch.setattr(host, "WINDOWS", True)
+    left = tmp_path / f".dashline-probe-{os.getpid()}.tmp"
+    left.write_text("")
+    assert host.can_write_in(str(tmp_path))
+    assert not left.exists()

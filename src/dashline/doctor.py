@@ -80,6 +80,36 @@ def stderr_reason(err: list, out: list = ()) -> str | None:
     return next((line for line in out if line.startswith("dashline:")), None)
 
 
+def command_reason(err: list, out: list, program: str, powershell: bool) -> str | None:
+    """stderr_reason, but for PowerShell 7's short form of an error, `py: <message>`
+    and a line of advice after it: the message, which says what went wrong."""
+    if powershell and err and err[0].startswith(f"{program}: "):
+        return err[0][len(program) + 2 :]
+    return stderr_reason(err, out)
+
+
+POLICY = ("blockedbygrouppolicy", "applocker", "softwarerestr")
+NOT_FOUND = ("nosuchfile", "notfound", "isnotrecognized")
+
+
+def failure_fix(why: str, program: str) -> str | None:
+    """The fix for a failed command from its reason (command_reason), when that says
+    what's wrong. Read without spaces: PowerShell may have wrapped it mid-word."""
+    said = why.lower().replace(" ", "")
+    if any(s in said for s in POLICY):
+        return f"a policy on this PC blocks {program}: ask whoever manages it"
+    if "can'topenfile" in said:
+        return "the command's statusline.py is missing: run /dashline:install"
+    if any(s in said for s in NOT_FOUND):
+        if host.WINDOWS:  # no full path with spaces runs in both shells
+            return (
+                f"{program} must be on the PATH Claude Code sees: install Python, "
+                "or add it to PATH, then restart Claude Code"
+            )
+        return f"{program} must be on the PATH Claude Code sees, or use a full path"
+    return None
+
+
 def summarize(data: dict) -> str:
     """The usage answer in a few words: `5h 22% · 7d 48% · Fable 24% · credits 12%`."""
     from dashline.stdin import _dig, _num, _str
@@ -176,7 +206,9 @@ def powershell_unwrapped(err: list) -> list:
     end = next((i for i, line in enumerate(err) if "FullyQualifiedErrorId" in line), None)
     if end is None:
         return err
-    detail = next(i for i, line in enumerate(err) if PS_DETAIL.match(line))
+    detail = next((i for i, line in enumerate(err) if PS_DETAIL.match(line)), None)
+    if detail is None or detail > end:
+        return err  # not a record after all: the text only names one
     message = [line.strip() for line in err[: max(detail - 1, 1)] if line.strip()]
     m = PS_PREFIX.match(message[0]) if message else None
     prefix = m.group(0) if m else ""
@@ -217,11 +249,8 @@ def unknown_glyphs(entry) -> str | None:
     install.glyphs_of reads such a value as unicode, but the statusline refuses it.
     """
     cmd = entry.get("command") if isinstance(entry, dict) else None
-    match = install.GLYPHS.search(cmd) if isinstance(cmd, str) else None
-    if not match:
-        return None
-    value = match.group(1).strip("'\"")
-    return None if value in install.GLYPH_SETS else value
+    value = install.flag_value(cmd) if isinstance(cmd, str) else None
+    return None if value is None or value in install.GLYPH_SETS else value
 
 
 def font_guess(env, platform: str) -> tuple:
@@ -297,6 +326,7 @@ class Doctor:
         self.results = []  # (status, name, text, fix)
         self.entry = None  # dashline's statusLine entry, once found
         self.account = None
+        self._shell = None  # self.shell()
 
     def add(self, status: str, name: str, text: str, fix: str | None = None) -> None:
         self.results.append((status, name, text, fix))
@@ -338,8 +368,12 @@ class Doctor:
         target = install.install_dir(self.env)
         where = self.short(target)
         found = install.installed_files(self.env)
-        if "statusline.py" not in found or not any(k.startswith("dashline/") for k in found):
-            self.add(FAIL, "install", f"nothing installed in {where}", "run /dashline:install")
+        package = any(k.startswith("dashline/") for k in found)
+        if not package or "statusline.py" not in found:
+            text = f"statusline.py is missing from {where}" if package else None
+            self.add(
+                FAIL, "install", text or f"nothing installed in {where}", "run /dashline:install"
+            )
             return
         version = install.installed_version(self.env) or "unknown version"
         root = install.source_root()
@@ -387,8 +421,7 @@ class Doctor:
                 FAIL, "settings", f"{where} runs another statusline{shown}", self.fix_for(path)
             )
             return
-        self.entry = entry
-        if entry.get("type") != "command":
+        if entry.get("type") != "command":  # Claude Code doesn't run it, so neither does doctor
             self.add(
                 FAIL,
                 "settings",
@@ -396,6 +429,7 @@ class Doctor:
                 "run /dashline:install" if is_user else self.fix_for(path),
             )
             return
+        self.entry = entry
         if hooks is not None and hooks[1]["disableAllHooks"] is True:
             self.add(
                 FAIL,
@@ -461,7 +495,10 @@ class Doctor:
                 self.add(OK, "login", f"{acct.label}: billed per use, so no plan bars")
             return
         label = account.label_text(acct, {"sep_item": " · "}, self.now) or "subscription"
-        token, source, expires = account.find_token(self.env, self.now, self.platform)
+        # The first read may ask the user to allow access: time to answer (Always Allow).
+        token, source, expires = account.find_token(
+            self.env, self.now, self.platform, account.KEYCHAIN_WAIT_ASKED
+        )
         if token is None:
             if source.startswith("token expired"):
                 self.add(WARN, "login", f"{label}; {source}")
@@ -480,13 +517,14 @@ class Doctor:
     def user_fix(self, reason) -> str | None:
         """The fix for a fetch that failed for `reason`, when it is the user's to make."""
         from dashline.account import KEYCHAIN_LOCKED
+        from dashline.usage import FORBIDDEN, REJECTED
 
         relogin = "run /login in Claude Code"
         return {
             "no Claude login found": relogin,
             KEYCHAIN_LOCKED: KEYCHAIN_FIX,
-            "token rejected (401)": relogin,
-            "not allowed (403): the login may lack the profile scope": (
+            REJECTED: relogin,
+            FORBIDDEN: (
                 "a token from `claude setup-token` can't read usage; use /login instead"
                 if self.env.get("CLAUDE_CODE_OAUTH_TOKEN")
                 else relogin
@@ -526,12 +564,15 @@ class Doctor:
                 "run doctor again in a moment to see its result",
             )
             return
+        start = time.monotonic()
         try:
-            start = time.monotonic()
-            result = usage.refresh(self.env, self.now, self.base_url, self.platform)
-            ms = (time.monotonic() - start) * 1000
+            result = usage.refresh(self.env, self.now, self.base_url, self.platform, who)
+        except Exception as e:  # as the background fetch does: a hold, so renders wait
+            result = usage.failed(e)
+            usage._backoff(self.env, who, self.now, result)
         finally:
             usage.release(self.env, nonce)
+        ms = (time.monotonic() - start) * 1000
         if result == "ok":
             data, _ = usage.cached(self.env, who, self.now)
             self.add(OK, "usage", f"{ms:.0f} ms: {summarize(data or {})}")
@@ -630,9 +671,7 @@ class Doctor:
         if self.entry is None:
             self.add(INFO, "command", "not run: settings don't run dashline")
             return
-        shell, shell_name = ["sh", "-c"], "sh"
-        if host.WINDOWS:
-            shell, shell_name = windows_shell(self.env)
+        shell, shell_name = self.shell()
         sample = {
             "session_id": "dashline-doctor",
             "model": {"id": "claude-sonnet-5-5", "display_name": "Sonnet 5.5"},
@@ -641,6 +680,9 @@ class Doctor:
             "context_window": {"used_percentage": 0},
             "cost": {"total_cost_usd": 0},
         }
+        # Claude Code passes the terminal's width; the shell doctor runs in may have a
+        # narrow one, or none. A wide one draws every separator (the glyph check's `│`).
+        env = {**self.env, "COLUMNS": "120"}
         start = time.monotonic()
         try:
             r = subprocess.run(
@@ -650,7 +692,7 @@ class Doctor:
                 encoding="utf-8",
                 errors="replace",
                 timeout=10,
-                env=dict(self.env),
+                env=env,
                 cwd=self.cwd,
             )
         except subprocess.TimeoutExpired:
@@ -676,24 +718,15 @@ class Doctor:
             "/dashline:install with --replace writes the Windows command"
         )
         if r.returncode != 0 or not lines or "internal error" in r.stdout:
-            why = stderr_reason(err, lines) or f"exit {r.returncode}, {len(lines)} lines"
-            said = why.lower().replace(" ", "")  # PowerShell may have wrapped it mid-word
+            why = command_reason(err, lines, program, powershell)
+            why = why or f"exit {r.returncode}, {len(lines)} lines"
             fix = "run /dashline:install"
             if rewrite:
                 fix = rewrite_fix
             elif bash_only and powershell:
                 fix = replace_fix
-            elif any(s in said for s in ("blockedbygrouppolicy", "applocker", "softwarerestr")):
-                fix = f"a policy on this PC blocks {program}: ask whoever manages it"
-            elif "can'topenfile" in said:
-                fix = "the command's statusline.py is missing: run /dashline:install"
-            elif any(s in said for s in ("nosuchfile", "notfound", "isnotrecognized")):
-                fix = f"{program} must be on the PATH Claude Code sees, or use a full path"
-                if host.WINDOWS:  # no full path with spaces runs in both shells
-                    fix = (
-                        f"{program} must be on the PATH Claude Code sees: install Python, "
-                        "or add it to PATH, then restart Claude Code"
-                    )
+            else:
+                fix = failure_fix(why, program) or fix
             self.add(FAIL, "command", why, fix)
             return
         text = f"printed {len(lines)} line{'s' if len(lines) != 1 else ''} in {ms:.0f} ms"
@@ -725,17 +758,24 @@ class Doctor:
             return
         self.add(OK, "command", text)
 
+    def shell(self) -> tuple:
+        """(argv before the command, name): the shell Claude Code runs the statusLine in."""
+        if self._shell is None:
+            self._shell = windows_shell(self.env) if host.WINDOWS else (["sh", "-c"], "sh")
+        return self._shell
+
     def git(self):
         import subprocess
 
         git = "git"
-        if host.WINDOWS:
+        argv, name = self.shell()
+        if host.WINDOWS and name == "Git Bash":
             # Git installed for Git Bash only isn't on PATH, but the statusline, run in
             # Git Bash, has it: use that one.
             import shutil
 
-            bash = windows_shell(self.env)[0][0]
-            beside = os.path.join(os.path.dirname(os.path.dirname(bash)), "cmd", "git.exe")
+            root = os.path.dirname(os.path.dirname(argv[0]))
+            beside = os.path.join(root, "cmd", "git.exe")
             if not shutil.which("git", path=_env(self.env, "PATH") or None) and os.path.isfile(
                 beside
             ):

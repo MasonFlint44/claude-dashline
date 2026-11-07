@@ -83,14 +83,19 @@ def settings_files(project_dir: str | None, env) -> list:
     return candidates
 
 
-def theme_setting(project_dir: str | None, env) -> str:
-    """The raw `theme` value the CLI would use, e.g. "dark", "auto" or "custom:slug"."""
+def theme_setting(project_dir: str | None, env, claude_json: dict | None = None) -> str:
+    """The raw `theme` value the CLI would use, e.g. "dark", "auto" or "custom:slug".
+
+    claude_json: `.claude.json`, when the caller has read it already (a render does).
+    """
     for path in settings_files(project_dir, env):
         value = _read_json(path).get("theme")
         if isinstance(value, str) and value:
             return value
-    legacy_dir = env.get("CLAUDE_CONFIG_DIR") or home_dir(env)
-    legacy = _read_json(os.path.join(legacy_dir, ".claude.json")).get("theme")
+    if claude_json is None:
+        legacy_dir = env.get("CLAUDE_CONFIG_DIR") or home_dir(env)
+        claude_json = _read_json(os.path.join(legacy_dir, ".claude.json"))
+    legacy = claude_json.get("theme")
     if isinstance(legacy, str) and legacy and legacy != "dark":
         return legacy
     return "dark"
@@ -173,6 +178,6 @@ class Palette:
         return code
 
 
-def load(project_dir: str | None, env) -> Palette:
+def load(project_dir: str | None, env, claude_json: dict | None = None) -> Palette:
     color = not env.get("NO_COLOR")
-    return Palette(resolve(theme_setting(project_dir, env), env), color=color)
+    return Palette(resolve(theme_setting(project_dir, env, claude_json), env), color=color)

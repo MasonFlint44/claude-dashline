@@ -216,3 +216,47 @@ def test_custom_theme_with_a_list_base_still_renders(isolated_home, spawned):
     (isolated_home / ".claude" / "settings.json").write_text(json.dumps({"theme": "custom:odd"}))
     lines = render(isolated_home)
     assert not any("internal error" in line for line in lines)
+
+
+def test_claude_json_is_read_once(isolated_home, spawned, monkeypatch):
+    """It grows with project history: the theme and the account share one read."""
+    import builtins
+
+    setup_home(isolated_home, ULTRA_ACCOUNT, "ultra")
+    real, opened = builtins.open, []
+
+    def counting(path, *args, **kwargs):
+        if str(path).endswith(".claude.json"):
+            opened.append(path)
+        return real(path, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", counting)
+    lines = render(isolated_home)
+    assert lines[1].startswith("Ultra │ ")
+    assert len(opened) == 1
+
+
+def test_a_closed_stdout_still_starts_the_fetch(isolated_home, spawned, monkeypatch):
+    """Claude Code stopped reading (a newer render replaced this one): no error shows,
+    and the fetch this render was due to start still starts."""
+    import os
+
+    setup_home(isolated_home, ULTRA_ACCOUNT)
+    read_end, write_end = os.pipe()
+
+    class Closed(io.StringIO):
+        def write(self, text):
+            raise BrokenPipeError(32, "Broken pipe")
+
+        def fileno(self):
+            return write_end
+
+    try:
+        env = {"HOME": str(isolated_home), "COLUMNS": "120", "NO_COLOR": "1"}
+        stdin = io.StringIO(json.dumps(stdin_data("after-first-response")))
+        assert __main__.render(stdin, Closed(), env=env, now=NOW) == 0
+        assert spawned == [NOW]
+        os.write(write_end, b"x")  # now /dev/null: writing still works, and goes nowhere
+    finally:
+        os.close(read_end)
+        os.close(write_end)

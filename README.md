@@ -27,8 +27,8 @@ statusline to confirm it draws correctly.
 Works on macOS, Linux, Windows and WSL. Needs Python 3.9 or newer as `python3`; on
 Windows, as `py -3`, `python` or `python3` (`winget install Python.Python.3.13`).
 macOS's command-line tools are enough. git is optional (2.15 or newer); without it the
-third line shows just the folder. Built on Linux with Claude Code 2.1.318; CI runs the
-tests on Linux, macOS and Windows.
+third line shows just the folder. Built on Linux with Claude Code 2.1.318, and for
+Windows against 2.1.319; CI runs the tests on Linux, macOS and Windows.
 
 On Windows, Claude Code runs the statusline in Git Bash, or in PowerShell if Git isn't
 installed; dashline's command works in either.
@@ -133,7 +133,9 @@ folder (`%USERPROFILE%`).
 uv run ruff format && uv run ruff check
 uv run pytest
 uv run python scripts/preview.py     # redraw docs/*.svg after a visual change
+uv run python scripts/preview.py --check   # the images match the scenarios
 scripts/smoke.sh "$(uv python find 3.9)"   # the shipped files on Python 3.9
+uv lock --check                      # uv.lock matches pyproject.toml
 python3 statusline.py --preview      # every built-in scenario in your terminal
 ```
 

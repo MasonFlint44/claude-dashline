@@ -22,6 +22,7 @@ package = false
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+addopts = "-rs"  # name each skipped test and why, so a new skip shows in CI's log
 markers = [
     "real_keychain: skip conftest's stand-in for the macOS `security` command",
 ]

@@ -430,6 +430,9 @@ def quote(text: str) -> str:
     return "".join(chr(b) if b in URL_SAFE else f"%{b:02X}" for b in raw)
 
 
+HOSTNAME = re.compile(r"^(?=.*[A-Za-z0-9])[A-Za-z0-9._$-]+$")  # wsl$ too
+
+
 def folder_url(path: str, env=None) -> str | None:
     """`file://host/path` for the folder, or None when the path can't be encoded.
 
@@ -444,6 +447,8 @@ def folder_url(path: str, env=None) -> str | None:
         except UnicodeEncodeError:
             return None
     netloc = os.uname().nodename if hasattr(os, "uname") else ""
+    if not HOSTNAME.match(netloc):
+        netloc = ""  # a name a URL can't hold as it is: file:///path means this machine
     path = path.replace(os.sep, "/")
     drive = ""
     if re.match(r"^[A-Za-z]:/", path):  # Windows: file:///C:/x, the colon as it is
@@ -451,7 +456,7 @@ def folder_url(path: str, env=None) -> str | None:
     elif host.WINDOWS and path.startswith("//"):
         # A share, \\server\share\x (\\wsl.localhost\Ubuntu\x too): file://server/share/x.
         server, _, rest = path[2:].partition("/")
-        if not server or server in ("?", ".") or not rest:  # \\?\ and \\.\: device paths
+        if not HOSTNAME.match(server) or not rest:  # \\?\ and \\.\ (devices) too
             return None
         if server.lower() == "wsl$":  # the older name, which Windows Terminal doesn't open
             server = "wsl.localhost"
@@ -800,7 +805,7 @@ def _drift(state: RepoState, ctx, home: str | None) -> list:
     rel = _inside(real_cur, real_proj)
     if rel and os.sep != "/":
         rel = rel.replace(os.sep, "/")
-    text = (ctx.g["drift_inside"] + rel) if rel else collapse_home(cur, home)
+    text = (ctx.g["drift_inside"] + rel) if rel else collapse_home(os.path.normpath(cur), home)
     return [ctx.seg(ctx.g["drift"] + clean(text), "inactive")]
 
 

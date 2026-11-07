@@ -40,6 +40,31 @@ try {
         throw "not the Windows command"
     }
 
+    # That command, run in Windows PowerShell on a real session's input, as Claude Code
+    # runs it: a render that works prints its lines and nothing on stderr. Python runs
+    # it, reading the command from settings.json (PowerShell 5.1 would mangle its quotes
+    # in an argument).
+    $render = Join-Path $tmp "render.py"
+    Set-Content -Path $render -Encoding ASCII -Value @'
+import json, os, subprocess, sys
+settings = os.path.join(os.environ['USERPROFILE'], '.claude', 'settings.json')
+with open(settings, encoding='utf-8') as f:
+    command = json.load(f)['statusLine']['command']
+with open(os.path.join('tests', 'fixtures', 'stdin', 'after-first-response.json'), 'rb') as f:
+    session = f.read()
+shell = ['powershell', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command']
+r = subprocess.run(shell + [command], input=session, capture_output=True, timeout=60)
+out = r.stdout.decode('utf-8', 'replace')
+print(out, end='')
+err = r.stderr.decode('utf-8', 'replace').strip()
+if err:
+    sys.exit('the render wrote to stderr:\n' + err)
+if r.returncode != 0 or 'internal error' in out or len(out.splitlines()) < 2:
+    sys.exit('the render failed (exit %d)' % r.returncode)
+'@
+    & $Python -I -S $render
+    if ($LASTEXITCODE -ne 0) { throw "the render in PowerShell failed" }
+
     # Doctor runs that command in PowerShell on a sample session, and checks its output
     # (lines, symbols, time). With no login every check is ok, info or a git warning;
     # a cold PowerShell start on a busy runner may warn (slow).

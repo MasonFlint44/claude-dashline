@@ -1215,6 +1215,8 @@ def test_windows_install_rewrites_the_old_bash_only_command(conf, env):
         (ENTRY_CMD.replace("python3", "py -3", 1), True),
         (ENTRY_CMD.replace("python3", '"C:/Program Files/Python313/python.exe"', 1), True),
         (ENTRY_CMD.replace("python3", "C:\\Python39\\python.exe", 1), True),
+        (f'{ENTRY_CMD} --glyphs "nerd"', True),  # quoted by hand
+        (f"{ENTRY_CMD} --glyphs='ascii'", True),
         # Anything else is an edit of the user's own.
         (ENTRY_CMD.replace("python3", "python -X utf8", 1), False),
         (ENTRY_CMD.replace("python3", "env python3", 1), False),
@@ -1240,7 +1242,7 @@ def test_windows_install_keeps_a_command_edited_by_hand(conf, env):
     assert code == 0, out
     target = (conf / "scripts" / "statusline" / "statusline.py").as_posix()
     assert settings(conf)["statusLine"]["command"] == f'py -3 -I -S "{target}"'
-    assert "PowerShell can't run it" in out
+    assert "used shell variables" in out
 
 
 def test_windows_replace_keeps_a_full_path_without_variables(conf, env):
@@ -1376,3 +1378,152 @@ def test_messages_spell_out_the_path_when_git_bash_has_another_home(monkeypatch,
     assert install.home_short(path, same) == "~/.claude/settings.json"
     other = {"USERPROFILE": profile, "HOME": str(tmp_path / "H")}
     assert install.home_short(path, other) == Path(path).as_posix()
+
+
+# ---- found in the third review ----
+
+
+def test_replace_waits_for_a_held_folder_on_windows(conf, env, monkeypatch):
+    """Moving another tool's folder aside tries again while a file in it is open."""
+    other = conf / "scripts" / "statusline"
+    other.mkdir(parents=True)
+    (other / "statusline.py").write_text("print('mine')\n")
+    write_settings(conf, {"statusLine": {"type": "command", "command": "echo theirs"}})
+    calls = held_once(monkeypatch, "rename", lambda src, dst: str(dst).endswith(".backup"))
+    code, out = run(env, replace=True)
+    assert code == 0, out
+    assert len(calls) == 2
+    backup = conf / "scripts" / "statusline.backup"
+    assert (backup / "statusline.py").read_text() == "print('mine')\n"
+
+
+def test_failed_replace_put_back_waits_for_a_held_folder_on_windows(conf, env, monkeypatch):
+    """After a failed --replace, the other tool's folder goes back even if it's held."""
+    other = conf / "scripts" / "statusline"
+    other.mkdir(parents=True)
+    (other / "statusline.py").write_text("print('mine')\n")
+    write_settings(conf, {"statusLine": {"type": "command", "command": "echo theirs"}})
+    monkeypatch.setattr(install, "copy", lambda env: (_ for _ in ()).throw(OSError(28, "full")))
+    calls = held_once(monkeypatch, "rename", lambda src, dst: str(src).endswith(".backup"))
+    code, out = run(env, replace=True)
+    assert code == 1
+    assert len(calls) == 2
+    assert "moved the files in ~/.claude/scripts/statusline.backup back" in out
+    assert (other / "statusline.py").read_text() == "print('mine')\n"
+
+
+def test_a_folder_that_cant_be_kept_is_a_note_not_a_failure(conf, env, monkeypatch):
+    """The new copy is in place when the old folder, holding a file of the user's that
+    wouldn't move, can't be renamed statusline.kept: the install still succeeds, the
+    note says where the file is, and the next install keeps it."""
+    target = stale_install(env, conf)
+    (target / "stuck.txt").write_text("mine\n")
+    real_rename = os.rename
+
+    def rename(src, dst):
+        if str(src).endswith("stuck.txt") or str(dst).endswith("statusline.kept"):
+            raise OSError(13, "Permission denied")
+        real_rename(src, dst)
+
+    monkeypatch.setattr(os, "rename", rename)
+    code, out = run(env)
+    assert code == 0, out
+    assert f"updated dashline {__version__}" in out
+    assert f"it's in ~/.claude/scripts/statusline.old-{os.getpid()}" in out
+    assert settings(conf)["statusLine"]["command"] == ENTRY_CMD
+    monkeypatch.setattr(os, "rename", real_rename)
+    monkeypatch.setattr(install, "_alive", lambda pid: False)
+    monkeypatch.setattr(os, "getpid", lambda: 1)  # the next install is another process
+    (target / "VERSION").write_text("0.0.1\n")
+    assert run(env)[0] == 0
+    kept = conf / "scripts" / "statusline.kept"
+    assert sorted(p.name for p in kept.iterdir()) == ["stuck.txt"]
+    assert not list((conf / "scripts").glob("statusline.old-*"))
+
+
+def test_leftover_with_the_users_files_is_kept(conf, monkeypatch):
+    """An install stopped while moving the user's files: they're kept, dashline's not."""
+    monkeypatch.setattr(install, "_alive", lambda pid: False)
+    scripts = conf / "scripts"
+    old = scripts / "statusline.old-11"
+    (old / "dashline").mkdir(parents=True)
+    (old / "VERSION").write_text("0.1.0\n")
+    (old / "notes.txt").write_text("mine\n")
+    assert install.clean_leftovers(str(scripts), NOW_REAL) == ["statusline.old-11"]
+    kept = scripts / "statusline.kept"
+    assert sorted(p.name for p in kept.iterdir()) == ["notes.txt"]
+
+
+def test_windows_replace_with_glyphs_rebuilds_a_wrapped_command(conf, env):
+    """--replace rewrites a dashline command with variables on Windows, so --glyphs at
+    the same time goes into the new command instead of failing on the old one."""
+    wrapped = f"bash -lc '{ENTRY_CMD}'"
+    write_settings(conf, {"statusLine": {"type": "command", "command": wrapped}})
+    code, out = win(env, "nerd", replace=True)
+    assert code == 0, out
+    target = (conf / "scripts" / "statusline" / "statusline.py").as_posix()
+    assert settings(conf)["statusLine"]["command"] == f'python -I -S "{target}" --glyphs nerd'
+    assert "used shell variables" in out
+    # Without --replace it's the user's edit: the glyph change is refused, as before.
+    write_settings(conf, {"statusLine": {"type": "command", "command": wrapped}})
+    assert win(env, "nerd")[0] == 1
+
+
+@pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0, reason="POSIX permissions")
+def test_windows_checks_settings_are_writable_before_looking_for_python(conf, env, capsys):
+    """Looking for Python can take seconds (and open the Store): not for nothing."""
+    write_settings(conf, {"theme": "dark"})
+    (conf / "settings.json").chmod(0o444)
+    try:
+        code, _ = win(env, python=no_python)
+        assert code == 1
+        assert "read-only" in capsys.readouterr().err
+    finally:
+        (conf / "settings.json").chmod(0o644)
+
+
+def test_windows_refuses_a_backtick_in_the_install_path(isolated_home, capsys):
+    conf = isolated_home / "cl`aude"
+    conf.mkdir()
+    env = env_for(isolated_home, CLAUDE_CONFIG_DIR=str(conf))
+    code, _ = win(env)
+    assert code == 1
+    assert "has a $ or `" in capsys.readouterr().err
+    assert not (conf / "scripts").exists()
+
+
+@posix_only
+def test_link_into_a_missing_folder_is_refused(conf, env, tmp_path, capsys):
+    (conf / "scripts").mkdir()
+    (conf / "scripts" / "statusline").symlink_to(tmp_path / "gone" / "statusline")
+    code, _ = run(env)
+    assert code == 1
+    assert "whose folder doesn't exist" in capsys.readouterr().err
+
+
+def test_settings_that_are_a_folder_are_refused(conf, env, capsys):
+    (conf / "settings.json").mkdir()
+    code, _ = run(env)
+    assert code == 1
+    assert "can't read" in capsys.readouterr().err
+    assert not (conf / "scripts").exists()
+
+
+@pytest.mark.parametrize(
+    "entry",
+    ["python3 x.py", ["a"], 3, {"type": "command"}, {"type": "command", "command": None}],
+)
+def test_statusline_of_another_shape_is_someone_elses(conf, env, entry):
+    write_settings(conf, {"statusLine": entry})
+    code, out = run(env)
+    assert code == install.NEEDS_REPLACE
+    assert "runs something else" in out
+    assert settings(conf)["statusLine"] == entry
+    assert run(env, replace=True)[0] == 0
+    assert settings(conf)["statusLine"]["command"] == ENTRY_CMD
+
+
+def test_null_statusline_counts_as_none(conf, env):
+    write_settings(conf, {"statusLine": None})
+    assert run(env)[0] == 0
+    assert settings(conf)["statusLine"]["command"] == ENTRY_CMD

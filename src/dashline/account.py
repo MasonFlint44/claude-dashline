@@ -17,7 +17,7 @@ import sys
 
 from dashline.stdin import _num, iso_time
 from dashline.text import clean
-from dashline.theme import config_dir, home_dir
+from dashline.theme import _read_json, config_dir, home_dir
 
 # Third-party providers: no plan, no usage endpoint.
 PROVIDERS = (
@@ -45,18 +45,15 @@ def _truthy(value) -> bool:
     return isinstance(value, str) and value.strip().lower() in ("1", "true", "yes", "on")
 
 
-def _read_json(path: str) -> dict:
-    try:
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, ValueError, RecursionError):  # RecursionError: nested past the limit
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
 def claude_json_path(env) -> str:
     """`.claude.json`: in CLAUDE_CONFIG_DIR, else in HOME (`env`'s, not the process's)."""
     return os.path.join(env.get("CLAUDE_CONFIG_DIR") or home_dir(env), ".claude.json")
+
+
+def read_claude_json(env) -> dict:
+    """`.claude.json` as a dict. It grows with project history, so a render reads it
+    once and hands it to load() and the theme."""
+    return _read_json(claude_json_path(env))
 
 
 def credentials_path(env) -> str:
@@ -88,7 +85,8 @@ class Account:
     @property
     def team(self) -> bool:
         """Team and Enterprise spend is a monthly cap, not pay-as-you-go credits."""
-        return self.org_type in TEAM_TYPES
+        # An older .claude.json may name the plan without the organization's type.
+        return self.org_type in TEAM_TYPES or self.label in ("Team", "Enterprise")
 
 
 def _api_key_approved(key: str, claude_json: dict) -> bool:
@@ -98,15 +96,17 @@ def _api_key_approved(key: str, claude_json: dict) -> bool:
     return isinstance(approved, list) and key[-20:] in approved
 
 
-def load(env, session=None) -> Account:
-    """How this session is billed, and the plan label to show."""
+def load(env, session=None, claude_json: dict | None = None) -> Account:
+    """How this session is billed, and the plan label to show. claude_json: as
+    read_claude_json() returns it, when the caller has it already."""
     for var, label in PROVIDERS:
         if _truthy(env.get(var)):
             return Account("api", label)
     if session is not None and session.spend_limit is not None:
         return Account("api", "Gateway")
 
-    claude_json = _read_json(claude_json_path(env))
+    if claude_json is None:
+        claude_json = read_claude_json(env)
     oauth = claude_json.get("oauthAccount")
     oauth = oauth if isinstance(oauth, dict) else {}
     windows = session is not None and bool(session.windows)
@@ -217,9 +217,14 @@ class KeychainError(Exception):
 
 KEYCHAIN_LOCKED = "the macOS Keychain is locked or denied access"
 KEYCHAIN_NOT_FOUND = 44  # `security`'s exit code for errSecItemNotFound
+# Seconds `security` gets: macOS may first ask the user to allow access. The background
+# fetch can't wait long (its lock goes stale after 60 s); doctor, which the user is
+# watching, gives them time to answer.
+KEYCHAIN_WAIT = 5
+KEYCHAIN_WAIT_ASKED = 60
 
 
-def _read_keychain(env) -> dict:
+def _read_keychain(env, wait: float = KEYCHAIN_WAIT) -> dict:
     """The credentials JSON from the macOS Keychain, or {} if there is none.
 
     Raises KeychainError when `security` fails for another reason, such as a locked
@@ -241,7 +246,7 @@ def _read_keychain(env) -> dict:
             ],
             capture_output=True,
             text=True,
-            timeout=5,
+            timeout=wait,
         )
     except subprocess.TimeoutExpired:
         raise KeychainError(KEYCHAIN_LOCKED) from None  # a prompt nobody answered
@@ -258,11 +263,14 @@ def _read_keychain(env) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def find_token(env, now: float, platform: str | None = None) -> tuple:
+def find_token(
+    env, now: float, platform: str | None = None, keychain_wait: float = KEYCHAIN_WAIT
+) -> tuple:
     """(token, source, expires_at) or (None, why, None).
 
     The env token first, then the Keychain (macOS), then the file. `source` names where
     the token came from, for doctor; `expires_at` is in seconds, or None if unknown.
+    keychain_wait: how long a Keychain prompt may wait for the user (KEYCHAIN_WAIT).
     """
     token = env.get("CLAUDE_CODE_OAUTH_TOKEN")
     if token:
@@ -270,7 +278,7 @@ def find_token(env, now: float, platform: str | None = None) -> tuple:
     platform = platform or sys.platform
     sources = []
     if platform == "darwin":
-        sources.append(("macOS Keychain", lambda: _read_keychain(env)))
+        sources.append(("macOS Keychain", lambda: _read_keychain(env, keychain_wait)))
     sources.append((credentials_path(env), lambda: _read_json(credentials_path(env))))
     locked = None
     for source, read in sources:

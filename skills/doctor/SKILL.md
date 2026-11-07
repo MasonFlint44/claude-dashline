@@ -7,8 +7,9 @@ description: Diagnose and fix the dashline statusline — run its checks, explai
 
 Below, `DASHLINE` stands for `python3 -I -S "${CLAUDE_PLUGIN_ROOT}/statusline.py"`.
 On Windows (not WSL), use the first of `py -3`, `python` or `python3` that runs Python
-3.9 or newer in place of `python3`. To tell them apart: in Claude's shell `uname -s` prints `MINGW…` or `MSYS…` on Windows (Git Bash) and
-`Linux` in WSL. Where `uname` isn't found, the shell is PowerShell: that's Windows too.
+3.9 or newer in place of `python3`. To tell them apart: in Claude's shell `uname -s`
+prints `MINGW…` or `MSYS…` on Windows (Git Bash) and `Linux` in WSL. Where `uname`
+isn't found, the shell is PowerShell: that's Windows too.
 Running it from the plugin lets doctor compare the installed copy with this version.
 
 ## 1. Run it
@@ -59,17 +60,20 @@ Do this without asking, only when the `settings` line is `ok` (or warns only abo
 `settings.json` in `$CLAUDE_CONFIG_DIR`. When it names a project or managed file, ask
 first (next list): `--install` writes the user file, which would turn dashline on in
 every other project too.
-- `install` warns that the copy is old or differs, `command` says its statusline.py is
-  missing or its fix says install `rewrites this command for Windows`, or `settings`
-  warns that there's no `refreshInterval`: run `DASHLINE --install`. With the entry already dashline's, it updates the copy and
-  keeps the command and glyph set as written. If it exits 3 or 4 anyway, stop and
-  handle it as in the ask-first list below.
+- `install` warns that the copy is old or differs, or fails saying `statusline.py is
+  missing` (the rest of the copy is there); `command` says its statusline.py is missing
+  while `install` doesn't say `nothing installed`; `command`'s fix says install
+  `rewrites this command for Windows`; or `settings` warns that there's no
+  `refreshInterval`: run `DASHLINE --install`. With the entry already dashline's, it
+  updates the copy and keeps the command and glyph set as written. If it exits 3 or 4
+  anyway, stop and handle it as in the ask-first list below.
   Not when `install` says the installed copy is newer than this one: that means this
   plugin is out of date, so tell the user to update it (`/plugin`) instead.
 
 Ask first (AskUserQuestion), and act only on a yes:
-- `settings` isn't `ok` because user settings.json has no statusLine or one that runs
-  another statusline, or `install` fails with `nothing installed`: run
+- `settings` isn't `ok` because user settings.json has no statusLine, one that runs
+  another statusline, or one whose type isn't `"command"` (Claude Code doesn't run it),
+  or `install` fails with `nothing installed`: run
   `DASHLINE --install`. It copies dashline and writes the statusLine entry, which turns
   the statusline on, so the user may have removed it on purpose. If it exits 3, show
   what its output says is there (the existing entry, or another tool's files in
@@ -109,17 +113,24 @@ Explain, and leave to the user:
   plan usage. The statusline still works; only the plan bars are missing.
 - `login` / `usage` saying `the macOS Keychain is locked or denied access`: relay
   doctor's fix (unlock the login Keychain, and allow access if macOS asks). `/login`
-  won't help.
-- `git` fails as too old (dashline needs 2.15 or newer): relay its fix; updating git is
-  the user's call. Until then the directory row shows the folder only.
+  won't help. If macOS shows an "allow access" dialog during doctor, the user should
+  choose Always Allow: doctor waits up to a minute for it, the background fetch only a
+  few seconds.
+- `cache` fails because its folder `isn't writable` or `doesn't exist and couldn't be
+  made`: a permissions problem on the Claude config folder. Relay the `fix:` line;
+  changing owners or permissions is the user's to do. Until then there are no plan bars.
+- `git` warns that it's too old (dashline needs 2.15 or newer) or wasn't found: relay
+  its fix; updating or installing git is the user's call. Until then the directory row
+  shows the folder only.
 - `usage` network failures: the statusline keeps the last numbers (marked with their
   age) and retries on its own. Point at proxy settings (`HTTPS_PROXY`) only if the user
   is behind one.
 - `usage` says `redirect refused`: api.anthropic.com doesn't redirect, so a proxy or
   network is rewriting the request; dashline won't follow it with the token. Point at
   `HTTPS_PROXY` or the network.
-- `usage` says `fetch failed (…)`: the answer broke off or was malformed. It retries on
-  its own; worth reporting only if it keeps happening.
+- `usage` says `fetch failed (…)`: something dashline didn't expect went wrong while
+  fetching (the name in brackets says what kind). It retries on its own after a short
+  wait; worth reporting only if it keeps happening.
 - An expired token (`warn`): Claude Code renews it on its next request. No action
   needed.
 - `command` failing with `python3` not found (on Windows, also `is not recognized`):

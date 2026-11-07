@@ -28,7 +28,7 @@ from dashline import host
 from dashline.host import retry_held
 from dashline.stdin import _dig, _num, _str, iso_time
 from dashline.text import clean
-from dashline.theme import config_dir
+from dashline.theme import _read_json, config_dir
 
 API_URL = "https://api.anthropic.com"
 USAGE_PATH = "/api/oauth/usage"
@@ -143,15 +143,6 @@ def own_files(names, folder: str | None = None) -> list:
     return sorted(out)
 
 
-def _read_json(path: str) -> dict:
-    try:
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, ValueError, RecursionError):
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
 def _write_json(path: str, data: dict) -> None:
     """Write atomically: readers see the old file or the new one, never half of one.
 
@@ -170,9 +161,14 @@ def _write_json(path: str, data: dict) -> None:
             os.unlink(tmp)
 
 
-def _remove(path: str) -> None:
+def _remove(path: str, held: bool = False) -> None:
+    """Remove a file if it's there. held: try again for a moment while another process
+    has it open (Windows), for a file that must go (retry_held)."""
     with contextlib.suppress(OSError):
-        os.unlink(path)
+        if held:
+            retry_held(os.unlink, path)
+        else:
+            os.unlink(path)
 
 
 # ---- what a render reads ----
@@ -400,21 +396,26 @@ def child(nonce: str | None = None) -> None:
 
     env = os.environ
     now = time.time()
+    who = None
     try:
         from dashline import account as account_mod
 
         who = account_mod.identity(env)
         if not _due(env, who, now, *cached(env, who, now)):
             return
-        refresh(env, now)
+        refresh(env, now, who=who)
     except Exception as e:
-        # Nowhere to show a traceback; doctor runs refresh in the foreground.
+        # Nowhere to show a traceback; doctor shows what failed.
         with contextlib.suppress(Exception):
-            from dashline import account as account_mod
-
-            _backoff(env, account_mod.identity(env), now, f"fetch failed ({type(e).__name__})")
+            _backoff(env, who, now, failed(e))
     finally:
         release(env, nonce)
+
+
+def failed(e: Exception) -> str:
+    """The reason for a failure refresh didn't foresee: its type, never its text (which
+    could hold anything, a header with the token in it included)."""
+    return f"fetch failed ({type(e).__name__})"
 
 
 def retry_after(value, now: float) -> float | None:
@@ -578,11 +579,24 @@ def _tidy(env, now: float) -> None:
                 _remove(path)
 
 
-def refresh(env, now: float, base_url: str | None = None, platform: str | None = None) -> str:
-    """Fetch once and write this login's cache or hold. Returns what happened, in words."""
+# Reasons doctor tells apart (doctor.user_fix).
+REJECTED = "token rejected (401)"
+FORBIDDEN = "not allowed (403): the login may lack the profile scope"
+
+
+def refresh(
+    env,
+    now: float,
+    base_url: str | None = None,
+    platform: str | None = None,
+    who: str | None = None,
+) -> str:
+    """Fetch once and write this login's cache or hold. Returns what happened, in words.
+    who: the login's identity(), when the caller has it."""
     from dashline import account as account_mod
 
-    who = account_mod.identity(env)
+    if who is None:
+        who = account_mod.identity(env)
     token, why = account_mod.read_token(env, now, platform)
     if token is None:
         expired = why.startswith("token expired")
@@ -595,15 +609,13 @@ def refresh(env, now: float, base_url: str | None = None, platform: str | None =
             _path(env, cache_name(who)),
             {"fetched_at": now, "account": who, "data": data},
         )
-        _remove(_path(env, hold_name(who)))  # this login's only: others keep theirs
+        # This login's only: others keep theirs. A hold left in force would keep renders
+        # from fetching, and count this success as a failure next time.
+        _remove(_path(env, hold_name(who)), held=True)
         _tidy(env, now)
         return "ok"
     if status in HOLDS:
-        reason = {
-            401: "token rejected (401)",
-            403: "not allowed (403): the login may lack the profile scope",
-            404: "usage endpoint not found (404)",
-        }[status]
+        reason = {401: REJECTED, 403: FORBIDDEN, 404: "usage endpoint not found (404)"}[status]
         wait, server = _wait(HOLDS[status], retry)
         _set_hold(env, who, now, wait, reason, server=server)
         return reason

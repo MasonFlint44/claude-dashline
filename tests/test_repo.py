@@ -248,6 +248,9 @@ def test_cwd_drift(project, isolated_home):
     outside = isolated_home / "scratch" / "repro"
     outside.mkdir(parents=True)
     assert row(project, current=outside) == "proj  ↳ ~/scratch/repro  ⎇ main"
+    # Shown as a path, not as Claude Code spelled it.
+    spelled = str(isolated_home / "scratch" / ".." / "scratch" / "repro")
+    assert row(project, current=spelled) == "proj  ↳ ~/scratch/repro  ⎇ main"
     assert row(project, current=outside, glyph_set="ascii") == "proj  ~/scratch/repro  (main)"
 
 
@@ -474,6 +477,8 @@ def test_folder_url_of_windows_shares_and_drives(monkeypatch):
     assert repo.folder_url("//?/C:/very/long") is None
     assert repo.folder_url("//./pipe/x") is None
     assert repo.folder_url("//server") is None
+    assert repo.folder_url("//team server/share/x") is None  # no host by that name
+    assert repo.folder_url("//sérver/share/x") is None
     assert repo.folder_url("rel/x") == f"file://{HOST}/rel/x"
     monkeypatch.setattr(host, "WINDOWS", False)  # elsewhere // is just a path
     assert repo.folder_url("//srv/x") == f"file://{HOST}//srv/x"
@@ -1321,3 +1326,43 @@ def test_branch_url_of_a_name_that_cannot_be_encoded(tmp_path):
     assert repo.branch_url(state, remotes, str(tmp_path)) == "https://github.com/o/r/tree/feat"
     state.upstream = "origin/\ud800"  # a lone surrogate from a broken name
     assert repo.branch_url(state, remotes, str(tmp_path)) is None
+
+
+def test_folder_url_of_a_machine_name_a_url_cant_hold(monkeypatch):
+    """A name with a space or an accent: the link says "this machine" instead."""
+    import types
+
+    monkeypatch.setattr(
+        os, "uname", lambda: types.SimpleNamespace(nodename="Pat's Mac"), raising=False
+    )
+    assert repo.folder_url("/tmp/x") == "file:///tmp/x"
+
+
+def test_kill_on_windows_ends_each_tree_with_one_taskkill(monkeypatch):
+    """No process groups there: taskkill /T, one run for every git, then kill each."""
+    import subprocess
+
+    runs, killed = [], []
+    monkeypatch.setattr(host, "WINDOWS", True)
+    monkeypatch.setattr(subprocess, "run", lambda argv, **kw: runs.append((argv, kw)))
+
+    class Proc:
+        def __init__(self, pid):
+            self.pid = pid
+
+        def kill(self):
+            killed.append(self.pid)
+
+    repo._kill(Proc(11), Proc(12))
+    assert [argv for argv, _ in runs] == [["taskkill", "/F", "/T", "/PID", "11", "/PID", "12"]]
+    assert runs[0][1]["timeout"] == repo.TASKKILL_WAIT
+    assert killed == [11, 12]
+    # No taskkill (or it hangs): each git is still killed.
+    runs.clear(), killed.clear()
+
+    def missing(argv, **kw):
+        raise FileNotFoundError(argv[0])
+
+    monkeypatch.setattr(subprocess, "run", missing)
+    repo._kill(Proc(13))
+    assert killed == [13]

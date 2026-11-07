@@ -302,19 +302,19 @@ def test_keychain_before_file_on_macos(isolated_home, monkeypatch):
     write_credentials(isolated_home, accessToken="file-token")
     calls = []
 
-    def keychain(env):
-        calls.append(env)
+    def keychain(env, wait):
+        calls.append(wait)
         return {"claudeAiOauth": {"accessToken": "keychain-token"}}
 
     monkeypatch.setattr(account, "_read_keychain", keychain)
     assert account.read_token(env_for(isolated_home), NOW, "darwin") == ("keychain-token", None)
     assert account.read_token(env_for(isolated_home), NOW, "linux") == ("file-token", None)
-    assert len(calls) == 1
+    assert calls == [account.KEYCHAIN_WAIT]
 
 
 def test_keychain_miss_falls_back_to_file(isolated_home, monkeypatch):
     write_credentials(isolated_home, accessToken="file-token")
-    monkeypatch.setattr(account, "_read_keychain", lambda env: {})
+    monkeypatch.setattr(account, "_read_keychain", lambda env, wait: {})
     assert account.read_token(env_for(isolated_home), NOW, "darwin") == ("file-token", None)
 
 
@@ -397,7 +397,7 @@ def test_keychain_reader_unanswered_prompt_is_locked(monkeypatch):
 
 
 def test_locked_keychain_says_so(isolated_home, monkeypatch):
-    def locked(env):
+    def locked(env, wait):
         raise account.KeychainError(account.KEYCHAIN_LOCKED)
 
     monkeypatch.setattr(account, "_read_keychain", locked)
@@ -406,7 +406,7 @@ def test_locked_keychain_says_so(isolated_home, monkeypatch):
 
 
 def test_locked_keychain_still_falls_back_to_file(isolated_home, monkeypatch):
-    def locked(env):
+    def locked(env, wait):
         raise account.KeychainError(account.KEYCHAIN_LOCKED)
 
     write_credentials(isolated_home, accessToken="file-token")
@@ -453,3 +453,14 @@ def test_trial_countdown_is_capped():
     assert account.trial_text(acct, NOW) == "trial 999d"
     acct = account.Account("subscription", "Pro", trial_ends_at=NOW + 998 * 86400)
     assert account.trial_text(acct, NOW) == "trial 998d"
+
+
+def test_team_is_team_spend():
+    assert account.Account("subscription", "Team", org_type="claude_team").team
+
+
+def test_a_team_named_without_its_type_is_team_spend():
+    """An older .claude.json may have the plan's name and no organization type."""
+    assert account.Account("subscription", "Team").team
+    assert account.Account("subscription", "Enterprise").team
+    assert not account.Account("subscription", "Max").team

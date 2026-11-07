@@ -876,9 +876,15 @@ def test_usage_releases_the_lock_when_the_fetch_raises(sub, tmp_path, monkeypatc
     monkeypatch.setattr(usage, "refresh", boom)
     d = doctor.Doctor(sub, NOW, str(tmp_path), CLOSED, "linux")
     d.login()
-    with pytest.raises(RuntimeError):
-        d.usage()  # run() turns this into "the check itself failed"
+    d.usage()
     assert not (cache_path(sub) / "fetch.lock").exists()
+    status, name, text, fix = d.results[-1]
+    assert (status, name) == ("fail", "usage")
+    assert text.startswith("fetch failed (RuntimeError); renders retry in ")
+    assert "boom" not in text  # the type only: an error's text could hold anything
+    assert fix == "run doctor again later; report it if it keeps happening"
+    # As the background fetch does, it holds, so renders don't refetch at once.
+    assert usage.hold(sub, account.identity(sub), NOW)["reason"] == "fetch failed (RuntimeError)"
 
 
 # ---- the cache check and odd files ----
@@ -912,7 +918,10 @@ def test_cache_leaves_another_tools_usage_json_alone(sub, tmp_path, monkeypatch)
 
 
 def test_locked_keychain_is_not_a_login_problem(sub, isolated_home, tmp_path, monkeypatch):
-    def locked(env):
+    waits = []
+
+    def locked(env, wait):
+        waits.append(wait)
         raise account.KeychainError(account.KEYCHAIN_LOCKED)
 
     (isolated_home / ".claude" / ".credentials.json").unlink()
@@ -927,6 +936,9 @@ def test_locked_keychain_is_not_a_login_problem(sub, isolated_home, tmp_path, mo
     status, text, fix = results["usage"]
     assert text.startswith(account.KEYCHAIN_LOCKED)
     assert "unlock" in fix
+    # The login check, which the user watches, gives a Keychain prompt time; the fetch
+    # after it doesn't wait as long (its lock would go stale).
+    assert waits == [account.KEYCHAIN_WAIT_ASKED, account.KEYCHAIN_WAIT]
 
 
 # ---- a bad --glyphs value ----
@@ -1316,21 +1328,110 @@ def test_windows_shell_in_claude_codes_order(tmp_path):
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows' shells")
-@pytest.mark.parametrize("shell", ["Git Bash", "PowerShell"])
-def test_windows_command_runs_in_either_shell(installed, tmp_path, monkeypatch, shell):
-    """Claude Code runs the command in Git Bash, or in PowerShell without one."""
-    if shell == "PowerShell":
-        monkeypatch.setattr(
-            doctor,
-            "windows_shell",
-            lambda env, which=None: (
-                ["powershell", "-NoProfile", "-NonInteractive", "-Command"],
-                "PowerShell",
-            ),
-        )
-    elif doctor.windows_shell(os.environ)[1] != "Git Bash":
-        pytest.skip("no Git Bash here")
+@pytest.mark.parametrize("shell", ["Git Bash", "PowerShell 7", "PowerShell"])
+def test_windows_command_runs_in_each_shell(installed, tmp_path, monkeypatch, shell):
+    """Claude Code runs the command in Git Bash, or in PowerShell without one: each
+    shell as doctor starts it (the options Claude Code passes)."""
+
+    def missing(what):
+        if os.environ.get("CI"):  # the runner has all three: a skip there hides a break
+            pytest.fail(f"no {what} on this runner")
+        pytest.skip(f"no {what} here")
+
+    if shell == "Git Bash":
+        if doctor.windows_shell(os.environ)[1] != "Git Bash":
+            missing("Git Bash")
+        found = doctor.windows_shell(os.environ)
+    elif shell == "PowerShell 7":
+        pwsh = Path(doctor.program_files(os.environ)) / "PowerShell" / "7" / "pwsh.exe"
+        if not pwsh.is_file():
+            missing("PowerShell 7")
+        found = ([str(pwsh), *doctor.POWERSHELL_OPTIONS], shell)
+    else:
+        found = (["powershell", *doctor.POWERSHELL_OPTIONS], shell)
+    monkeypatch.setattr(doctor, "windows_shell", lambda env, which=None: found)
     monkeypatch.setattr(doctor, "SLOW_MS_WINDOWS", 60_000)  # it runs; CI's speed varies
     status, text, fix = check(installed, "command", tmp_path)
     assert (status, fix) == ("ok", None), text
     assert text.endswith(f"({shell})")
+
+
+# ---- found in the third review ----
+
+
+def test_command_not_found_in_powershell_7(installed, tmp_path, monkeypatch):
+    """PowerShell 7 writes `python3: <message>` and a line of advice, no record."""
+    as_windows_writes_it(installed)
+    concise = (
+        "python3: The term 'python3' is not recognized as a name of a cmdlet, function, "
+        "script file, or executable program.\n"
+        "Check the spelling of the name, or if a path was included, verify that the path "
+        "is correct and try again."
+    )
+    status, text, fix = windows_command_check(
+        installed, tmp_path, monkeypatch, "PowerShell 7", stderr=concise, returncode=1
+    )
+    assert status == "fail"
+    assert text.startswith("The term 'python3' is not recognized")
+    assert fix.startswith("python3 must be on the PATH Claude Code sees: install Python")
+
+
+def test_powershell_unwrapped_needs_the_whole_record():
+    """Text that only names an error record (a traceback quoting one) is left alone."""
+    err = ["something about FullyQualifiedErrorId", "ValueError: z"]
+    assert doctor.powershell_unwrapped(err) == err
+    err = ["x FullyQualifiedErrorId y", "+ a detail line after it"]  # none before it
+    assert doctor.powershell_unwrapped(err) == err
+
+
+def test_entry_of_another_type_is_not_run(installed, tmp_path):
+    """Claude Code runs only a "command" entry, so doctor doesn't run this one."""
+    data = get_settings(installed)
+    data["statusLine"]["type"] = "static"
+    set_settings(installed, data)
+    d = doctor.Doctor(installed, NOW, str(tmp_path), CLOSED, "linux")
+    results = {n: (s, t, f) for s, n, t, f in d.run()}
+    assert results["settings"][0] == "fail"
+    assert results["command"] == ("info", "not run: settings don't run dashline", None)
+    assert "glyphs" not in results["font"][1]
+
+
+def test_glyphs_after_the_command_are_not_dashlines(installed, tmp_path):
+    data = get_settings(installed)
+    data["statusLine"]["command"] += " || echo --glyphs x"
+    set_settings(installed, data)
+    d = doctor.Doctor(installed, NOW, str(tmp_path), CLOSED, "linux")
+    results = {n: (s, t, f) for s, n, t, f in d.run()}
+    assert "isn't a glyph set" not in results["settings"][1]
+    assert results["font"][1].endswith("using nerd glyphs")
+
+
+def test_command_runs_at_a_width_that_draws_every_separator(installed, tmp_path, monkeypatch):
+    """A narrow COLUMNS in doctor's own shell drops `│`: the glyph check would misfire."""
+    seen = []
+    real = subprocess.run
+
+    def spy(args, **kwargs):
+        if "input" in kwargs:  # the statusLine command, in whichever shell
+            seen.append(kwargs["env"].get("COLUMNS"))
+        return real(args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", spy)
+    status, _, _ = check(dict(installed, COLUMNS="30"), "command", tmp_path)
+    assert status == "ok"
+    assert seen == ["120"]
+
+
+def test_install_missing_only_its_shim(installed, tmp_path):
+    (Path(install.install_dir(installed)) / "statusline.py").unlink()
+    status, text, fix = check(installed, "install", tmp_path)
+    assert (status, fix) == ("fail", "run /dashline:install")
+    assert text == "statusline.py is missing from ~/.claude/scripts/statusline"
+
+
+def test_doctor_run_from_the_installed_copy(installed, tmp_path, monkeypatch):
+    target = install.install_dir(installed)
+    monkeypatch.setattr(install, "source_root", lambda: target)
+    status, text, _ = check(installed, "install", tmp_path)
+    assert status == "ok"
+    assert text.endswith("(doctor ran from it)")
