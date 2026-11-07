@@ -1133,7 +1133,8 @@ def test_old_bash_only_command_on_windows(installed, tmp_path, monkeypatch):
 
 
 def test_windows_shell_finds_git_bash_from_inside_git_bash(tmp_path):
-    """In Git Bash, git on PATH is <root>\\mingw64\\bin\\git.exe; bash.exe is <root>\\bin's."""
+    """In Git Bash, git on PATH is <root>\\ucrt64\\bin\\git.exe (mingw64 in older Git for
+    Windows); bash.exe is <root>\\bin's."""
     git_root = tmp_path / "Git"
     (git_root / "mingw64" / "bin").mkdir(parents=True)
     (git_root / "bin").mkdir()

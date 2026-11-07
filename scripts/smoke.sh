@@ -7,7 +7,7 @@
 #
 # On Windows it runs in Git Bash: the install there names Python by `python` (this one,
 # first on PATH) and the doctor runs the command in Git Bash, as Claude Code would,
-# finding it from git on PATH (Git Bash's own mingw64\bin\git.exe).
+# finding it from git on PATH (Git Bash's own, in ucrt64\bin or mingw64\bin).
 #
 # The test suite runs on 3.10 and newer (its tools have dropped 3.9), so this is what
 # keeps dashline itself working on 3.9. Exits 1 on any failure.
@@ -42,7 +42,7 @@ case "$(uname -s)" in
     # No symlinks to lean on: this Python's own folder goes first, and the PATH leaves
     # out C:\Windows, so `py` (the launcher, which would pick another Python) isn't
     # found and `python` is this one. System32 stays for taskkill and PowerShell.
-    # git stays too, from wherever Git Bash has it (mingw64\bin, or cmd).
+    # git stays too, from wherever Git Bash has it (ucrt64\bin, mingw64\bin or cmd).
     home=$(cygpath -w "$tmp/home")
     sys32=$(cygpath -u "$SYSTEMROOT")/System32
     git_dir=$(dirname "$(command -v git)")

@@ -117,7 +117,8 @@ def windows_shell(env, which=None) -> tuple:
         bash = None
         git = which("git")
         # Git for Windows keeps bash.exe in <root>\bin, and git.exe in <root>\cmd, or in
-        # <root>\mingw64\bin, first on PATH in Git Bash itself (where the skill runs us).
+        # <root>\ucrt64\bin (or mingw64\bin), first on PATH in Git Bash itself, where the
+        # skill runs us.
         folder = os.path.dirname(git) if git else ""
         for _ in range(3):
             parent = os.path.dirname(folder)

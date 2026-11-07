@@ -238,7 +238,7 @@ take the profile folder's access); git's system config isn't read without
 `GIT_CONFIG_SYSTEM`; doctor and install write UTF-8 to a pipe (Python there defaults
 to the ANSI code page); doctor runs the command in the same shell Claude Code would
 (`CLAUDE_CODE_GIT_BASH_PATH`, else `bin\bash.exe` up to three folders above git, which
-in Git Bash is `mingw64\bin\git.exe`, else PowerShell), reads PowerShell 5.1's error
+in Git Bash is `ucrt64\bin\git.exe` or `mingw64\bin\git.exe`, else PowerShell), reads PowerShell 5.1's error
 records for the program's own line, and calls the command slow only past 2.5 s, since
 starting either shell takes much of 500 ms.
 
