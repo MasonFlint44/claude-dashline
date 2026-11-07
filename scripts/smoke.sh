@@ -42,10 +42,13 @@ case "$(uname -s)" in
     # No symlinks to lean on: this Python's own folder goes first, and the PATH leaves
     # out C:\Windows, so `py` (the launcher, which would pick another Python) isn't
     # found and `python` is this one. System32 stays for taskkill and PowerShell.
+    # git stays too, from wherever Git Bash has it (mingw64\bin, or cmd).
     home=$(cygpath -w "$tmp/home")
     sys32=$(cygpath -u "$SYSTEMROOT")/System32
+    git_dir=$(dirname "$(command -v git)")
+    echo "git: $(cygpath -w "$git_dir")"
     export HOME="$home" USERPROFILE="$home"
-    export PATH="$(dirname "$(cygpath -u "$py")"):/mingw64/bin:/usr/bin:/bin:$sys32:$sys32/WindowsPowerShell/v1.0"
+    export PATH="$(dirname "$(cygpath -u "$py")"):$git_dir:/usr/bin:/bin:$sys32:$sys32/WindowsPowerShell/v1.0"
     unset CLAUDE_CODE_GIT_BASH_PATH
     shell="(Git Bash)"
     run=("$py" -I -S)

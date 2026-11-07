@@ -309,6 +309,12 @@ def take_lock(env, now: float) -> str | None:
     for _ in range(3):
         try:
             fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except PermissionError:
+            # Windows says this, not "exists", of a lock another process is removing
+            # (still open somewhere): it's going away, so try again.
+            if os.name != "nt":
+                raise
+            continue
         except FileExistsError:
             found = _lock_id(path)
             if found is None:

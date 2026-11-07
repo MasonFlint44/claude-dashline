@@ -223,11 +223,13 @@ def test_a_failed_spawn_still_prints_the_statusline(isolated_home, monkeypatch, 
 
 
 def test_closed_stdout_is_quiet():
+    import os
+
     cmd = [sys.executable, "-I", "-S", str(ROOT / "statusline.py")]
-    proc = subprocess.Popen(
-        cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE
-    )
-    proc.stdout.close()  # Claude Code went away before reading
+    read, write = os.pipe()
+    os.close(read)  # Claude Code went away before reading
+    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=write, stderr=subprocess.PIPE)
+    os.close(write)
     _, err = proc.communicate(json.dumps({"model": {"display_name": "Opus 5.5"}}).encode())
     assert proc.returncode == 0
     assert b"Traceback" not in err

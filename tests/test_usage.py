@@ -539,6 +539,28 @@ def test_lock_without_content_uses_mtime(isolated_home):
     assert usage.take_lock(env, now + usage.LOCK_STALE + 5)
 
 
+def test_lock_being_removed_on_windows_is_tried_again(isolated_home, monkeypatch):
+    """Windows says "permission denied", not "exists", of a lock another process is
+    removing: take it again. Elsewhere that's a real error."""
+    env = env_for(isolated_home)
+    real, calls = os.open, []
+
+    def removing_once(path, flags, *rest):
+        if path.endswith("fetch.lock") and flags & os.O_EXCL:
+            calls.append(path)
+            if len(calls) == 1:
+                raise PermissionError(13, "delete pending")
+        return real(path, flags, *rest)
+
+    monkeypatch.setattr(usage.os, "open", removing_once)
+    if os.name == "nt":
+        assert usage.take_lock(env, NOW)
+        assert len(calls) == 2
+    else:
+        with pytest.raises(PermissionError):
+            usage.take_lock(env, NOW)
+
+
 def lock_race(env, now, n=8):
     results = []
     threads = [

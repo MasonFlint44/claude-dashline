@@ -26,6 +26,8 @@
   longer fails an install or a fetch: dashline tries again briefly. The background
   fetch no longer runs from the install folder, which Windows then wouldn't let an
   update replace.
+- Two renders taking the fetch lock at once no longer trip over Windows' "permission
+  denied" for a lock that's being removed.
 - settings.json keeps `\n` line endings when `/dashline:install` rewrites it.
 - A `CLAUDE_CONFIG_DIR` spelled in another case is still recognized as the same folder.
 - `/dashline:doctor` runs the statusline command in the shell Claude Code would use

@@ -1089,7 +1089,8 @@ def test_command_errors_through_powershell(installed, tmp_path, monkeypatch):
     status, text, fix = check(installed, "command", tmp_path)
     assert status == "fail"
     assert text.startswith("The term 'py' is not recognized")
-    assert fix == "python3 must be on the PATH Claude Code sees, or use a full path"
+    program = doctor.first_word(get_settings(installed)["statusLine"]["command"])  # py on Windows
+    assert fix == f"{program} must be on the PATH Claude Code sees, or use a full path"
     ours = (
         "py : dashline: unknown argument '--bogus' (run statusline.py --doctor)\n"
         "At line:1 char:1\n"
