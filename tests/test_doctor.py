@@ -567,7 +567,13 @@ def test_command_broken_python(installed, tmp_path):
     status, text, fix = check(installed, "command", tmp_path)
     assert status == "fail"
     assert "not found" in text
-    assert fix == "no-such-python3 must be on the PATH Claude Code sees, or use a full path"
+    if host.WINDOWS:  # no full path with spaces runs in both of its shells
+        assert fix == (
+            "no-such-python3 must be on the PATH Claude Code sees: install Python, or add "
+            "it to PATH, then restart Claude Code"
+        )
+    else:
+        assert fix == "no-such-python3 must be on the PATH Claude Code sees, or use a full path"
 
 
 def test_command_script_missing(installed, isolated_home, tmp_path):
@@ -1178,7 +1184,7 @@ def test_command_blocked_by_a_policy(installed, tmp_path, monkeypatch):
 def test_command_with_bash_variables_on_windows(installed, tmp_path, monkeypatch):
     """Not the old command, but $-variables all the same: --replace writes the Windows one."""
     data = get_settings(installed)
-    data["statusLine"]["command"] += " 2>/dev/null"  # an edit: not old_form
+    data["statusLine"]["command"] = install.COMMAND + " 2>/dev/null"  # an edit: not old_form
     set_settings(installed, data)
     missing = "C:\\Py\\python.exe: can't open file 'C:\\scripts\\statusline\\statusline.py'"
     status, _, fix = windows_command_check(
