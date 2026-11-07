@@ -27,6 +27,8 @@ from dashline.text import clean, collapse_home, cols, cut
 
 GIT_TIMEOUT = 1.0  # seconds; a slower repo shows the project without git state
 KILL_WAIT = 0.05  # seconds to collect a killed git before giving up on it
+TASKKILL_WAIT = 0.3  # Windows: seconds for taskkill to end a hung git's tree
+WINDOWS = os.name == "nt"
 GAP = "  "
 # Variables git sets for hooks and editors that point a git command at another repo,
 # index or object store. Claude Code started from inside one (a commit message editor,
@@ -295,7 +297,7 @@ def config_files(env) -> list:
     On Windows the system file is in Git's own folder, which isn't looked for: only an
     explicit GIT_CONFIG_SYSTEM counts. Home is HOME, else USERPROFILE, as git has it.
     """
-    windows = os.name == "nt"
+    windows = WINDOWS
     paths = []
     if not _env_bool(env.get("GIT_CONFIG_NOSYSTEM")):
         system = env.get("GIT_CONFIG_SYSTEM") or (None if windows else "/etc/gitconfig")
@@ -447,6 +449,14 @@ def folder_url(path: str, env=None) -> str | None:
     drive = ""
     if re.match(r"^[A-Za-z]:/", path):  # Windows: file:///C:/x, the colon as it is
         drive, path = "/" + path[:2], path[2:]
+    elif WINDOWS and path.startswith("//"):
+        # A share, \\server\share\x (\\wsl.localhost\Ubuntu\x too): file://server/share/x.
+        server, _, rest = path[2:].partition("/")
+        if not server or server in ("?", ".") or not rest:  # \\?\ and \\.\: device paths
+            return None
+        host, path = server, "/" + rest
+    elif not path.startswith("/"):
+        path = "/" + path
     try:
         return f"file://{host}{drive}{quote(path)}"
     except UnicodeEncodeError:
@@ -555,7 +565,7 @@ def _kill(proc) -> None:
     import contextlib
     import signal
 
-    if os.name == "nt":
+    if WINDOWS:
         # No process groups: taskkill /T ends git's whole tree (git for Windows runs
         # hooks through its own sh, which can hold the pipe open after git is gone).
         import subprocess
@@ -566,7 +576,7 @@ def _kill(proc) -> None:
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                timeout=KILL_WAIT * 20,
+                timeout=TASKKILL_WAIT,
             )
         with contextlib.suppress(OSError):
             proc.kill()
@@ -591,7 +601,7 @@ def _finish(proc, deadline: float) -> str | None:
         except subprocess.TimeoutExpired:
             # Something left the group and still holds the pipe: don't wait for it. On
             # Windows a thread is reading it, and closing would wait for that read.
-            if os.name != "nt":
+            if not WINDOWS:
                 proc.stdout.close()
         return None
     return out.decode("utf-8", "replace") if proc.returncode == 0 else None

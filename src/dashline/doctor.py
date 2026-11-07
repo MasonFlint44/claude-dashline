@@ -114,15 +114,44 @@ def windows_shell(env, which=None) -> tuple:
     which = which or shutil.which
     bash = env.get("CLAUDE_CODE_GIT_BASH_PATH")
     if not (bash and os.path.isfile(bash)):
+        bash = None
         git = which("git")
-        # Git for Windows keeps git.exe in <root>\cmd (or \bin) and bash.exe in <root>\bin.
-        found = (
-            os.path.join(os.path.dirname(os.path.dirname(git)), "bin", "bash.exe") if git else ""
-        )
-        bash = found if found and os.path.isfile(found) else None
+        # Git for Windows keeps bash.exe in <root>\bin, and git.exe in <root>\cmd, or in
+        # <root>\mingw64\bin, first on PATH in Git Bash itself (where the skill runs us).
+        folder = os.path.dirname(git) if git else ""
+        for _ in range(3):
+            parent = os.path.dirname(folder)
+            if not folder or parent == folder:
+                break
+            folder = parent
+            found = os.path.join(folder, "bin", "bash.exe")
+            if os.path.isfile(found):
+                bash = found
+                break
     if bash:
         return [bash, "-c"], "Git Bash"
     return ["powershell", "-NoProfile", "-NonInteractive", "-Command"], "PowerShell"
+
+
+# The lines PowerShell 5.1 adds around what a program wrote to stderr.
+PS_DECORATION = re.compile(r"^\s*(?:At line:\d+ char:\d+|\+ )")
+PS_PREFIX = re.compile(r"^(\S+) : ")
+
+
+def powershell_unwrapped(err: list) -> list:
+    """`err` without PowerShell's error-record dressing, as the program wrote it.
+
+    PowerShell 5.1 turns a program's stderr, and a command it can't find, into an error
+    record: `py : <the line>`, then `At line:1 char:1`, `+ …` lines and
+    `+ FullyQualifiedErrorId : …` last, where stderr_reason looks.
+    """
+    if not any("FullyQualifiedErrorId" in line for line in err):
+        return err
+    lines = [line for line in err if line.strip() and not PS_DECORATION.match(line)]
+    m = PS_PREFIX.match(lines[0]) if lines else None
+    if m:
+        lines = [line[len(m.group(0)) :] if line.startswith(m.group(0)) else line for line in lines]
+    return lines
 
 
 def first_word(cmd: str) -> str:
@@ -600,10 +629,16 @@ class Doctor:
         ms = (time.monotonic() - start) * 1000
         lines = [line for line in r.stdout.splitlines() if line.strip()]
         err = r.stderr.strip().splitlines()
+        if shell_name == "PowerShell":
+            err = powershell_unwrapped(err)
+        # The command dashline wrote before it ran on Windows: Bash only.
+        rewrite = WINDOWS and install.old_form(self.entry)
         if r.returncode != 0 or not lines or "internal error" in r.stdout:
             why = stderr_reason(err, lines) or f"exit {r.returncode}, {len(lines)} lines"
             fix = "run /dashline:install"
-            if "can't open file" in why:
+            if rewrite:
+                fix = "run /dashline:install: it rewrites this command for Windows"
+            elif "can't open file" in why:
                 fix = "the command's statusline.py is missing: run /dashline:install"
             elif any(s in why for s in ("No such file", "not found", "is not recognized")):
                 program = first_word(self.entry["command"])
@@ -613,6 +648,10 @@ class Doctor:
         text = f"printed {len(lines)} line{'s' if len(lines) != 1 else ''} in {ms:.0f} ms"
         if WINDOWS:
             text += f" ({shell_name})"
+        if rewrite:
+            fix = "run /dashline:install: it rewrites this command for Windows"
+            self.add(WARN, "command", text + ", but PowerShell can't run this command", fix)
+            return
         if ms > (SLOW_MS_WINDOWS if WINDOWS else SLOW_MS):
             fix = "a slow git repo or disk; see the git line"
             if shell_name == "PowerShell":

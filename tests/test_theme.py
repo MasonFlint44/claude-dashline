@@ -181,3 +181,13 @@ def test_deeply_nested_settings_are_skipped(home):
     assert theme.theme_setting(str(home / "proj"), {}) == "light"
     (home / "proj" / ".claude" / "settings.json").write_text(deep)
     assert theme.theme_setting(str(home / "proj"), {}) == "dark"
+
+
+def test_home_on_windows_is_userprofile_first(monkeypatch):
+    """As for Claude Code (Node's os.homedir): Git Bash sets a HOME of its own."""
+    env = {"HOME": "/c/Users/pat", "USERPROFILE": "C:\\Users\\pat"}
+    monkeypatch.setattr(theme, "WINDOWS", True)
+    assert theme.home_dir(env) == "C:\\Users\\pat"
+    assert theme.home_dir({"HOME": "/c/Users/pat"}) == "/c/Users/pat"
+    monkeypatch.setattr(theme, "WINDOWS", False)
+    assert theme.home_dir(env) == "/c/Users/pat"

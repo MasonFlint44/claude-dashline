@@ -331,3 +331,30 @@ def test_parse_columns(value, columns):
     from dashline.__main__ import parse_columns
 
     assert parse_columns(value) == columns
+
+
+def test_windows_output_is_utf8_on_a_pipe(monkeypatch):
+    """Python on Windows writes a pipe or file in the ANSI code page, which has no `│`:
+    dashline switches its output to UTF-8 there (a console is UTF-8 already)."""
+    import os
+
+    from dashline import __main__
+
+    class Stream:
+        def __init__(self, encoding):
+            self.encoding = encoding
+            self.to = None
+
+        def reconfigure(self, encoding, errors):
+            self.to = (encoding, errors)
+
+    cp1252, utf8 = Stream("cp1252"), Stream("utf-8")
+    monkeypatch.setattr(sys, "stdout", cp1252)
+    monkeypatch.setattr(sys, "stderr", utf8)
+    real = os.name
+    os.name = "nt"  # just for this call: pathlib can't take it for long
+    try:
+        __main__._utf8_pipes()
+    finally:
+        os.name = real
+    assert (cp1252.to, utf8.to) == (("utf-8", "replace"), None)

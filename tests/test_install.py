@@ -1163,15 +1163,142 @@ def test_windows_install_without_python_changes_nothing(conf, env, capsys):
     assert not (conf / "scripts").exists()
 
 
-def test_windows_install_keeps_a_posix_entry(conf, env):
-    """An entry already dashline's (say, written in Git Bash by hand) is kept as written."""
-    assert run(env)[0] == 0
-    before = settings(conf)["statusLine"]["command"]
-
-    def no_python():
-        raise AssertionError("not needed: the entry is already dashline's")
-
-    assert (
-        install.run(None, env=env, out=io.StringIO(), cwd="/", windows=True, python=no_python) == 0
+def win(env, glyphs=None, replace=False, python=lambda: "python"):
+    """install.run as on Windows, with `python` as the Python it finds."""
+    out = io.StringIO()
+    code = install.run(
+        glyphs, replace=replace, env=env, out=out, cwd="/", windows=True, python=python
     )
-    assert settings(conf)["statusLine"]["command"] == before
+    return code, out.getvalue()
+
+
+def no_python():
+    raise AssertionError("no Python is looked for here")
+
+
+def test_windows_install_rewrites_the_old_bash_only_command(conf, env):
+    """The command an older dashline wrote is Bash only: PowerShell can't run it. On
+    Windows install rewrites it, with its glyph set and the rest of the entry kept."""
+    write_settings(
+        conf,
+        {"statusLine": {"type": "command", "command": f"{ENTRY_CMD} --glyphs nerd", "padding": 1}},
+    )
+    code, out = win(env)
+    assert code == 0, out
+    target = (conf / "scripts" / "statusline" / "statusline.py").as_posix()
+    assert settings(conf)["statusLine"] == {
+        "type": "command",
+        "command": f'python -I -S "{target}" --glyphs nerd',
+        "padding": 1,
+        "refreshInterval": 60,
+    }
+    assert "PowerShell can't run it" in out
+    # Asked for another set at the same time: the new command has that one.
+    write_settings(conf, {"statusLine": {"type": "command", "command": ENTRY_CMD}})
+    assert win(env, "ascii")[0] == 0
+    assert settings(conf)["statusLine"]["command"] == f'python -I -S "{target}" --glyphs ascii'
+    # Off Windows the same entry is the standard one, and stays.
+    write_settings(conf, {"statusLine": {"type": "command", "command": ENTRY_CMD}})
+    assert run(env)[0] == 0
+    assert settings(conf)["statusLine"]["command"] == ENTRY_CMD
+
+
+def test_windows_install_keeps_a_command_edited_by_hand(conf, env):
+    """Only the exact old command is rewritten: one edited by hand is kept as written."""
+    mine = 'python3.12 -I -S "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/statusline/statusline.py"'
+    write_settings(conf, {"statusLine": {"type": "command", "command": mine}})
+    code, out = win(env, python=no_python)
+    assert code == 0, out
+    assert settings(conf)["statusLine"]["command"] == mine
+
+
+def test_windows_install_without_python_keeps_the_old_command(conf, env, capsys):
+    write_settings(conf, {"statusLine": {"type": "command", "command": ENTRY_CMD}})
+    before = (conf / "settings.json").read_text()
+    assert win(env, python=lambda: None)[0] == 1
+    assert "no Python 3.9 or newer" in capsys.readouterr().err
+    assert (conf / "settings.json").read_text() == before
+
+
+def test_windows_replace_writes_the_windows_command(conf, env):
+    write_settings(conf, {"statusLine": {"type": "command", "command": "bash ~/my-status.sh"}})
+    assert win(env, python=no_python)[0] == install.NEEDS_REPLACE  # asks first, no Python
+    code, out = win(env, "nerd", replace=True)
+    assert code == 0, out
+    target = (conf / "scripts" / "statusline" / "statusline.py").as_posix()
+    assert settings(conf)["statusLine"]["command"] == f'python -I -S "{target}" --glyphs nerd'
+
+
+def test_windows_replace_of_their_folder_writes_the_windows_command(conf, env):
+    other = conf / "scripts" / "statusline"
+    other.mkdir(parents=True)
+    (other / "statusline.py").write_text("print('mine')\n")
+    write_settings(conf, {"statusLine": {"type": "command", "command": f"{ENTRY_CMD} -x"}})
+    assert win(env, python=no_python)[0] == install.NEEDS_REPLACE
+    assert not (conf / "settings.json").read_text().count("python -I")
+    write_settings(conf, {})
+    assert win(env, python=no_python)[0] == install.NEEDS_REPLACE  # a new entry, but asks
+    code, out = win(env, replace=True)
+    assert code == 0, out
+    assert settings(conf)["statusLine"]["command"].startswith('python -I -S "')
+
+
+def test_windows_install_refuses_a_path_both_shells_expand(conf, isolated_home, capsys):
+    env = env_for(isolated_home, CLAUDE_CONFIG_DIR=str(isolated_home / "c$fg"))
+    assert win(env)[0] == 1
+    assert "has a $ or `" in capsys.readouterr().err
+    assert not (isolated_home / "c$fg").exists()
+
+
+def test_windows_entry_is_ours_whatever_the_case(conf, isolated_home, monkeypatch):
+    """C:\\Cfg and c:\\cfg are one folder on Windows."""
+    env = env_for(isolated_home, CLAUDE_CONFIG_DIR="C:\\Cfg")
+    entry = {"type": "command", "command": 'py -3 -I -S "c:/cfg/scripts/statusline/statusline.py"'}
+    monkeypatch.setattr(install, "WINDOWS", False)
+    assert not install.runs_install_dir(entry, env)
+    monkeypatch.setattr(install, "WINDOWS", True)
+    assert install.runs_install_dir(entry, env)
+
+
+def test_windows_python_gives_up_on_a_hung_probe():
+    def hangs(argv, **kwargs):
+        raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+
+    assert install.windows_python({"python": "C:/py/python.exe"}.get, hangs) is None
+
+
+def test_settings_keep_lf_line_endings(conf, env):
+    assert run(env)[0] == 0
+    assert b"\r\n" not in (conf / "settings.json").read_bytes()
+    assert (conf / "scripts" / "statusline" / "VERSION").read_bytes() == f"{__version__}\n".encode()
+
+
+def test_settings_write_waits_for_a_file_held_open_on_windows(conf, env, monkeypatch):
+    """Claude Code or an antivirus scan can hold settings.json open for a moment."""
+    from dashline import theme
+
+    real, calls = os.replace, []
+
+    def busy_once(src, dst):
+        if dst.endswith("settings.json"):
+            calls.append(dst)
+            if len(calls) == 1:
+                raise PermissionError(13, "in use")
+        real(src, dst)
+
+    monkeypatch.setattr(install.os, "replace", busy_once)
+    monkeypatch.setattr(theme, "WINDOWS", True)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    assert run(env)[0] == 0
+    assert len(calls) == 2
+    assert settings(conf)["statusLine"]["command"] == ENTRY_CMD
+
+
+def test_folder_check_on_windows_makes_a_file(tmp_path, monkeypatch):
+    """os.access ignores a folder's permissions on Windows: a file is made instead."""
+    monkeypatch.setattr(install, "WINDOWS", True)
+    folder = tmp_path / "folder"
+    folder.mkdir()
+    assert install._can_write_in(str(folder))
+    assert list(folder.iterdir()) == []
+    assert not install._can_write_in(str(folder / "missing"))

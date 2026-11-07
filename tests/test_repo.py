@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import make_ctx, plain, posix_only
+from conftest import make_ctx, plain, posix_only, windows_only
 from dashline import repo
 
 GIT_ENV = {
@@ -462,6 +462,22 @@ def test_folder_url_of_a_windows_path():
     assert repo.folder_url("C:/Users/Pat Lee/proj") == f"file://{HOST}/C:/Users/Pat%20Lee/proj"
 
 
+def test_folder_url_of_windows_shares_and_drives(monkeypatch):
+    """A share opens as file://server/share/x; device paths (\\\\?\\) get no link."""
+    monkeypatch.setattr(repo, "WINDOWS", True)
+    assert repo.folder_url("c:/users/pat") == f"file://{HOST}/c:/users/pat"
+    assert repo.folder_url("//wsl.localhost/Ubuntu/home/pat") == (
+        "file://wsl.localhost/Ubuntu/home/pat"
+    )
+    assert repo.folder_url("//server/team share/proj") == "file://server/team%20share/proj"
+    assert repo.folder_url("//?/C:/very/long") is None
+    assert repo.folder_url("//./pipe/x") is None
+    assert repo.folder_url("//server") is None
+    assert repo.folder_url("rel/x") == f"file://{HOST}/rel/x"
+    monkeypatch.setattr(repo, "WINDOWS", False)  # elsewhere // is just a path
+    assert repo.folder_url("//srv/x") == f"file://{HOST}//srv/x"
+
+
 def test_folder_link(project, isolated_home):
     host = HOST
     shown = ("/" if os.name == "nt" else "") + project.as_posix()
@@ -542,7 +558,8 @@ def test_hung_hook_is_killed_with_git(project, monkeypatch, tmp_path):
 
     began = time.monotonic()
     assert row(project) == "proj"
-    assert time.monotonic() - began < 1.5
+    # GIT_TIMEOUT, then the kill: on Windows taskkill, slower to start on a busy runner.
+    assert time.monotonic() - began < (2.0 if os.name == "nt" else 1.5)
     if os.name == "nt":
         return  # $$ is Git Bash's own pid there: the time above is the test
     pid = int(pidfile.read_text())
@@ -801,6 +818,15 @@ def test_collapse_home(path, home, shown):
     assert repo.collapse_home(path, home) == shown
 
 
+@windows_only
+def test_collapse_home_on_windows():
+    """Case doesn't matter there, and the result uses / for either shell."""
+    assert repo.collapse_home("c:\\users\\pat\\proj", "C:\\Users\\Pat") == "~/proj"
+    assert repo.collapse_home("C:\\Users\\Pat", "C:\\Users\\Pat\\") == "~"
+    assert repo.collapse_home("C:\\Users\\Patty\\x", "C:\\Users\\Pat") == "C:/Users/Patty/x"
+    assert repo.collapse_home("D:\\work\\x", "C:\\Users\\Pat") == "D:/work/x"
+
+
 def test_interrupted_pick_sequence(project):
     git(project, "switch", "-q", "-c", "side")
     commit(project, text="side\n")
@@ -926,6 +952,21 @@ def test_config_files(tmp_path):
     assert repo.config_files({"GIT_CONFIG_GLOBAL": "/g", "GIT_CONFIG_SYSTEM": "/s"}) == [
         "/s",
         "/g",
+    ]
+
+
+def test_config_files_on_windows(tmp_path, monkeypatch):
+    """git's home is HOME, else USERPROFILE; its system file only by GIT_CONFIG_SYSTEM."""
+    monkeypatch.setattr(repo, "WINDOWS", True)
+    home, profile = str(tmp_path / "home"), str(tmp_path / "profile")
+    assert repo.config_files({"HOME": home, "USERPROFILE": profile}) == [
+        os.path.join(home, ".config", "git", "config"),  # noqa: PTH118
+        os.path.join(home, ".gitconfig"),  # noqa: PTH118
+    ]
+    assert repo.config_files({"USERPROFILE": profile, "GIT_CONFIG_SYSTEM": "/s"}) == [
+        "/s",
+        os.path.join(profile, ".config", "git", "config"),  # noqa: PTH118
+        os.path.join(profile, ".gitconfig"),  # noqa: PTH118
     ]
 
 

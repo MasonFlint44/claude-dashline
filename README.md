@@ -25,7 +25,7 @@ get a Nerd Font if your terminal doesn't seem to have one, and what to look for 
 statusline to confirm it draws correctly.
 
 Works on macOS, Linux, Windows and WSL. Needs Python 3.9 or newer as `python3`; on
-Windows, as `py`, `python` or `python3` (`winget install Python.Python.3.13`).
+Windows, as `py -3`, `python` or `python3` (`winget install Python.Python.3.13`).
 macOS's command-line tools are enough. git is optional (2.15 or newer); without it the
 third line shows just the folder. Built on Linux with Claude Code 2.1.318; CI runs the
 tests on Linux, macOS and Windows.

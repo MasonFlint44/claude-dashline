@@ -6,7 +6,8 @@
 #   scripts/smoke.sh "$(uv python find 3.9)"       # the oldest supported Python
 #
 # On Windows it runs in Git Bash: the install there names Python by `python` (this one,
-# first on PATH) and the doctor runs the command in Git Bash, as Claude Code would.
+# first on PATH) and the doctor runs the command in Git Bash, as Claude Code would,
+# finding it from git on PATH (Git Bash's own mingw64\bin\git.exe).
 #
 # The test suite runs on 3.10 and newer (its tools have dropped 3.9), so this is what
 # keeps dashline itself working on 3.9. Exits 1 on any failure.
@@ -44,8 +45,9 @@ case "$(uname -s)" in
     home=$(cygpath -w "$tmp/home")
     sys32=$(cygpath -u "$SYSTEMROOT")/System32
     export HOME="$home" USERPROFILE="$home"
-    export PATH="$(dirname "$(cygpath -u "$py")"):/usr/bin:/bin:$sys32:$sys32/WindowsPowerShell/v1.0"
-    export CLAUDE_CODE_GIT_BASH_PATH="$(cygpath -w /usr/bin/bash.exe)"
+    export PATH="$(dirname "$(cygpath -u "$py")"):/mingw64/bin:/usr/bin:/bin:$sys32:$sys32/WindowsPowerShell/v1.0"
+    unset CLAUDE_CODE_GIT_BASH_PATH
+    shell="(Git Bash)"
     run=("$py" -I -S)
     installed="$tmp/home/.claude/scripts/statusline/statusline.py"
     ;;
@@ -54,6 +56,7 @@ case "$(uname -s)" in
     export HOME="$tmp/home" PATH="$tmp/bin:/usr/bin:/bin"
     run=(python3 -I -S)
     installed="$HOME/.claude/scripts/statusline/statusline.py"
+    shell=""
     ;;
 esac
 "${run[@]}" statusline.py --install
@@ -73,4 +76,7 @@ if [ "$(wc -l < "$tmp/out")" -lt 2 ]; then
 fi
 
 # With no login every check is ok or info, so exit 1 is a real failure.
-"${run[@]}" statusline.py --doctor
+"${run[@]}" statusline.py --doctor | tee "$tmp/doctor"
+if ! grep -q "command  *printed .*${shell:+ $shell}" "$tmp/doctor"; then
+  echo "::error::doctor didn't run the command${shell:+ in $shell}"; exit 1
+fi

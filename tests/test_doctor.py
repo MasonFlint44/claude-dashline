@@ -426,6 +426,19 @@ def test_shared_cache_folder_is_fine(sub, server, tmp_path):
 
 
 @posix_only
+def test_no_mode_check_on_windows(sub, tmp_path, monkeypatch):
+    """Windows has no such mode bits: files take the profile folder's access."""
+    monkeypatch.setattr(doctor, "WINDOWS", True)
+    cache_path(sub).mkdir(mode=0o700, parents=True)
+    cached = cache_file(sub)
+    cached.write_text(json.dumps({"fetched_at": NOW - 60, "data": {}}))
+    cached.chmod(0o644)
+    _, text, fix = check(sub, "cache", tmp_path)
+    assert "other users" not in text
+    assert "chmod" not in (fix or "")
+
+
+@posix_only
 def test_cache_file_readable_by_others(sub, tmp_path):
     cache_path(sub).mkdir(mode=0o700, parents=True)
     cached = cache_file(sub)
@@ -967,12 +980,13 @@ if os.name == "nt":
     SHELL = _argv[0]
 
 
-def fake_run(monkeypatch, program, error=None, stdout=""):
-    """subprocess.run, with `program` faked: it raises `error` or prints `stdout`."""
+def fake_run(monkeypatch, program, error=None, stdout="", stderr="", returncode=0):
+    """subprocess.run, with `program` faked: it raises `error` or prints `stdout` and
+    `stderr`, exiting `returncode`."""
     real = subprocess.run
 
     class Done:
-        returncode = 0
+        pass
 
     def fake(args, **kwargs):
         if args[0] != program:
@@ -980,7 +994,7 @@ def fake_run(monkeypatch, program, error=None, stdout=""):
         if error is not None:
             raise error
         done = Done()
-        done.stdout = stdout
+        done.stdout, done.stderr, done.returncode = stdout, stderr, returncode
         return done
 
     monkeypatch.setattr(subprocess, "run", fake)
@@ -999,7 +1013,19 @@ def test_command_without_sh(installed, tmp_path, monkeypatch):
     assert text.startswith(f"couldn't run {SHELL_NAME}:")
 
 
+def as_windows_writes_it(env):
+    """The installed entry with the config folder spelled out, as a Windows install
+    writes it (here still runnable by sh), not the Bash-only form."""
+    data = get_settings(env)
+    cmd = data["statusLine"]["command"]
+    data["statusLine"]["command"] = cmd.replace(
+        "${CLAUDE_CONFIG_DIR:-$HOME/.claude}", "$HOME/.claude"
+    )
+    set_settings(env, data)
+
+
 def test_command_slow_in_powershell_suggests_git(installed, tmp_path, monkeypatch):
+    as_windows_writes_it(installed)
     monkeypatch.setattr(doctor, "SLOW_MS", -1)
     monkeypatch.setattr(doctor, "SLOW_MS_WINDOWS", -1)
     monkeypatch.setattr(doctor, "WINDOWS", True)
@@ -1042,6 +1068,80 @@ def test_statusline_type_not_command(installed, tmp_path):
     assert status == "fail"
     assert text == '~/.claude/settings.json: statusLine type isn\'t "command"'
     assert fix == "run /dashline:install"
+
+
+def test_command_errors_through_powershell(installed, tmp_path, monkeypatch):
+    """PowerShell 5.1 wraps stderr into an error record whose last line says nothing:
+    the reason and its fix come from the program's own line."""
+    as_windows_writes_it(installed)
+    monkeypatch.setattr(doctor, "WINDOWS", True)
+    monkeypatch.setattr(doctor, "windows_shell", lambda env, which=None: (["pwsh-x"], "PowerShell"))
+    not_found = (
+        "py : The term 'py' is not recognized as the name of a cmdlet, function, script "
+        "file, or operable program.\n"
+        "At line:1 char:1\n"
+        "+ py -3 -I -S C:/Users/pat/.claude/scripts/statusline/statusline.py\n"
+        "+ ~~\n"
+        "    + CategoryInfo          : ObjectNotFound: (py:String) [], CommandNotFoundException\n"
+        "    + FullyQualifiedErrorId : CommandNotFoundException\n"
+    )
+    fake_run(monkeypatch, "pwsh-x", stderr=not_found, returncode=1)
+    status, text, fix = check(installed, "command", tmp_path)
+    assert status == "fail"
+    assert text.startswith("The term 'py' is not recognized")
+    assert fix == "python3 must be on the PATH Claude Code sees, or use a full path"
+    ours = (
+        "py : dashline: unknown argument '--bogus' (run statusline.py --doctor)\n"
+        "At line:1 char:1\n"
+        "+ py -3 -I -S C:/x/statusline.py --bogus\n"
+        "+ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n"
+        "    + CategoryInfo          : NotSpecified: (dashline: unknown...) [], RemoteException\n"
+        "    + FullyQualifiedErrorId : NativeCommandError\n"
+    )
+    fake_run(monkeypatch, "pwsh-x", stderr=ours, returncode=2)
+    status, text, _ = check(installed, "command", tmp_path)
+    assert (status, text) == (
+        "fail",
+        "dashline: unknown argument '--bogus' (run statusline.py --doctor)",
+    )
+
+
+def test_powershell_unwrapped_leaves_other_stderr_alone():
+    plain = ["Traceback (most recent call last):", "  x : y", "ValueError: z"]
+    assert doctor.powershell_unwrapped(plain) == plain
+
+
+def test_old_bash_only_command_on_windows(installed, tmp_path, monkeypatch):
+    """The command dashline wrote before Windows support runs in Git Bash only: doctor
+    says install rewrites it, whether it fails here or not."""
+    monkeypatch.setattr(doctor, "WINDOWS", True)
+    monkeypatch.setattr(doctor, "windows_shell", lambda env, which=None: (["sh", "-c"], "Git Bash"))
+    if os.name == "nt":  # the installed entry is the Windows one: put the old one in
+        data = get_settings(installed)
+        data["statusLine"]["command"] = install.command("nerd")
+        set_settings(installed, data)
+        fake_run(monkeypatch, "sh", stdout="line 1\nline 2\n")
+    status, text, fix = check(installed, "command", tmp_path)
+    assert status == "warn"
+    assert text.endswith("but PowerShell can't run this command")
+    assert fix == "run /dashline:install: it rewrites this command for Windows"
+    fake_run(monkeypatch, "sh", stderr="sh: python3: command not found\n", returncode=127)
+    status, _, fix = check(installed, "command", tmp_path)
+    assert status == "fail"
+    assert fix == "run /dashline:install: it rewrites this command for Windows"
+
+
+def test_windows_shell_finds_git_bash_from_inside_git_bash(tmp_path):
+    """In Git Bash, git on PATH is <root>\\mingw64\\bin\\git.exe; bash.exe is <root>\\bin's."""
+    git_root = tmp_path / "Git"
+    (git_root / "mingw64" / "bin").mkdir(parents=True)
+    (git_root / "bin").mkdir()
+    (git_root / "bin" / "bash.exe").write_text("")
+    which = {"git": str(git_root / "mingw64" / "bin" / "git.exe")}.get
+    assert doctor.windows_shell({}, which) == (
+        [str(git_root / "bin" / "bash.exe"), "-c"],
+        "Git Bash",
+    )
 
 
 def test_windows_shell_prefers_git_bash(tmp_path):

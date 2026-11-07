@@ -7,7 +7,9 @@ description: Diagnose and fix the dashline statusline — run its checks, explai
 
 Below, `DASHLINE` stands for `python3 -I -S "${CLAUDE_PLUGIN_ROOT}/statusline.py"`.
 On Windows (not WSL), use the first of `py -3`, `python` or `python3` that runs Python
-3.9 or newer in place of `python3`. Running it from the plugin lets doctor compare the
+3.9 or newer in place of `python3`. To tell them apart: in Claude's shell `uname -s`
+prints `MINGW…` or `MSYS…` on Windows (Git Bash) and `Linux` in WSL; a PowerShell shell
+is Windows. Running it from the plugin lets doctor compare the
 installed copy with this version.
 
 ## 1. Run it
@@ -59,8 +61,8 @@ Do this without asking, only when the `settings` line is `ok` (or warns only abo
 first (next list): `--install` writes the user file, which would turn dashline on in
 every other project too.
 - `install` warns that the copy is old or differs, `command` says its statusline.py is
-  missing, or `settings` warns that there's no `refreshInterval`: run
-  `DASHLINE --install`. With the entry already dashline's, it updates the copy and
+  missing or its fix says install `rewrites this command for Windows`, or `settings`
+  warns that there's no `refreshInterval`: run `DASHLINE --install`. With the entry already dashline's, it updates the copy and
   keeps the command and glyph set as written. If it exits 3 or 4 anyway, stop and
   handle it as in the ask-first list below.
   Not when `install` says the installed copy is newer than this one: that means this
@@ -117,8 +119,9 @@ Explain, and leave to the user:
 - `command` failing with `python3` not found (on Windows, also `is not recognized`):
   Claude Code's PATH lacks the Python the command names. The user can install Python
   (see `/dashline:install` step 1) or edit the command to use a full path to Python
-  3.9+; `--install` keeps that edit. On Windows, the path must have no spaces, since
-  PowerShell won't run a quoted program name.
+  3.9+; `--install` keeps that edit. On Windows without Git Bash (the line says
+  `PowerShell`), that path must have no spaces: PowerShell won't run a quoted program
+  name.
 - `command` slow: usually a large git repo or slow disk. Mention it, nothing to fix.
   On Windows the line also names the shell it ran in (Git Bash, or PowerShell when
   Git Bash isn't installed); starting the shell is part of the time.

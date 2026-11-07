@@ -8,7 +8,8 @@ mounts ~/.claude under another user.
 On Windows, Claude Code runs the command in Git Bash, or in PowerShell when there's no
 Git Bash, so the entry is one both read: a Python on PATH by name (`py -3`, `python` or
 `python3`, whichever runs Python 3.9 or newer) and the copy's full path in forward
-slashes and double quotes.
+slashes and double quotes. An entry still running the command dashline wrote before it
+ran on Windows (Bash only) is rewritten that way too.
 
 A statusLine that runs something else is never replaced without --replace: the skill
 shows it to the user and asks first. Neither is a scripts/statusline/ folder that holds
@@ -23,7 +24,7 @@ import os
 import re
 import sys
 
-from dashline.theme import config_dir, home_dir
+from dashline.theme import config_dir, home_dir, retry_held
 
 COMMAND = 'python3 -I -S "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/statusline/statusline.py"'
 # In a command: it runs the copy in the config dir. Other tools can use the same path, so
@@ -47,6 +48,7 @@ OWN_NAMES = ("statusline.py", "VERSION", "dashline")
 DESKTOP_JUNK = (".DS_Store", "Thumbs.db", "desktop.ini")
 
 # Exit codes beyond 0 and 1.
+WINDOWS = os.name == "nt"
 NEEDS_REPLACE = 3
 NEEDS_DOWNGRADE = 4  # the installed copy is newer than this one
 
@@ -75,7 +77,22 @@ def command(glyphs: str, base: str = COMMAND) -> str:
 def windows_command(env, python: str) -> str:
     """The command for Windows: `python` (a WINDOWS_PYTHONS name) and a full path."""
     script = os.path.join(install_dir(env), "statusline.py").replace("\\", "/")
+    if "$" in script or "`" in script:
+        raise InstallError(
+            f"the install path {script} has a $ or `, which both Git Bash and PowerShell "
+            "would expand in the statusLine command. Set CLAUDE_CONFIG_DIR to a folder "
+            "without them, or add the statusLine entry yourself. Nothing was changed."
+        )
     return f'{python} -I -S "{script}"'
+
+
+def old_form(entry) -> bool:
+    """An entry whose command is the one dashline wrote before it ran on Windows,
+    `--glyphs` aside. Its `${CLAUDE_CONFIG_DIR:-…}` is Bash: PowerShell can't run it,
+    so on Windows install rewrites it (a command edited by hand is kept as written).
+    """
+    cmd = entry.get("command") if isinstance(entry, dict) else None
+    return isinstance(cmd, str) and GLYPHS.sub("", cmd).strip() == COMMAND
 
 
 def windows_python(which=None, run=None) -> str | None:
@@ -119,6 +136,8 @@ def runs_install_dir(entry, env=None) -> bool:
         return False
     cmd = cmd.replace("\\", "/")
     target = config_dir(os.environ if env is None else env).replace("\\", "/").rstrip("/")
+    if WINDOWS:  # C:\Cfg and c:\cfg are the same folder there
+        cmd, target = cmd.lower(), target.lower()
     prefixes = (*CONFIG_PREFIXES, target)
     return any(prefix + MARK in cmd for prefix in prefixes)
 
@@ -568,7 +587,7 @@ def copy(env) -> tuple:
         os.makedirs(os.path.join(new, "dashline"))
         for rel, path in source.items():
             shutil.copyfile(path, os.path.join(new, *rel.split("/")))
-        with open(os.path.join(new, "VERSION"), "w", encoding="utf-8") as f:
+        with open(os.path.join(new, "VERSION"), "w", encoding="utf-8", newline="\n") as f:
             f.write(__version__ + "\n")
         for name in _extras(real):
             try:
@@ -576,13 +595,15 @@ def copy(env) -> tuple:
                 moved.append(name)
             except OSError as e:
                 stuck.append((name, e.strerror or str(e)))
+        # retry_held: on Windows a folder with a file open in it (a scan of the new
+        # copy, a render importing the old one) can't be renamed for a moment.
         if had:
-            os.rename(real, old)
+            retry_held(os.rename, real, old)
         try:
-            os.rename(new, real)
+            retry_held(os.rename, new, real)
         except BaseException:
             if had:  # put the old copy back, so a render still finds one
-                os.rename(old, real)
+                retry_held(os.rename, old, real)
             raise
         swapped = True
     except BaseException as e:
@@ -662,11 +683,30 @@ def check_writable(path: str) -> None:
     folder = os.path.dirname(real)
     while not os.path.isdir(folder) and os.path.dirname(folder) != folder:
         folder = os.path.dirname(folder)  # the nearest folder that exists gets the rest
-    if not os.access(folder, os.W_OK | os.X_OK):
+    if not _can_write_in(folder):
         raise InstallError(
             f"can't write in {folder}, so {path} was left alone; make the folder "
             "writable, or add the statusLine entry yourself, then run again"
         )
+
+
+def _can_write_in(folder: str) -> bool:
+    """Whether a file can be made in `folder`. On Windows os.access ignores a folder's
+    permissions, so there a file is made and removed to find out."""
+    if not WINDOWS:
+        return os.access(folder, os.W_OK | os.X_OK)
+    probe = os.path.join(folder, f".dashline-probe-{os.getpid()}.tmp")
+    try:
+        os.close(os.open(probe, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
+    except FileExistsError:
+        pass  # left by an earlier run with this pid: it could be made, then
+    except OSError:
+        return False
+    import contextlib
+
+    with contextlib.suppress(OSError):
+        os.unlink(probe)
+    return True
 
 
 def settings_text(path: str, data: dict) -> str:
@@ -706,11 +746,14 @@ def write_settings(path: str, text: str) -> None:
     # file Claude Code makes.
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600 if mode is not None else 0o666)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
+        # "\n" as written: no CRLF on Windows, so a settings.json kept in git doesn't
+        # change on every line.
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
             f.write(bom + text)
             if mode is not None:
                 os.chmod(tmp, mode)
-        os.replace(tmp, real)
+        # Claude Code or an antivirus scan can hold the file open for a moment.
+        retry_held(os.replace, tmp, real)
     finally:
         if os.path.lexists(tmp):
             os.unlink(tmp)
@@ -812,8 +855,9 @@ def run(
     given; exit 4 (nothing changed) when the installed copy is newer and --downgrade
     wasn't given.
 
-    windows: write the Windows command (default: when running on Windows); python finds
-    the Python it names (windows_python), for tests to stand in for.
+    windows: write the Windows command (default: when running on Windows), for a new
+    entry and in place of the old Bash-only one (old_form); python finds the Python it
+    names (windows_python), for tests to stand in for.
     """
     from dashline import __version__
 
@@ -829,9 +873,13 @@ def run(
         where = home_short(target, env)
         theirs_folder = folder_state(target) == "theirs"
         ours = runs_install_dir(current, env) and not theirs_folder
+        windows = WINDOWS if windows is None else windows
+        rewrite = windows and ours and old_form(current)
         base = COMMAND
-        writes_new = not ours and (current is None or replace)
-        if (os.name == "nt" if windows is None else windows) and writes_new:
+        # A new command is written (and on Windows, needs a Python found for it) for a
+        # fresh entry or --replace, unless the install stops at exit 3 anyway.
+        writes_new = not ours and (current is None or replace) and (replace or not theirs_folder)
+        if windows and (writes_new or rewrite):
             name = python()
             if name is None:
                 raise InstallError(
@@ -842,6 +890,8 @@ def run(
                 )
             base = windows_command(env, name)
         entry, _ = plan_entry(current, glyphs, replace, ours, settings, base)
+        if rewrite:
+            entry["command"] = command(glyphs or glyphs_of(current), base)
         if not replace and (theirs_folder or entry is None):
             if theirs_folder:
                 out.write(
@@ -894,6 +944,11 @@ def run(
         # folder, so put it back.
         if aside and not done:
             out.write(put_back(aside, target, env))
+    if rewrite:
+        out.write(
+            "note: the old statusLine command was Bash only (PowerShell can't run it); "
+            f"it's now {entry['command']}\n"
+        )
     verb = "already runs" if entry == current else "now runs"
     out.write(f"{settings}: statusLine {verb} it with {describe(entry)}\n")
     other = overridden_by(env, project_dir(env, cwd))

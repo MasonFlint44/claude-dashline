@@ -1,6 +1,6 @@
 # dashline — plan
 
-Status: built; 0.2.0 on 2026-11-06. Draft 4 (2026-11-04) was the design the build followed;
+Status: built; 0.2.0 on 2026-11-07. Draft 4 (2026-11-04) was the design the build followed;
 later changes are marked with their date.
 
 Repo `~/git/claude-dashline`; plugin `dashline` (skills `/dashline:install`,
@@ -215,20 +215,32 @@ and the copy's full path in forward slashes, double-quoted:
 `--install` picks the name by running each of `py -3`, `python`, `python3` (first
 that prints 3.9+; the Store's `python3` stub doesn't run anything) and stops with
 advice if none works. The path is fixed at install time (no `CLAUDE_CONFIG_DIR`
-expansion). An entry already dashline's keeps its command as written, as everywhere.
-Checked in CI: the installed command runs and prints in both shells.
+expansion), and a path with `$` or `` ` `` (expanded inside double quotes by both
+shells) is refused. An entry already dashline's keeps its command as written, as
+everywhere, with one exception (11/7, the author's call): on Windows the exact command
+earlier versions wrote (`COMMAND`, `--glyphs` aside) is rewritten in the Windows form,
+since it's Bash only; a hand-edited one is kept, and doctor's `command` line says
+install rewrites the old one. Checked in CI: the installed command runs and prints in
+both shells.
 
 Other Windows differences: home is `USERPROFILE` first (Node's `os.homedir`; HOME can
 be Git Bash's own); credentials are in `.credentials.json` as on Linux; paths shown in
 the statusline and in messages use `/` (both shells read it, and a `fix:` line may be
 pasted into Git Bash); the folder link is `file:///C:/…`, the drive form Windows
-Terminal opens; a timed-out git is ended with `taskkill /T` (no process groups), and
+Terminal opens, or `file://server/share/…` for a share (`\\wsl.localhost` included);
+a file another process holds open can't be replaced, renamed or removed there, so
+those (settings.json, the cache, the lock, the install folder swap) are retried for
+about half a second, and the fetch child runs from the config folder, not the install
+folder it would pin; settings.json is written with `\n` line endings; the config
+folder in a command matches in any case; a timed-out git is ended with `taskkill /T` (no process groups), and
 its pipe isn't closed while a reader thread holds it; there's no file-mode check (files
 take the profile folder's access); git's system config isn't read without
 `GIT_CONFIG_SYSTEM`; doctor and install write UTF-8 to a pipe (Python there defaults
 to the ANSI code page); doctor runs the command in the same shell Claude Code would
-(`CLAUDE_CODE_GIT_BASH_PATH`, else `bash.exe` next to git, else PowerShell) and calls
-it slow only past 2.5 s, since starting either shell takes much of 500 ms.
+(`CLAUDE_CODE_GIT_BASH_PATH`, else `bin\bash.exe` up to three folders above git, which
+in Git Bash is `mingw64\bin\git.exe`, else PowerShell), reads PowerShell 5.1's error
+records for the program's own line, and calls the command slow only past 2.5 s, since
+starting either shell takes much of 500 ms.
 
 ---
 
@@ -858,7 +870,7 @@ CI (0.1.7): lint, the preview `--check`, and the tests on Linux, macOS and (sinc
 0.2.0) Windows for Python 3.10, 3.12 and 3.14 (3.9 until 0.1.8), all through
 `uv run --locked`; plus `scripts/smoke.sh` on Apple's `/usr/bin/python3` and on a
 uv-installed 3.9 on Linux (since 0.1.8) and on Windows in Git Bash (0.2.0): every module imports, preview, install into a throwaway home, render, and
-doctor with that Python as `python3`; any stderr, an `internal error` line, fewer than
+doctor with that Python as `python3` (as `python` on Windows); any stderr, an `internal error` line, fewer than
 2 lines or a failing check fails it. On main each commit has its own concurrency
 group, so no run is cancelled; a newer push to a PR cancels the older run.
 Actions are SHA-pinned and bumped by Dependabot. `capture_fixtures.py` goes through

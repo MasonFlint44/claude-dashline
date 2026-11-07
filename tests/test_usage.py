@@ -17,7 +17,7 @@ from conftest import (
     posix_only,
     read_json,
 )
-from dashline import account, usage
+from dashline import account, theme, usage
 from dashline.account import Account
 
 MODEL_FABLE = {"model": {"id": "claude-fable-5-1", "display_name": "Fable 5.1"}}
@@ -621,6 +621,27 @@ def test_release_only_removes_its_own_lock(isolated_home):
     assert not Path(usage._path(env, "fetch.lock")).exists()
 
 
+def test_release_waits_for_a_render_reading_the_lock_on_windows(isolated_home, monkeypatch):
+    """A render reading fetch.lock keeps Windows from removing it: try again, or no
+    fetch starts until the lock goes stale."""
+    env = env_for(isolated_home)
+    nonce = usage.take_lock(env, NOW)
+    real, calls = os.unlink, []
+
+    def busy_once(path):
+        calls.append(path)
+        if len(calls) == 1:
+            raise PermissionError(13, "in use")
+        real(path)
+
+    monkeypatch.setattr(usage.os, "unlink", busy_once)
+    monkeypatch.setattr(theme, "WINDOWS", True)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    usage.release(env, nonce)
+    assert len(calls) == 2
+    assert not Path(usage._path(env, "fetch.lock")).exists()
+
+
 def test_spawn_starts_a_detached_child_without_the_token(isolated_home, monkeypatch):
     import subprocess
 
@@ -644,6 +665,10 @@ def test_spawn_starts_a_detached_child_without_the_token(isolated_home, monkeypa
     else:
         assert seen["kwargs"]["start_new_session"] is True
     assert not REAL_SPAWN(env, NOW + 1)  # the lock is held until the child ends
+    # Not in the install folder (argv[4]): Windows can't rename a process's working
+    # folder, and /dashline:install swaps that one.
+    assert seen["kwargs"]["cwd"] != seen["argv"][4]
+    assert seen["kwargs"]["cwd"] == str(isolated_home / ".claude")
 
 
 def test_child_releases_the_lock_and_holds_on_a_surprise(isolated_home, monkeypatch):
@@ -1221,13 +1246,13 @@ def test_a_cache_write_retries_a_file_held_open_on_windows(isolated_home, monkey
         real(src, dst)
 
     monkeypatch.setattr(usage.os, "replace", busy_once)
-    monkeypatch.setattr(usage, "WINDOWS", True)
+    monkeypatch.setattr(theme, "WINDOWS", True)
     monkeypatch.setattr("time.sleep", lambda s: None)
     path = str(isolated_home / "cache" / "x.json")
     usage._write_json(path, {"a": 1})
     assert len(calls) == 2
     assert json.loads(Path(path).read_text()) == {"a": 1}
     calls.clear()
-    monkeypatch.setattr(usage, "WINDOWS", False)  # elsewhere it's a real error
+    monkeypatch.setattr(theme, "WINDOWS", False)  # elsewhere it's a real error
     with pytest.raises(PermissionError):
         usage._write_json(path, {"a": 2})

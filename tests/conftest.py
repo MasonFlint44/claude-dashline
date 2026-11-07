@@ -110,12 +110,14 @@ def _runs_python(args) -> bool:
     words = [os.fsdecode(a) for a in args]
     if not words:
         return False
-    program = Path(words[0]).name
+    program = Path(words[0]).name.lower()
+    program = program[:-4] if program.endswith(".exe") else program  # Windows: bash.exe
     return (
         words[0] == sys.executable
         or program.startswith("python")
-        or program in ("sh", "bash", "zsh", "dash")
-        or any(w.endswith("statusline.py") for w in words)
+        or program in ("sh", "bash", "zsh", "dash", "py", "powershell", "pwsh")
+        # A shell command names the script inside: `py -3 -I -S "C:/…/statusline.py"`.
+        or any("statusline.py" in w for w in words)
     )
 
 
@@ -204,6 +206,7 @@ def no_real_keychain(request, monkeypatch):
 WINDOWS_ESSENTIALS = ("SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "TEMP", "TMP")
 
 posix_only = pytest.mark.skipif(os.name == "nt", reason="POSIX behavior (file modes, signals)")
+windows_only = pytest.mark.skipif(os.name != "nt", reason="Windows behavior (paths, home)")
 
 
 def env_for(home, **more):

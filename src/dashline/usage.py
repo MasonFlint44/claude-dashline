@@ -26,14 +26,12 @@ import sys
 
 from dashline.stdin import _dig, _num, _str, iso_time
 from dashline.text import clean
-from dashline.theme import config_dir
+from dashline.theme import config_dir, retry_held
 
 API_URL = "https://api.anthropic.com"
 USAGE_PATH = "/api/oauth/usage"
 BETA = "oauth-2025-04-20"
 TIMEOUT = 10  # for each network step: connecting, each read
-REPLACE_TRIES = 5  # Windows: a file a reader holds open can't be replaced yet
-WINDOWS = os.name == "nt"
 DEADLINE = 30  # for the whole request, DNS included; well under LOCK_STALE
 FRESH = 180  # refetch once the cache is this old
 STALE = 300  # past this, line 2 shows the age (a fetch is failing)
@@ -155,7 +153,7 @@ def _write_json(path: str, data: dict) -> None:
     """Write atomically: readers see the old file or the new one, never half of one.
 
     Windows refuses to replace a file another process has open (a render reading it,
-    for a moment), so there it tries a few times.
+    for a moment), so there it tries again for a moment (retry_held).
     """
     os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
     tmp = f"{path}.{os.getpid()}.tmp"
@@ -163,16 +161,7 @@ def _write_json(path: str, data: dict) -> None:
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(data, f)
-        for attempt in range(REPLACE_TRIES):
-            try:
-                os.replace(tmp, path)
-                break
-            except PermissionError:
-                if not WINDOWS or attempt == REPLACE_TRIES - 1:
-                    raise
-                import time
-
-                time.sleep(0.05)
+        retry_held(os.replace, tmp, path)
     finally:
         if os.path.exists(tmp):
             os.unlink(tmp)
@@ -339,7 +328,10 @@ def release(env, nonce: str | None) -> None:
     """Remove fetch.lock if it is still the one taken with `nonce`."""
     path = _path(env, "fetch.lock")
     if nonce and _read_json(path).get("nonce") == nonce:
-        _remove(path)
+        # On Windows a render reading the lock keeps it from going: wait that out, or
+        # no fetch starts until the lock is stale.
+        with contextlib.suppress(OSError):
+            retry_held(os.unlink, path)
 
 
 # What the child runs: `python3 -I -S -c CHILD_CODE <folder holding dashline/> <nonce>`.
@@ -359,6 +351,9 @@ def spawn(env, now: float) -> bool:
     import subprocess
 
     package_parent = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    # Not run from the install folder: on Windows a folder that is some process's
+    # working folder can't be renamed, and /dashline:install swaps that folder.
+    home = config_dir(env)
     kwargs = {}
     if os.name == "nt":
         kwargs["creationflags"] = 0x00000008 | 0x00000200  # DETACHED | NEW_PROCESS_GROUP
@@ -372,7 +367,7 @@ def spawn(env, now: float) -> bool:
             stderr=subprocess.DEVNULL,
             close_fds=True,
             env=dict(env),
-            cwd=package_parent,
+            cwd=home if os.path.isdir(home) else None,
             **kwargs,
         )
     except OSError:
