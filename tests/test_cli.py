@@ -338,9 +338,7 @@ def test_parse_columns(value, columns):
 def test_windows_output_is_utf8_on_a_pipe(monkeypatch):
     """Python on Windows writes a pipe or file in the ANSI code page, which has no `│`:
     dashline switches its output to UTF-8 there (a console is UTF-8 already)."""
-    import os
-
-    from dashline import __main__
+    from dashline import __main__, host
 
     class Stream:
         def __init__(self, encoding):
@@ -350,13 +348,18 @@ def test_windows_output_is_utf8_on_a_pipe(monkeypatch):
         def reconfigure(self, encoding, errors):
             self.to = (encoding, errors)
 
+    class Fixed:  # a stand-in stream with no reconfigure (a test harness's, say)
+        encoding = "cp1252"
+
     cp1252, utf8 = Stream("cp1252"), Stream("utf-8")
     monkeypatch.setattr(sys, "stdout", cp1252)
     monkeypatch.setattr(sys, "stderr", utf8)
-    real = os.name
-    os.name = "nt"  # just for this call: pathlib can't take it for long
-    try:
-        __main__._utf8_pipes()
-    finally:
-        os.name = real
+    monkeypatch.setattr(host, "WINDOWS", True)
+    __main__._utf8_pipes()
     assert (cp1252.to, utf8.to) == (("utf-8", "replace"), None)
+    monkeypatch.setattr(sys, "stderr", Fixed())
+    __main__._utf8_pipes()  # left as it is, quietly
+    monkeypatch.setattr(host, "WINDOWS", False)
+    cp1252.to = None
+    __main__._utf8_pipes()
+    assert cp1252.to is None  # elsewhere nothing changes

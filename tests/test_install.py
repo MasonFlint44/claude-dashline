@@ -6,11 +6,12 @@ import os
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 import pytest
 
-from conftest import NO_NETWORK, ROOT, env_for, posix_only
-from dashline import __version__, install
+from conftest import NO_NETWORK, ROOT, env_for, held_once, posix_only
+from dashline import __version__, host, install
 
 NOW_REAL = time.time()  # leftover folders are judged by their real mtime
 ENTRY_CMD = 'python3 -I -S "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/statusline/statusline.py"'
@@ -1151,7 +1152,7 @@ def test_windows_install_writes_a_command_both_shells_run(conf, env):
     assert cmd == f'python -I -S "{target}" --glyphs nerd'
     assert install.is_ours(settings(conf)["statusLine"], env)
     # An update keeps it, and changing the glyph set edits only the flag.
-    assert install.run("ascii", env=env, out=io.StringIO(), cwd="/", windows=True) == 0
+    assert win(env, "ascii", python=no_python)[0] == 0  # no Python looked for
     assert settings(conf)["statusLine"]["command"] == f'python -I -S "{target}" --glyphs ascii'
 
 
@@ -1203,13 +1204,69 @@ def test_windows_install_rewrites_the_old_bash_only_command(conf, env):
     assert settings(conf)["statusLine"]["command"] == ENTRY_CMD
 
 
+@pytest.mark.parametrize(
+    ("cmd", "old"),
+    [
+        (ENTRY_CMD, True),
+        (f"{ENTRY_CMD} --glyphs nerd", True),
+        # Which Python runs it is what a Windows user had to change: still the old one.
+        (ENTRY_CMD.replace("python3", "python", 1), True),
+        (ENTRY_CMD.replace("python3", "py -3.13", 1), True),
+        (ENTRY_CMD.replace("python3", "py -3", 1), True),
+        (ENTRY_CMD.replace("python3", '"C:/Program Files/Python313/python.exe"', 1), True),
+        (ENTRY_CMD.replace("python3", "C:\\Python39\\python.exe", 1), True),
+        # Anything else is an edit of the user's own.
+        (ENTRY_CMD.replace("python3", "python -X utf8", 1), False),
+        (ENTRY_CMD.replace("python3", "env python3", 1), False),
+        (ENTRY_CMD.replace("python3", "bash", 1), False),
+        (f"{ENTRY_CMD} 2>/dev/null", False),
+        (ENTRY_CMD.replace("$HOME/.claude", "$HOME/dots/claude"), False),
+        ('py -3 -I -S "C:/Users/pat/.claude/scripts/statusline/statusline.py"', False),
+    ],
+)
+def test_old_form(cmd, old):
+    assert install.old_form({"type": "command", "command": cmd}) is old
+
+
 def test_windows_install_keeps_a_command_edited_by_hand(conf, env):
-    """Only the exact old command is rewritten: one edited by hand is kept as written."""
-    mine = 'python3.12 -I -S "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/statusline/statusline.py"'
+    """Only the old command (any Python) is rewritten: other edits are kept as written,
+    unless --replace says to use dashline's own."""
+    mine = f"{ENTRY_CMD} 2>/dev/null"
     write_settings(conf, {"statusLine": {"type": "command", "command": mine}})
-    code, out = win(env, python=no_python)
+    code, out = win(env)
     assert code == 0, out
     assert settings(conf)["statusLine"]["command"] == mine
+    code, out = win(env, replace=True, python=lambda: "py -3")
+    assert code == 0, out
+    target = (conf / "scripts" / "statusline" / "statusline.py").as_posix()
+    assert settings(conf)["statusLine"]["command"] == f'py -3 -I -S "{target}"'
+    assert "PowerShell can't run it" in out
+
+
+def test_windows_replace_keeps_a_full_path_without_variables(conf, env):
+    target = (conf / "scripts" / "statusline" / "statusline.py").as_posix()
+    mine = f'"C:/Py/python.exe" -I -S "{target}"'
+    write_settings(conf, {"statusLine": {"type": "command", "command": mine}})
+    code, out = win(env, replace=True)
+    assert code == 0, out
+    assert settings(conf)["statusLine"]["command"] == mine
+
+
+def test_windows_install_rewrites_an_old_command_with_another_python(conf, env):
+    old = ENTRY_CMD.replace("python3", "python", 1) + " --glyphs nerd"
+    write_settings(conf, {"statusLine": {"type": "command", "command": old}})
+    code, out = win(env, python=lambda: "py -3")
+    assert code == 0, out
+    target = (conf / "scripts" / "statusline" / "statusline.py").as_posix()
+    assert settings(conf)["statusLine"]["command"] == f'py -3 -I -S "{target}" --glyphs nerd'
+
+
+def test_windows_newer_copy_stops_before_looking_for_python(conf, env):
+    """Exit 4 (a newer copy) comes first: no Python is looked for, nor missed."""
+    write_settings(conf, {"statusLine": {"type": "command", "command": ENTRY_CMD}})
+    assert run(env)[0] == 0
+    (conf / "scripts" / "statusline" / "VERSION").write_text("99.0.0\n")
+    assert win(env, python=no_python)[0] == install.NEEDS_DOWNGRADE
 
 
 def test_windows_install_without_python_keeps_the_old_command(conf, env, capsys):
@@ -1254,9 +1311,9 @@ def test_windows_entry_is_ours_whatever_the_case(conf, isolated_home, monkeypatc
     """C:\\Cfg and c:\\cfg are one folder on Windows."""
     env = env_for(isolated_home, CLAUDE_CONFIG_DIR="C:\\Cfg")
     entry = {"type": "command", "command": 'py -3 -I -S "c:/cfg/scripts/statusline/statusline.py"'}
-    monkeypatch.setattr(install, "WINDOWS", False)
+    monkeypatch.setattr(host, "WINDOWS", False)
     assert not install.runs_install_dir(entry, env)
-    monkeypatch.setattr(install, "WINDOWS", True)
+    monkeypatch.setattr(host, "WINDOWS", True)
     assert install.runs_install_dir(entry, env)
 
 
@@ -1275,30 +1332,47 @@ def test_settings_keep_lf_line_endings(conf, env):
 
 def test_settings_write_waits_for_a_file_held_open_on_windows(conf, env, monkeypatch):
     """Claude Code or an antivirus scan can hold settings.json open for a moment."""
-    from dashline import theme
-
-    real, calls = os.replace, []
-
-    def busy_once(src, dst):
-        if dst.endswith("settings.json"):
-            calls.append(dst)
-            if len(calls) == 1:
-                raise PermissionError(13, "in use")
-        real(src, dst)
-
-    monkeypatch.setattr(install.os, "replace", busy_once)
-    monkeypatch.setattr(theme, "WINDOWS", True)
-    monkeypatch.setattr("time.sleep", lambda s: None)
+    calls = held_once(monkeypatch, "replace", lambda src, dst: dst.endswith("settings.json"))
     assert run(env)[0] == 0
     assert len(calls) == 2
     assert settings(conf)["statusLine"]["command"] == ENTRY_CMD
 
 
+@pytest.mark.parametrize("held", ["the old copy", "the new copy"])
+def test_folder_swap_waits_for_a_held_folder_on_windows(conf, env, monkeypatch, held):
+    """A scan of the new copy, or a render importing the old one, holds its folder for
+    a moment: the swap tries again."""
+    assert run(env)[0] == 0  # an old copy to swap out
+    (conf / "scripts" / "statusline" / "VERSION").write_text("0.0.1\n")
+    old = held == "the old copy"
+    calls = held_once(
+        monkeypatch,
+        "rename",
+        lambda src, dst: (".old-" in dst) if old else (".new-" in src),
+    )
+    code, out = run(env)
+    assert code == 0, out
+    assert len(calls) == 2
+    assert (conf / "scripts" / "statusline" / "VERSION").read_text() == f"{__version__}\n"
+
+
 def test_folder_check_on_windows_makes_a_file(tmp_path, monkeypatch):
     """os.access ignores a folder's permissions on Windows: a file is made instead."""
-    monkeypatch.setattr(install, "WINDOWS", True)
+    monkeypatch.setattr(host, "WINDOWS", True)
     folder = tmp_path / "folder"
     folder.mkdir()
-    assert install._can_write_in(str(folder))
+    assert host.can_write_in(str(folder))
     assert list(folder.iterdir()) == []
-    assert not install._can_write_in(str(folder / "missing"))
+    assert not host.can_write_in(str(folder / "missing"))
+
+
+def test_messages_spell_out_the_path_when_git_bash_has_another_home(monkeypatch, tmp_path):
+    """On a domain Git Bash's HOME can be H:\\, so `~/.claude` pasted there is wrong."""
+    profile = str(tmp_path / "pat")
+    path = str(tmp_path / "pat" / ".claude" / "settings.json")
+    monkeypatch.setattr(host, "WINDOWS", True)
+    assert install.home_short(path, {"USERPROFILE": profile}) == "~/.claude/settings.json"
+    same = {"USERPROFILE": profile, "HOME": profile + os.sep}
+    assert install.home_short(path, same) == "~/.claude/settings.json"
+    other = {"USERPROFILE": profile, "HOME": str(tmp_path / "H")}
+    assert install.home_short(path, other) == Path(path).as_posix()

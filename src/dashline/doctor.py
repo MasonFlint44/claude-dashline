@@ -19,7 +19,7 @@ import shlex
 import sys
 import time
 
-from dashline import install
+from dashline import host, install
 from dashline.usage import API_URL
 
 OK, WARN, FAIL, INFO = "ok", "warn", "fail", "info"
@@ -30,7 +30,6 @@ LOCK_WAIT = 5.0  # seconds doctor waits for a background fetch to finish
 SLOW_MS = 500
 # On Windows starting the shell alone (Git Bash, PowerShell) takes most of that.
 SLOW_MS_WINDOWS = 2500
-WINDOWS = os.name == "nt"
 NERD_TERMINALS = {"ghostty": "Ghostty", "wezterm": "WezTerm"}  # bundle the symbols
 WSL_DRIVES = "/mnt"  # where WSL mounts the Windows drives (its default)
 # Font files with the Nerd Font icons: Nerd Fonts' own, and Cascadia Code / Mono NF
@@ -104,54 +103,87 @@ def summarize(data: dict) -> str:
     return " · ".join(parts) or "no limits on this plan"
 
 
+GIT_BASH_DEPTH = 3  # folders above git.exe to look for Git for Windows' root
+# What Claude Code starts PowerShell with (2.1.319), so doctor's run matches it.
+POWERSHELL_OPTIONS = ("-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command")
+
+
+def _env(env, name: str) -> str:
+    """`name` from `env`, in either case (os.environ's keys are upper case on Windows)."""
+    return env.get(name) or env.get(name.upper()) or ""
+
+
+def program_files(env, x86: bool = False) -> str:
+    if x86:
+        return _env(env, "ProgramFiles(x86)") or "C:\\Program Files (x86)"
+    return _env(env, "ProgramW6432") or _env(env, "ProgramFiles") or "C:\\Program Files"
+
+
+def git_bashes(env, which):
+    """Where Claude Code looks for Git Bash, in its order (after CLAUDE_CODE_GIT_BASH_PATH):
+    Git for Windows in Program Files, 64-bit then 32-bit, then the one git on PATH comes
+    from. That git.exe is in <root>\\cmd, or in <root>\\ucrt64\\bin (mingw64 in older
+    versions) first on PATH in Git Bash itself, where the skill runs doctor; bash.exe is
+    in <root>\\bin. A root without cmd\\git.exe isn't Git for Windows (MSYS2, Cygwin).
+    """
+    for root in (program_files(env), program_files(env, x86=True)):
+        yield os.path.join(root, "Git", "bin", "bash.exe")
+    git = which("git")
+    folder = os.path.dirname(git) if git else ""
+    for _ in range(GIT_BASH_DEPTH):
+        parent = os.path.dirname(folder)
+        if not folder or parent == folder:
+            return
+        folder = parent
+        if os.path.isfile(os.path.join(folder, "cmd", "git.exe")):
+            yield os.path.join(folder, "bin", "bash.exe")
+            return
+
+
 def windows_shell(env, which=None) -> tuple:
     """(argv before the command, name): the shell Claude Code runs a statusLine command
-    in on Windows. Git Bash when there is one (CLAUDE_CODE_GIT_BASH_PATH, else next to
-    git on PATH), otherwise PowerShell.
+    in on Windows, found as it finds it. Git Bash when there is one (git_bashes), else
+    PowerShell 7 from Program Files, else Windows PowerShell.
     """
     import shutil
 
-    which = which or shutil.which
+    which = which or (lambda name: shutil.which(name, path=_env(env, "PATH") or None))
     bash = env.get("CLAUDE_CODE_GIT_BASH_PATH")
     if not (bash and os.path.isfile(bash)):
-        bash = None
-        git = which("git")
-        # Git for Windows keeps bash.exe in <root>\bin, and git.exe in <root>\cmd, or in
-        # <root>\ucrt64\bin (or mingw64\bin), first on PATH in Git Bash itself, where the
-        # skill runs us.
-        folder = os.path.dirname(git) if git else ""
-        for _ in range(3):
-            parent = os.path.dirname(folder)
-            if not folder or parent == folder:
-                break
-            folder = parent
-            found = os.path.join(folder, "bin", "bash.exe")
-            if os.path.isfile(found):
-                bash = found
-                break
+        bash = next((b for b in git_bashes(env, which) if os.path.isfile(b)), None)
     if bash:
         return [bash, "-c"], "Git Bash"
-    return ["powershell", "-NoProfile", "-NonInteractive", "-Command"], "PowerShell"
+    pwsh = os.path.join(program_files(env), "PowerShell", "7", "pwsh.exe")
+    if os.path.isfile(pwsh):
+        return [pwsh, *POWERSHELL_OPTIONS], "PowerShell 7"
+    return ["powershell", *POWERSHELL_OPTIONS], "PowerShell"
 
 
-# The lines PowerShell 5.1 adds around what a program wrote to stderr.
-PS_DECORATION = re.compile(r"^\s*(?:At line:\d+ char:\d+|\+ )")
+# The `+ …` lines of an error record PowerShell 5.1 prints for a program's stderr.
+PS_DETAIL = re.compile(r"^\s*\+ ")
 PS_PREFIX = re.compile(r"^(\S+) : ")
 
 
 def powershell_unwrapped(err: list) -> list:
-    """`err` without PowerShell's error-record dressing, as the program wrote it.
+    """`err` as the program wrote it, without PowerShell 5.1's error-record dressing.
 
-    PowerShell 5.1 turns a program's stderr, and a command it can't find, into an error
-    record: `py : <the line>`, then `At line:1 char:1`, `+ …` lines and
-    `+ FullyQualifiedErrorId : …` last, where stderr_reason looks.
+    PowerShell turns a program's stderr, and a command it can't find, into a record:
+    the message as `py : <the line>` (wrapped at the window's width), a line saying
+    where (`At line:1 char:1`, in the system's language), then `+ …` lines, the last
+    `+ FullyQualifiedErrorId : …`. That record becomes the message on one line; lines
+    after it (the rest of a traceback) stay, without the `py : `.
     """
-    if not any("FullyQualifiedErrorId" in line for line in err):
+    end = next((i for i, line in enumerate(err) if "FullyQualifiedErrorId" in line), None)
+    if end is None:
         return err
-    lines = [line for line in err if line.strip() and not PS_DECORATION.match(line)]
-    m = PS_PREFIX.match(lines[0]) if lines else None
-    if m:
-        lines = [line[len(m.group(0)) :] if line.startswith(m.group(0)) else line for line in lines]
+    detail = next(i for i, line in enumerate(err) if PS_DETAIL.match(line))
+    message = [line.strip() for line in err[: max(detail - 1, 1)] if line.strip()]
+    m = PS_PREFIX.match(message[0]) if message else None
+    prefix = m.group(0) if m else ""
+    lines = [" ".join(message)[len(prefix) :]] if message else []
+    for line in err[end + 1 :]:
+        if line.strip() and not PS_DETAIL.match(line):
+            lines.append(line[len(prefix) :] if prefix and line.startswith(prefix) else line)
     return lines
 
 
@@ -277,7 +309,7 @@ class Doctor:
         short = self.short(path)
         if short.startswith("~/"):
             return "~/" + shlex.quote(short[2:])
-        return shlex.quote(path)
+        return shlex.quote(short)  # the path, with `/` on Windows
 
     def run(self) -> list:
         names = ("python", "installed", "settings", "login", "usage", "cache", "command")
@@ -549,7 +581,7 @@ class Doctor:
                     f"check that {self.short(os.path.dirname(path))} is writable",
                 )
             return
-        if not os.access(path, os.W_OK):
+        if not host.can_write_in(path):
             self.add(FAIL, "cache", f"{where} isn't writable", f"check the owner of {where}")
             return
         notes = []
@@ -573,7 +605,7 @@ class Doctor:
         # Windows has no such mode bits (files inherit the profile folder's access).
         exposed = []
         try:
-            names = [] if WINDOWS else usage.own_files(os.listdir(path), path)
+            names = [] if host.WINDOWS else usage.own_files(os.listdir(path), path)
         except OSError:
             names = []
         for name in names:
@@ -599,7 +631,7 @@ class Doctor:
             self.add(INFO, "command", "not run: settings don't run dashline")
             return
         shell, shell_name = ["sh", "-c"], "sh"
-        if WINDOWS:
+        if host.WINDOWS:
             shell, shell_name = windows_shell(self.env)
         sample = {
             "session_id": "dashline-doctor",
@@ -630,32 +662,61 @@ class Doctor:
         ms = (time.monotonic() - start) * 1000
         lines = [line for line in r.stdout.splitlines() if line.strip()]
         err = r.stderr.strip().splitlines()
-        if shell_name == "PowerShell":
+        powershell = shell_name.startswith("PowerShell")
+        if powershell:
             err = powershell_unwrapped(err)
-        # The command dashline wrote before it ran on Windows: Bash only.
-        rewrite = WINDOWS and install.old_form(self.entry)
+        program = first_word(self.entry["command"])
+        # The command dashline wrote before it ran on Windows (install rewrites it), or
+        # another with $-variables, which only Git Bash reads as written (--replace).
+        rewrite = host.WINDOWS and install.old_form(self.entry)
+        bash_only = host.WINDOWS and not rewrite and install.uses_variables(self.entry)
+        rewrite_fix = "run /dashline:install: it rewrites this command for Windows"
+        replace_fix = (
+            "its $-variables are Bash, which PowerShell reads differently: "
+            "/dashline:install with --replace writes the Windows command"
+        )
         if r.returncode != 0 or not lines or "internal error" in r.stdout:
             why = stderr_reason(err, lines) or f"exit {r.returncode}, {len(lines)} lines"
+            said = why.lower().replace(" ", "")  # PowerShell may have wrapped it mid-word
             fix = "run /dashline:install"
             if rewrite:
-                fix = "run /dashline:install: it rewrites this command for Windows"
-            elif "can't open file" in why:
+                fix = rewrite_fix
+            elif bash_only and powershell:
+                fix = replace_fix
+            elif any(s in said for s in ("blockedbygrouppolicy", "applocker", "softwarerestr")):
+                fix = f"a policy on this PC blocks {program}: ask whoever manages it"
+            elif "can'topenfile" in said:
                 fix = "the command's statusline.py is missing: run /dashline:install"
-            elif any(s in why for s in ("No such file", "not found", "is not recognized")):
-                program = first_word(self.entry["command"])
+            elif any(s in said for s in ("nosuchfile", "notfound", "isnotrecognized")):
                 fix = f"{program} must be on the PATH Claude Code sees, or use a full path"
+                if host.WINDOWS:  # no full path with spaces runs in both shells
+                    fix = (
+                        f"{program} must be on the PATH Claude Code sees: install Python, "
+                        "or add it to PATH, then restart Claude Code"
+                    )
             self.add(FAIL, "command", why, fix)
             return
         text = f"printed {len(lines)} line{'s' if len(lines) != 1 else ''} in {ms:.0f} ms"
-        if WINDOWS:
+        if host.WINDOWS:
             text += f" ({shell_name})"
-        if rewrite:
-            fix = "run /dashline:install: it rewrites this command for Windows"
+        if rewrite or bash_only:
+            fix = rewrite_fix if rewrite else replace_fix
             self.add(WARN, "command", text + ", but PowerShell can't run this command", fix)
             return
-        if ms > (SLOW_MS_WINDOWS if WINDOWS else SLOW_MS):
+        if powershell and install.glyphs_of(self.entry) != "ascii" and "│" not in r.stdout:
+            # PowerShell re-encodes a program's output in the console's code page, which
+            # on some systems (Japanese, Chinese, Korean) has no `│` or bars.
+            self.add(
+                WARN,
+                "command",
+                text + ", but its symbols came back changed",
+                "PowerShell here doesn't pass them through: use ascii glyphs "
+                "(/dashline:install), or install Git for Windows",
+            )
+            return
+        if ms > (SLOW_MS_WINDOWS if host.WINDOWS else SLOW_MS):
             fix = "a slow git repo or disk; see the git line"
-            if shell_name == "PowerShell":
+            if powershell:
                 fix = (
                     "PowerShell is slow to start; with Git for Windows installed, Claude Code "
                     "runs the statusline in Git Bash instead"
@@ -667,8 +728,20 @@ class Doctor:
     def git(self):
         import subprocess
 
+        git = "git"
+        if host.WINDOWS:
+            # Git installed for Git Bash only isn't on PATH, but the statusline, run in
+            # Git Bash, has it: use that one.
+            import shutil
+
+            bash = windows_shell(self.env)[0][0]
+            beside = os.path.join(os.path.dirname(os.path.dirname(bash)), "cmd", "git.exe")
+            if not shutil.which("git", path=_env(self.env, "PATH") or None) and os.path.isfile(
+                beside
+            ):
+                git = beside
         try:
-            r = subprocess.run(["git", "--version"], capture_output=True, text=True, timeout=5)
+            r = subprocess.run([git, "--version"], capture_output=True, text=True, timeout=5)
         except (OSError, subprocess.SubprocessError):
             self.add(WARN, "git", "not found: the directory row shows the folder only")
             return

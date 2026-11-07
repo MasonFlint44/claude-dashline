@@ -205,6 +205,28 @@ def no_real_keychain(request, monkeypatch):
 # SYSTEMROOT for sockets and randomness) and to find others.
 WINDOWS_ESSENTIALS = ("SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "TEMP", "TMP")
 
+
+def held_once(monkeypatch, name, when=lambda *args: True):
+    """As on Windows, where a file another process has open can't be moved or removed:
+    `os.<name>` raises PermissionError the first time `when(*args)` holds, then works.
+    Turns on host.WINDOWS (no sleeping between tries); returns the matching calls."""
+    from dashline import host
+
+    real, calls = getattr(os, name), []
+
+    def busy(*args, **kwargs):
+        if when(*args):
+            calls.append(args)
+            if len(calls) == 1:
+                raise PermissionError(13, "in use")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(os, name, busy)
+    monkeypatch.setattr(host, "WINDOWS", True)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    return calls
+
+
 posix_only = pytest.mark.skipif(os.name == "nt", reason="POSIX behavior (file modes, signals)")
 windows_only = pytest.mark.skipif(os.name != "nt", reason="Windows behavior (paths, home)")
 

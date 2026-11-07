@@ -7,10 +7,9 @@ description: Diagnose and fix the dashline statusline — run its checks, explai
 
 Below, `DASHLINE` stands for `python3 -I -S "${CLAUDE_PLUGIN_ROOT}/statusline.py"`.
 On Windows (not WSL), use the first of `py -3`, `python` or `python3` that runs Python
-3.9 or newer in place of `python3`. To tell them apart: in Claude's shell `uname -s`
-prints `MINGW…` or `MSYS…` on Windows (Git Bash) and `Linux` in WSL; a PowerShell shell
-is Windows. Running it from the plugin lets doctor compare the
-installed copy with this version.
+3.9 or newer in place of `python3`. To tell them apart: in Claude's shell `uname -s` prints `MINGW…` or `MSYS…` on Windows (Git Bash) and
+`Linux` in WSL. Where `uname` isn't found, the shell is PowerShell: that's Windows too.
+Running it from the plugin lets doctor compare the installed copy with this version.
 
 ## 1. Run it
 
@@ -85,6 +84,13 @@ Ask first (AskUserQuestion), and act only on a yes:
   refused, stop: don't retry.
 - `cache` says other users can read one of its files: run the `chmod 600` in its `fix:` line.
   (Windows has no such check: files there take the profile folder's access.)
+- `command`'s fix says the command's `$`-variables are Bash and `--replace` writes the
+  Windows command (Windows only: a command the user edited, which PowerShell can't
+  run): show the user the command and ask before `DASHLINE --install --replace`.
+- `command` warns that `its symbols came back changed` (Windows, PowerShell on a
+  system whose code page lacks them): ask whether to switch to `ascii` glyphs
+  (`DASHLINE --install --glyphs ascii`) or to install Git for Windows, so Claude Code
+  runs the statusline in Git Bash (then restart Claude Code).
 - `settings` warns that `--glyphs <x> isn't a glyph set` (a typo like `Nerd`): don't
   reset it to unicode. Run the glyph step of `/dashline:install` (the preview, then the
   user picks), then `DASHLINE --install --glyphs <set>`. If that exits 1 saying it
@@ -118,13 +124,15 @@ Explain, and leave to the user:
   needed.
 - `command` failing with `python3` not found (on Windows, also `is not recognized`):
   Claude Code's PATH lacks the Python the command names. The user can install Python
-  (see `/dashline:install` step 1) or edit the command to use a full path to Python
-  3.9+; `--install` keeps that edit. On Windows without Git Bash (the line says
-  `PowerShell`), that path must have no spaces: PowerShell won't run a quoted program
-  name.
+  (see `/dashline:install` step 1) or, on macOS and Linux, edit the command to use a
+  full path to Python 3.9+; `--install` keeps that edit. On Windows no full path with
+  spaces runs in both Git Bash and PowerShell, so there the fix is Python on PATH and a
+  restart of Claude Code, as the `fix:` line says.
+- `command` failing because `a policy on this PC blocks` Python (AppLocker, Software
+  Restriction): only whoever manages the PC can allow it.
 - `command` slow: usually a large git repo or slow disk. Mention it, nothing to fix.
-  On Windows the line also names the shell it ran in (Git Bash, or PowerShell when
-  Git Bash isn't installed); starting the shell is part of the time.
+  On Windows the line also names the shell it ran in (Git Bash, or PowerShell or
+  PowerShell 7 when Git Bash isn't installed); starting the shell is part of the time.
 - Icons showing as boxes or `?`, or the user wants icons: run the glyph step of
   `/dashline:install`.
 - API key, Bedrock, Vertex, Foundry or a gateway: no plan bars is expected, because

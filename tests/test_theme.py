@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from dashline import theme
+from dashline import host, theme
 from dashline.colors import THEMES, TOKENS
 
 
@@ -186,8 +186,8 @@ def test_deeply_nested_settings_are_skipped(home):
 def test_home_on_windows_is_userprofile_first(monkeypatch):
     """As for Claude Code (Node's os.homedir): Git Bash sets a HOME of its own."""
     env = {"HOME": "/c/Users/pat", "USERPROFILE": "C:\\Users\\pat"}
-    monkeypatch.setattr(theme, "WINDOWS", True)
+    monkeypatch.setattr(host, "WINDOWS", True)
     assert theme.home_dir(env) == "C:\\Users\\pat"
     assert theme.home_dir({"HOME": "/c/Users/pat"}) == "/c/Users/pat"
-    monkeypatch.setattr(theme, "WINDOWS", False)
+    monkeypatch.setattr(host, "WINDOWS", False)
     assert theme.home_dir(env) == "/c/Users/pat"

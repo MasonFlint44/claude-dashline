@@ -217,30 +217,39 @@ that prints 3.9+; the Store's `python3` stub doesn't run anything) and stops wit
 advice if none works. The path is fixed at install time (no `CLAUDE_CONFIG_DIR`
 expansion), and a path with `$` or `` ` `` (expanded inside double quotes by both
 shells) is refused. An entry already dashline's keeps its command as written, as
-everywhere, with one exception (11/7, the author's call): on Windows the exact command
-earlier versions wrote (`COMMAND`, `--glyphs` aside) is rewritten in the Windows form,
-since it's Bash only; a hand-edited one is kept, and doctor's `command` line says
-install rewrites the old one. Checked in CI: the installed command runs and prints in
-both shells.
+everywhere, with one exception (11/7, the author's call): on Windows the command
+earlier versions wrote (`COMMAND`, `--glyphs` aside, with any Python in place of
+`python3`: `python`, `py -3`, a full path, which a Windows user had to change for it to
+run) is rewritten in the Windows form, since it's Bash only. Other edits are kept;
+`--replace` rewrites one that still uses `$`-variables, and doctor's `command` line
+says which applies. Checked in CI: the installed command runs and prints in both
+shells (`smoke.sh` in Git Bash, `smoke.ps1` in Windows PowerShell with Git hidden).
 
 Other Windows differences: home is `USERPROFILE` first (Node's `os.homedir`; HOME can
 be Git Bash's own); credentials are in `.credentials.json` as on Linux; paths shown in
 the statusline and in messages use `/` (both shells read it, and a `fix:` line may be
-pasted into Git Bash); the folder link is `file:///C:/…`, the drive form Windows
-Terminal opens, or `file://server/share/…` for a share (`\\wsl.localhost` included);
+pasted into Git Bash), and messages spell out a path rather than `~/` when Git Bash's
+HOME isn't USERPROFILE; the folder link is `file:///C:/…`, the drive form Windows
+Terminal opens, or `file://server/share/…` for a share (`\\wsl.localhost` included,
+and `\\wsl$` mapped to it);
 a file another process holds open can't be replaced, renamed or removed there, so
 those (settings.json, the cache, the lock, the install folder swap) are retried for
 about half a second, and the fetch child runs from the config folder, not the install
 folder it would pin; settings.json is written with `\n` line endings; the config
-folder in a command matches in any case; a timed-out git is ended with `taskkill /T` (no process groups), and
-its pipe isn't closed while a reader thread holds it; there's no file-mode check (files
+folder in a command matches in any case; a timed-out git is ended with `taskkill /T`
+(no process groups; one taskkill for status and the diff beside it), and its pipe
+isn't closed while a reader thread holds it; there's no file-mode check (files
 take the profile folder's access); git's system config isn't read without
 `GIT_CONFIG_SYSTEM`; doctor and install write UTF-8 to a pipe (Python there defaults
-to the ANSI code page); doctor runs the command in the same shell Claude Code would
-(`CLAUDE_CODE_GIT_BASH_PATH`, else `bin\bash.exe` up to three folders above git, which
-in Git Bash is `ucrt64\bin\git.exe` or `mingw64\bin\git.exe`, else PowerShell), reads PowerShell 5.1's error
-records for the program's own line, and calls the command slow only past 2.5 s, since
-starting either shell takes much of 500 ms.
+to the ANSI code page); doctor runs the command in the same shell Claude Code would,
+found in Claude Code's order (2.1.319: `CLAUDE_CODE_GIT_BASH_PATH`; Git in Program
+Files, 64- then 32-bit; the Git for Windows that git on PATH belongs to, `bin\bash.exe`
+up to three folders above it, since in Git Bash git is `ucrt64\bin\git.exe`; else
+PowerShell 7 from Program Files; else Windows PowerShell, with Claude Code's options),
+reads PowerShell 5.1's error records (localized, wrapped) for the program's own
+message, warns when PowerShell's code page garbled the symbols, and calls the command
+slow only past 2.5 s, since starting either shell takes much of 500 ms. All this is
+gated by `host.WINDOWS`, so the tests run the Windows paths on Linux too.
 
 ---
 

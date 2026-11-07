@@ -13,14 +13,12 @@ import os
 import re
 import sys
 
+from dashline import host
 from dashline.colors import THEMES, TOKENS
 
 ANSI_NAMES = ("black", "red", "green", "yellow", "blue", "magenta", "cyan", "white")
 RGB = re.compile(r"^rgb\(\s?(\d{1,3}),\s?(\d{1,3}),\s?(\d{1,3})\s?\)$")
 HEX = re.compile(r"^#([0-9a-fA-F]{6}|[0-9a-fA-F]{3})$")
-WINDOWS = os.name == "nt"
-HELD_TRIES = 5  # Windows: a file or folder another process has open can't be moved yet
-HELD_WAIT = 0.05  # seconds before the first retry; each one waits a step longer
 
 
 def home_dir(env) -> str:
@@ -29,26 +27,9 @@ def home_dir(env) -> str:
     On Windows that's USERPROFILE first, as for Claude Code (Node's os.homedir): HOME
     there can be Git Bash's own.
     """
-    if WINDOWS:
+    if host.WINDOWS:
         return env.get("USERPROFILE") or env.get("HOME") or os.path.expanduser("~")
     return env.get("HOME") or os.path.expanduser("~")
-
-
-def retry_held(op, *args):
-    """`op(*args)`, tried again for a moment on Windows while another process holds the
-    file or folder (a render reading it, an antivirus scan, Claude Code writing
-    settings.json): there a file that's open can't be replaced, renamed or removed.
-    """
-    for attempt in range(HELD_TRIES):
-        try:
-            return op(*args)
-        except PermissionError:
-            if not WINDOWS or attempt == HELD_TRIES - 1:
-                raise
-            import time
-
-            time.sleep(HELD_WAIT * (attempt + 1))
-    return None
 
 
 def config_dir(env) -> str:

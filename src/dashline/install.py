@@ -24,7 +24,9 @@ import os
 import re
 import sys
 
-from dashline.theme import config_dir, home_dir, retry_held
+from dashline import host
+from dashline.host import retry_held
+from dashline.theme import config_dir, home_dir
 
 COMMAND = 'python3 -I -S "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/statusline/statusline.py"'
 # In a command: it runs the copy in the config dir. Other tools can use the same path, so
@@ -48,7 +50,6 @@ OWN_NAMES = ("statusline.py", "VERSION", "dashline")
 DESKTOP_JUNK = (".DS_Store", "Thumbs.db", "desktop.ini")
 
 # Exit codes beyond 0 and 1.
-WINDOWS = os.name == "nt"
 NEEDS_REPLACE = 3
 NEEDS_DOWNGRADE = 4  # the installed copy is newer than this one
 
@@ -68,6 +69,7 @@ def user_settings(env) -> str:
 # Pythons a Windows command can name, in order: the python.org launcher, then the
 # names python.org and the Microsoft Store installs put on PATH.
 WINDOWS_PYTHONS = ("py -3", "python", "python3")
+PROBE_TIMEOUT = 15  # seconds for each to say its version (a cold start can be slow)
 
 
 def command(glyphs: str, base: str = COMMAND) -> str:
@@ -86,13 +88,62 @@ def windows_command(env, python: str) -> str:
     return f'{python} -I -S "{script}"'
 
 
+# What follows the Python in COMMAND, and the options py takes to pick one (-3, -3.13-64).
+OLD_ARGS = COMMAND[len("python3") :]
+PY_VERSION = re.compile(r"^-\d+(?:\.\d+)?(?:-(?:32|64|arm64))?$")
+VARIABLE = re.compile(r"\$(?:\{|[A-Za-z_])")  # $HOME, ${X:-y}, PowerShell's $env:X
+
+
 def old_form(entry) -> bool:
-    """An entry whose command is the one dashline wrote before it ran on Windows,
-    `--glyphs` aside. Its `${CLAUDE_CONFIG_DIR:-…}` is Bash: PowerShell can't run it,
-    so on Windows install rewrites it (a command edited by hand is kept as written).
+    """An entry whose command is the one dashline wrote before it ran on Windows, but
+    for `--glyphs` and which Python runs it (`python`, `py -3`, a full path: what a user
+    there had to change to make it run). Its `${CLAUDE_CONFIG_DIR:-…}` is Bash, which
+    PowerShell can't run, so on Windows install rewrites it. Other edits are kept.
     """
     cmd = entry.get("command") if isinstance(entry, dict) else None
-    return isinstance(cmd, str) and GLYPHS.sub("", cmd).strip() == COMMAND
+    if not isinstance(cmd, str):
+        return False
+    rest = GLYPHS.sub("", cmd).strip()
+    if not rest.endswith(OLD_ARGS):
+        return False
+    words = _split(rest[: -len(OLD_ARGS)])
+    if not words or any(kind != "word" for kind, *_ in words):
+        return False
+    program, *options = (text for _, text, _, _ in words)
+    name = program.replace("\\", "/").rsplit("/", 1)[-1]
+    if not PYTHON.match(name):
+        return False
+    launcher = name.lower() in ("py", "py.exe")
+    return all(launcher and PY_VERSION.match(o) for o in options)
+
+
+def uses_variables(entry) -> bool:
+    """A command with $-variables, which Git Bash and PowerShell read differently."""
+    cmd = entry.get("command") if isinstance(entry, dict) else None
+    return isinstance(cmd, str) and bool(VARIABLE.search(cmd))
+
+
+def windows_entry(entry: dict, current, glyphs: str, ours: bool, replace: bool, env, python):
+    """(entry, rewritten): plan_entry's entry as Windows needs it.
+
+    A new entry, and dashline's own old Bash-only one (old_form; with --replace, any of
+    dashline's that uses variables), get the Windows command (windows_command) with the
+    Python `python()` finds; `rewritten` says it was such an old one. Another entry of
+    dashline's is kept as written.
+    """
+    rewrite = ours and (old_form(current) or (replace and uses_variables(current)))
+    if ours and not rewrite:
+        return entry, False
+    name = python()
+    if name is None:
+        raise InstallError(
+            "no Python 3.9 or newer runs as py -3, python or python3 here, and the "
+            "statusLine command needs one of them on PATH. Install Python (python.org, "
+            "or `winget install Python.Python.3.13`), then run this again. If `py -0` "
+            "lists a newer Python that `py -3` doesn't pick, py.ini or PY_PYTHON3 pins an "
+            "older one. Nothing was changed."
+        )
+    return {**entry, "command": command(glyphs, windows_command(env, name))}, rewrite
 
 
 def windows_python(which=None, run=None) -> str | None:
@@ -117,7 +168,7 @@ def windows_python(which=None, run=None) -> str | None:
                 [found, *options, "-I", "-S", "-c", check],
                 capture_output=True,
                 text=True,
-                timeout=15,
+                timeout=PROBE_TIMEOUT,
                 stdin=subprocess.DEVNULL,
             )
         except (OSError, subprocess.SubprocessError):
@@ -136,7 +187,7 @@ def runs_install_dir(entry, env=None) -> bool:
         return False
     cmd = cmd.replace("\\", "/")
     target = config_dir(os.environ if env is None else env).replace("\\", "/").rstrip("/")
-    if WINDOWS:  # C:\Cfg and c:\cfg are the same folder there
+    if host.WINDOWS:  # C:\Cfg and c:\cfg are the same folder there
         cmd, target = cmd.lower(), target.lower()
     prefixes = (*CONFIG_PREFIXES, target)
     return any(prefix + MARK in cmd for prefix in prefixes)
@@ -325,10 +376,21 @@ def glyphs_edit(cmd: str, glyphs: str) -> str:
 
 
 def home_short(path: str, env=None) -> str:
-    """`/home/me/.claude/x` → `~/.claude/x`, for messages (with `/` on Windows too)."""
+    """`/home/me/.claude/x` → `~/.claude/x`, for messages (with `/` on Windows too).
+
+    On Windows `~` there would be read by Git Bash, whose HOME can be another folder
+    (H:\\ on a domain): then the path is spelled out.
+    """
     from dashline.text import collapse_home
 
-    return collapse_home(path, home_dir(os.environ if env is None else env))
+    env = os.environ if env is None else env
+    home = home_dir(env)
+    if host.WINDOWS:
+        bash = env.get("HOME")
+        same = os.path.normcase(os.path.normpath(bash or home))
+        if same != os.path.normcase(os.path.normpath(home)):
+            home = None
+    return collapse_home(path, home)
 
 
 # ---- the files ----
@@ -683,30 +745,11 @@ def check_writable(path: str) -> None:
     folder = os.path.dirname(real)
     while not os.path.isdir(folder) and os.path.dirname(folder) != folder:
         folder = os.path.dirname(folder)  # the nearest folder that exists gets the rest
-    if not _can_write_in(folder):
+    if not host.can_write_in(folder):
         raise InstallError(
             f"can't write in {folder}, so {path} was left alone; make the folder "
             "writable, or add the statusLine entry yourself, then run again"
         )
-
-
-def _can_write_in(folder: str) -> bool:
-    """Whether a file can be made in `folder`. On Windows os.access ignores a folder's
-    permissions, so there a file is made and removed to find out."""
-    if not WINDOWS:
-        return os.access(folder, os.W_OK | os.X_OK)
-    probe = os.path.join(folder, f".dashline-probe-{os.getpid()}.tmp")
-    try:
-        os.close(os.open(probe, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
-    except FileExistsError:
-        pass  # left by an earlier run with this pid: it could be made, then
-    except OSError:
-        return False
-    import contextlib
-
-    with contextlib.suppress(OSError):
-        os.unlink(probe)
-    return True
 
 
 def settings_text(path: str, data: dict) -> str:
@@ -765,11 +808,9 @@ def plan_entry(
     replace: bool,
     ours: bool,
     settings: str = "settings.json",
-    base: str = COMMAND,
 ) -> tuple:
     """(new entry or None, glyphs used). None means: the entry is someone else's.
 
-    base: the command for a new entry (windows_command on Windows).
     ours: `current` is dashline's (is_ours). It keeps its command as written (say, with
     a full path to Python): only the --glyphs flag changes, and only when asked for
     another set or when it names an unknown one. A command where dashline's arguments
@@ -799,7 +840,7 @@ def plan_entry(
         entry["command"] = cmd
     else:
         glyphs = glyphs or "unicode"
-        entry = {"type": "command", "command": command(glyphs, base)}
+        entry = {"type": "command", "command": command(glyphs)}
     entry["type"] = "command"
     entry.setdefault("refreshInterval", REFRESH)
     return entry, glyphs
@@ -873,25 +914,7 @@ def run(
         where = home_short(target, env)
         theirs_folder = folder_state(target) == "theirs"
         ours = runs_install_dir(current, env) and not theirs_folder
-        windows = WINDOWS if windows is None else windows
-        rewrite = windows and ours and old_form(current)
-        base = COMMAND
-        # A new command is written (and on Windows, needs a Python found for it) for a
-        # fresh entry or --replace, unless the install stops at exit 3 anyway.
-        writes_new = not ours and (current is None or replace) and (replace or not theirs_folder)
-        if windows and (writes_new or rewrite):
-            name = python()
-            if name is None:
-                raise InstallError(
-                    "no Python 3.9 or newer runs as py -3, python or python3 here, and "
-                    "the statusLine command needs one of them on PATH. Install Python "
-                    "(python.org, or `winget install Python.Python.3.13`), then run this "
-                    "again. Nothing was changed."
-                )
-            base = windows_command(env, name)
-        entry, _ = plan_entry(current, glyphs, replace, ours, settings, base)
-        if rewrite:
-            entry["command"] = command(glyphs or glyphs_of(current), base)
+        entry, used = plan_entry(current, glyphs, replace, ours, settings)
         if not replace and (theirs_folder or entry is None):
             if theirs_folder:
                 out.write(
@@ -912,6 +935,10 @@ def run(
                 "Nothing was changed.\n"
             )
             return NEEDS_DOWNGRADE
+        # Past both stops, so Python is looked for only when a command will be written.
+        rewrite = False
+        if host.WINDOWS if windows is None else windows:
+            entry, rewrite = windows_entry(entry, current, used, ours, replace, env, python)
         text = None
         if entry != current:
             check_writable(path)

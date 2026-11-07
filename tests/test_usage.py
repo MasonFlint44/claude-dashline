@@ -13,11 +13,12 @@ from conftest import (
     REAL_SPAWN,
     Server,
     env_for,
+    held_once,
     make_session,
     posix_only,
     read_json,
 )
-from dashline import account, theme, usage
+from dashline import account, host, usage
 from dashline.account import Account
 
 MODEL_FABLE = {"model": {"id": "claude-fable-5-1", "display_name": "Fable 5.1"}}
@@ -541,22 +542,25 @@ def test_lock_without_content_uses_mtime(isolated_home):
 
 def test_lock_being_removed_on_windows_is_tried_again(isolated_home, monkeypatch):
     """Windows says "permission denied", not "exists", of a lock another process is
-    removing: take it again. Elsewhere that's a real error."""
+    removing: take it again."""
     env = env_for(isolated_home)
-    real, calls = os.open, []
+    calls = held_once(monkeypatch, "open", lambda path, flags, *_: path.endswith("fetch.lock"))
+    assert usage.take_lock(env, NOW)
+    assert len(calls) == 2
 
-    def removing_once(path, flags, *rest):
-        if path.endswith("fetch.lock") and flags & os.O_EXCL:
-            calls.append(path)
-            if len(calls) == 1:
-                raise PermissionError(13, "delete pending")
-        return real(path, flags, *rest)
 
-    monkeypatch.setattr(usage.os, "open", removing_once)
-    if os.name == "nt":
-        assert usage.take_lock(env, NOW)
-        assert len(calls) == 2
-    else:
+def test_lock_that_stays_unwritable_is_an_error(isolated_home, monkeypatch):
+    """Not a lock being removed after all: a real permission problem, raised (the
+    render reports it on stderr) rather than read as "a fetch is running"."""
+    env = env_for(isolated_home)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+
+    def denied(path, flags, *rest):
+        raise PermissionError(13, "denied")
+
+    monkeypatch.setattr(usage.os, "open", denied)
+    for windows in (True, False):
+        monkeypatch.setattr(host, "WINDOWS", windows)
         with pytest.raises(PermissionError):
             usage.take_lock(env, NOW)
 
@@ -648,17 +652,7 @@ def test_release_waits_for_a_render_reading_the_lock_on_windows(isolated_home, m
     fetch starts until the lock goes stale."""
     env = env_for(isolated_home)
     nonce = usage.take_lock(env, NOW)
-    real, calls = os.unlink, []
-
-    def busy_once(path):
-        calls.append(path)
-        if len(calls) == 1:
-            raise PermissionError(13, "in use")
-        real(path)
-
-    monkeypatch.setattr(usage.os, "unlink", busy_once)
-    monkeypatch.setattr(theme, "WINDOWS", True)
-    monkeypatch.setattr("time.sleep", lambda s: None)
+    calls = held_once(monkeypatch, "unlink")
     usage.release(env, nonce)
     assert len(calls) == 2
     assert not Path(usage._path(env, "fetch.lock")).exists()
@@ -1259,22 +1253,12 @@ def test_cache_files_are_private(server, logged_in):
 
 def test_a_cache_write_retries_a_file_held_open_on_windows(isolated_home, monkeypatch):
     """Windows won't replace a file a render has open for a moment: try again."""
-    real, calls = os.replace, []
-
-    def busy_once(src, dst):
-        calls.append(dst)
-        if len(calls) == 1:
-            raise PermissionError(13, "in use")
-        real(src, dst)
-
-    monkeypatch.setattr(usage.os, "replace", busy_once)
-    monkeypatch.setattr(theme, "WINDOWS", True)
-    monkeypatch.setattr("time.sleep", lambda s: None)
+    calls = held_once(monkeypatch, "replace")
     path = str(isolated_home / "cache" / "x.json")
     usage._write_json(path, {"a": 1})
     assert len(calls) == 2
     assert json.loads(Path(path).read_text()) == {"a": 1}
     calls.clear()
-    monkeypatch.setattr(theme, "WINDOWS", False)  # elsewhere it's a real error
+    monkeypatch.setattr(host, "WINDOWS", False)  # elsewhere it's a real error
     with pytest.raises(PermissionError):
         usage._write_json(path, {"a": 2})

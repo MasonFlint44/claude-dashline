@@ -36,7 +36,7 @@ print("imported", len(list(pkgutil.iter_modules(dashline.__path__))), "modules")
 "$py" -I -S statusline.py --preview all > /dev/null
 
 # Doctor's command check runs the Python settings.json names: make that this one.
-mkdir -p "$tmp/bin" "$tmp/home"
+mkdir -p "$tmp/home"
 case "$(uname -s)" in
   MINGW* | MSYS* | CYGWIN*)
     # No symlinks to lean on: this Python's own folder goes first, and the PATH leaves
@@ -55,6 +55,7 @@ case "$(uname -s)" in
     installed="$tmp/home/.claude/scripts/statusline/statusline.py"
     ;;
   *)
+    mkdir -p "$tmp/bin"
     ln -s "$py" "$tmp/bin/python3"
     export HOME="$tmp/home" PATH="$tmp/bin:/usr/bin:/bin"
     run=(python3 -I -S)

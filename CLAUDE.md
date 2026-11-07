@@ -19,9 +19,16 @@ uv lock --check                            # uv.lock matches pyproject.toml
 
 CI runs the tests on 3.10 / 3.12 / 3.14 (pytest has dropped 3.9) on Linux, macOS and
 Windows, and `scripts/smoke.sh` on Python 3.9 (Linux, and Windows in Git Bash) and on
-macOS with Apple's `/usr/bin/python3`. There's no Windows machine here: Windows
-behavior is checked in CI only. Tests that need POSIX file modes or signals are marked
-`@posix_only` (conftest); paths a test expects to see printed use `.as_posix()`.
+macOS with Apple's `/usr/bin/python3`; `scripts/smoke.ps1` runs 3.9 on Windows with Git
+for Windows hidden, so the command runs in PowerShell. There's no Windows machine here:
+Windows behavior is checked in CI only. Tests that need POSIX file modes or signals are
+marked `@posix_only`, ones that need Windows `@windows_only` (conftest); paths a test
+expects to see printed use `.as_posix()`.
+
+Windows-only behavior is gated by `host.WINDOWS`, read at call time, so a test turns it
+on with `monkeypatch.setattr(host, "WINDOWS", True)` (conftest's `held_once` does, for
+a file Windows holds open). `os.name` is read directly only where a real Windows API is
+called (process creation flags, `os.kill`).
 
 ## Rules
 

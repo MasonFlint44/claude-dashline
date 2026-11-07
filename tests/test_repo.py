@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from conftest import make_ctx, plain, posix_only, windows_only
-from dashline import repo
+from dashline import host, repo
 
 GIT_ENV = {
     "GIT_CONFIG_NOSYSTEM": "1",
@@ -464,17 +464,18 @@ def test_folder_url_of_a_windows_path():
 
 def test_folder_url_of_windows_shares_and_drives(monkeypatch):
     """A share opens as file://server/share/x; device paths (\\\\?\\) get no link."""
-    monkeypatch.setattr(repo, "WINDOWS", True)
+    monkeypatch.setattr(host, "WINDOWS", True)
     assert repo.folder_url("c:/users/pat") == f"file://{HOST}/c:/users/pat"
     assert repo.folder_url("//wsl.localhost/Ubuntu/home/pat") == (
         "file://wsl.localhost/Ubuntu/home/pat"
     )
+    assert repo.folder_url("//wsl$/Ubuntu/home/pat") == "file://wsl.localhost/Ubuntu/home/pat"
     assert repo.folder_url("//server/team share/proj") == "file://server/team%20share/proj"
     assert repo.folder_url("//?/C:/very/long") is None
     assert repo.folder_url("//./pipe/x") is None
     assert repo.folder_url("//server") is None
     assert repo.folder_url("rel/x") == f"file://{HOST}/rel/x"
-    monkeypatch.setattr(repo, "WINDOWS", False)  # elsewhere // is just a path
+    monkeypatch.setattr(host, "WINDOWS", False)  # elsewhere // is just a path
     assert repo.folder_url("//srv/x") == f"file://{HOST}//srv/x"
 
 
@@ -550,7 +551,12 @@ def test_hung_hook_is_killed_with_git(project, monkeypatch, tmp_path):
     real_start = repo._start
 
     def hung(args, cwd, env):
-        alias = f"alias.hang=!echo $$ > '{pidfile.as_posix()}'; exec sleep 30"
+        # The hook's pid: on Windows its Windows pid (Git Bash's own $$ is another).
+        pf = pidfile.as_posix()
+        alias = (
+            f"alias.hang=!cat /proc/$$/winpid > '{pf}' 2>/dev/null || echo $$ > '{pf}'; "
+            "exec sleep 30"
+        )
         return real_start(["-c", alias, "hang"], cwd, env)
 
     monkeypatch.setattr(repo, "_start", hung)
@@ -560,9 +566,16 @@ def test_hung_hook_is_killed_with_git(project, monkeypatch, tmp_path):
     assert row(project) == "proj"
     # GIT_TIMEOUT, then the kill: on Windows taskkill, slower to start on a busy runner.
     assert time.monotonic() - began < (2.0 if os.name == "nt" else 1.5)
-    if os.name == "nt":
-        return  # $$ is Git Bash's own pid there: the time above is the test
     pid = int(pidfile.read_text())
+    if os.name == "nt":  # taskkill /T ended the hook's tree with git
+        for _ in range(50):
+            if not windows_process_alive(pid):
+                break
+            time.sleep(0.1)
+        else:
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True)
+            raise AssertionError("the hook outlived the timeout")
+        return
     for _ in range(300):  # killed, and reaped once its parent is gone (slow under load)
         if not process_alive(pid):
             break
@@ -572,6 +585,13 @@ def test_hung_hook_is_killed_with_git(project, monkeypatch, tmp_path):
             with contextlib.suppress(OSError):
                 os.kill(pid, 9)  # only our hook, never a reused pid
         raise AssertionError("the hook's sleep outlived the timeout")
+
+
+def windows_process_alive(pid) -> bool:
+    out = subprocess.run(
+        ["tasklist", "/FI", f"PID eq {pid}", "/NH", "/FO", "CSV"], capture_output=True, text=True
+    ).stdout
+    return f'"{pid}"' in out
 
 
 def process_info(pid) -> tuple:
@@ -821,10 +841,12 @@ def test_collapse_home(path, home, shown):
 @windows_only
 def test_collapse_home_on_windows():
     """Case doesn't matter there, and the result uses / for either shell."""
-    assert repo.collapse_home("c:\\users\\pat\\proj", "C:\\Users\\Pat") == "~/proj"
-    assert repo.collapse_home("C:\\Users\\Pat", "C:\\Users\\Pat\\") == "~"
-    assert repo.collapse_home("C:\\Users\\Patty\\x", "C:\\Users\\Pat") == "C:/Users/Patty/x"
-    assert repo.collapse_home("D:\\work\\x", "C:\\Users\\Pat") == "D:/work/x"
+    from dashline.text import collapse_home
+
+    assert collapse_home("c:\\users\\pat\\proj", "C:\\Users\\Pat") == "~/proj"
+    assert collapse_home("C:\\Users\\Pat", "C:\\Users\\Pat\\") == "~"
+    assert collapse_home("C:\\Users\\Patty\\x", "C:\\Users\\Pat") == "C:/Users/Patty/x"
+    assert collapse_home("D:\\work\\x", "C:\\Users\\Pat") == "D:/work/x"
 
 
 def test_interrupted_pick_sequence(project):
@@ -957,7 +979,7 @@ def test_config_files(tmp_path):
 
 def test_config_files_on_windows(tmp_path, monkeypatch):
     """git's home is HOME, else USERPROFILE; its system file only by GIT_CONFIG_SYSTEM."""
-    monkeypatch.setattr(repo, "WINDOWS", True)
+    monkeypatch.setattr(host, "WINDOWS", True)
     home, profile = str(tmp_path / "home"), str(tmp_path / "profile")
     assert repo.config_files({"HOME": home, "USERPROFILE": profile}) == [
         os.path.join(home, ".config", "git", "config"),  # noqa: PTH118

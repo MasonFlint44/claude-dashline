@@ -119,9 +119,9 @@ def _utf8_pipes() -> None:
     the skill (its output piped to Claude Code) would fail on them. A console is UTF-8
     already. Not decided by isatty(): NUL (`> /dev/null` in Git Bash) says it's a tty.
     """
-    import os
+    from dashline import host
 
-    if os.name != "nt":
+    if not host.WINDOWS:
         return
     for stream in (sys.stdout, sys.stderr):
         try:

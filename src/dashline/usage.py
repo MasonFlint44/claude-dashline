@@ -24,14 +24,17 @@ import json
 import os
 import sys
 
+from dashline import host
+from dashline.host import retry_held
 from dashline.stdin import _dig, _num, _str, iso_time
 from dashline.text import clean
-from dashline.theme import config_dir, retry_held
+from dashline.theme import config_dir
 
 API_URL = "https://api.anthropic.com"
 USAGE_PATH = "/api/oauth/usage"
 BETA = "oauth-2025-04-20"
 TIMEOUT = 10  # for each network step: connecting, each read
+LOCK_TRIES = 3  # attempts to take fetch.lock (it may be going away meanwhile)
 DEADLINE = 30  # for the whole request, DNS included; well under LOCK_STALE
 FRESH = 180  # refetch once the cache is this old
 STALE = 300  # past this, line 2 shows the age (a fetch is failing)
@@ -306,14 +309,18 @@ def take_lock(env, now: float) -> str | None:
     path = _path(env, "fetch.lock")
     os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
     nonce = os.urandom(8).hex()
-    for _ in range(3):
+    for attempt in range(LOCK_TRIES):
         try:
             fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         except PermissionError:
             # Windows says this, not "exists", of a lock another process is removing
-            # (still open somewhere): it's going away, so try again.
-            if os.name != "nt":
+            # (still open somewhere): give it a moment to go. Still so on the last
+            # try, it's a real permission problem (spawn's caller reports it).
+            if not host.WINDOWS or attempt == LOCK_TRIES - 1:
                 raise
+            import time
+
+            time.sleep(0.01 * (attempt + 1))
             continue
         except FileExistsError:
             found = _lock_id(path)

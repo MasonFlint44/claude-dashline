@@ -10,30 +10,40 @@
   forward slashes. With no such Python, the install stops and says how to get one;
   with a `$` or `` ` `` in that path, which both shells would expand, it stops too.
 - An entry still running the command older versions wrote, which only Git Bash can
-  run, is rewritten that way by `/dashline:install`, with its glyph set kept. A command
-  you edited yourself is kept as written.
+  run, is rewritten that way by `/dashline:install`, with its glyph set kept, also when
+  you had changed only the Python it runs (`python`, `py -3`, a full path). A command
+  you edited further is kept as written; if it has `$`-variables, `/dashline:doctor`
+  says so and `--replace` rewrites it.
 - The statusline's output is UTF-8, as Claude Code reads it (Python there writes a
   pipe in the ANSI code page, which has no bars or `│`); so is doctor's and install's.
 - Your home folder is `%USERPROFILE%`, as Claude Code has it.
 - Paths in the statusline and in doctor's and install's messages use `/`, which both
-  shells read.
+  shells read. Messages spell a path out instead of `~/…` when Git Bash's home isn't
+  your user folder (`H:\` on some company PCs).
 - The project name links to its folder as `file:///C:/…`, which Windows Terminal opens,
-  or `file://server/share/…` on a network share or `\\wsl.localhost`.
+  or `file://server/share/…` on a network share or `\\wsl.localhost` (also for a
+  project opened through the older `\\wsl$`).
 - A git command that hangs is ended along with everything it started, so the
-  statusline isn't held up.
+  statusline isn't held up; when git status runs out of time, the diff beside it is
+  ended at once with it.
 - A file another program has open for a moment (settings.json while Claude Code writes
   it, the cache while a render reads it, a fresh copy an antivirus is scanning) no
   longer fails an install or a fetch: dashline tries again briefly. The background
   fetch no longer runs from the install folder, which Windows then wouldn't let an
   update replace.
 - Two renders taking the fetch lock at once no longer trip over Windows' "permission
-  denied" for a lock that's being removed.
+  denied" for a lock that's being removed; one that stays denied is reported, not
+  taken for a fetch in progress.
 - settings.json keeps `\n` line endings when `/dashline:install` rewrites it.
 - A `CLAUDE_CONFIG_DIR` spelled in another case is still recognized as the same folder.
-- `/dashline:doctor` runs the statusline command in the shell Claude Code would use
-  (it finds Git Bash from inside Git Bash too) and names it, and allows Windows' slower
-  shell start before calling the command slow. It reads PowerShell's wrapped error
-  messages for the real reason and fix. It skips the file-permission check, which
+- `/dashline:doctor` runs the statusline command in the shell Claude Code would use,
+  found the way Claude Code finds it (Git Bash, Git in Program Files, PowerShell 7,
+  Windows PowerShell), and names it, and allows Windows' slower shell start before
+  calling the command slow. It reads PowerShell's error records, in any language and
+  however wrapped, for the real reason and fix; says when PowerShell garbled the
+  statusline's symbols (on some code pages), when a policy blocks Python, and that a
+  Python missing from PATH needs PATH and a restart there. It checks git and the cache
+  folder as they really are on Windows, and skips the file-permission check, which
   doesn't apply there.
 - The install and doctor skills find Python on Windows (`py -3`, `python`, `python3`)
   and tell Windows from WSL; the install skill says how to get Python
@@ -41,7 +51,7 @@
 
 **CI**
 - The tests run on Windows too, and the Python 3.9 smoke test runs on Windows in Git
-  Bash.
+  Bash, and in PowerShell with Git for Windows hidden.
 
 ## 0.1.10 — 2026-11-06
 

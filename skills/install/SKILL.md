@@ -23,11 +23,11 @@ dashline needs Python 3.9 or newer, by a name settings.json's command can run.
 - **Windows** (not WSL): try `py -3`, then `python`, then `python3`, each with
   `-c "import sys; print(sys.version)"`, and use the first that prints 3.9 or newer as
   `PYTHON`. `--install` picks the same way and writes that name into settings.json. A
-  `python3` that opens the Microsoft Store instead of printing a version doesn't count
-  (if the Store window opens, the user can close it).
+  `python3` that opens the Microsoft Store instead of printing a version doesn't count;
+  if it may have opened the Store window, tell the user they can close it.
 
-To tell Windows from WSL: in Claude's shell, `uname -s` prints `MINGW…` or `MSYS…` on
-Windows (Git Bash) and `Linux` in WSL. A PowerShell shell is Windows.
+To tell Windows from WSL: in Claude's shell `uname -s` prints `MINGW…` or `MSYS…` on Windows (Git Bash) and
+`Linux` in WSL. Where `uname` isn't found, the shell is PowerShell: that's Windows too.
 
 If none works, stop and tell the user how to get it:
 - **macOS:** `brew install python` if `brew` exists; otherwise `xcode-select --install`,
@@ -59,8 +59,9 @@ uses `unicode`.
   run `DASHLINE --install --downgrade` (add `--replace` if exit 3 asked for it too).
 - **Exit 1:** relay the error: usually settings.json that isn't valid JSON, or is
   read-only (the file or its folder). On Windows it can also say no Python 3.9 or newer
-  runs as `py -3`, `python` or `python3` (give step 1's Windows advice), or that the
-  install path has a `$` or `` ` `` (relay its advice). Don't fix settings.json
+  runs as `py -3`, `python` or `python3` (give step 1's Windows advice, and the
+  message's note on a `py` that picks an older Python), or that the install path has a
+  `$` or `` ` `` (relay its advice). Don't fix settings.json
   yourself unless the user asks. If `--replace` had moved another tool's files aside, the output says they were
   moved back. With `--glyphs`, it can also say it can't change `--glyphs` in this
   command automatically (a hand-edited command like `bash -lc '…'`): nothing was
@@ -74,9 +75,11 @@ A `note:` line names any it couldn't move, and where they are now
 
 An entry that is already dashline's keeps its command as written (for example a full
 path to Python); only the `--glyphs` flag changes. One exception, on Windows: the
-command older versions wrote (`python3 … "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/…"`) is
-Bash only, so `--install` rewrites it in the Windows form and a `note:` line says so;
-pass it on.
+command older versions wrote (`python3 … "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/…"`, with
+any Python in place of `python3`) is Bash only, so `--install` rewrites it in the
+Windows form and a `note:` line says so; pass it on. A command edited further but
+still using `$`-variables is kept; `--install --replace` rewrites it too (doctor says
+so; ask first, as for exit 3).
 
 ## 3. Check
 

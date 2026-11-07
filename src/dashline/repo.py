@@ -23,12 +23,12 @@ from __future__ import annotations
 import os
 import re
 
+from dashline import host
 from dashline.text import clean, collapse_home, cols, cut
 
 GIT_TIMEOUT = 1.0  # seconds; a slower repo shows the project without git state
 KILL_WAIT = 0.05  # seconds to collect a killed git before giving up on it
 TASKKILL_WAIT = 0.3  # Windows: seconds for taskkill to end a hung git's tree
-WINDOWS = os.name == "nt"
 GAP = "  "
 # Variables git sets for hooks and editors that point a git command at another repo,
 # index or object store. Claude Code started from inside one (a commit message editor,
@@ -297,16 +297,15 @@ def config_files(env) -> list:
     On Windows the system file is in Git's own folder, which isn't looked for: only an
     explicit GIT_CONFIG_SYSTEM counts. Home is HOME, else USERPROFILE, as git has it.
     """
-    windows = WINDOWS
     paths = []
     if not _env_bool(env.get("GIT_CONFIG_NOSYSTEM")):
-        system = env.get("GIT_CONFIG_SYSTEM") or (None if windows else "/etc/gitconfig")
+        system = env.get("GIT_CONFIG_SYSTEM") or (None if host.WINDOWS else "/etc/gitconfig")
         if system:
             paths.append(system)
     if env.get("GIT_CONFIG_GLOBAL"):
         paths.append(env["GIT_CONFIG_GLOBAL"])
     else:
-        home = env.get("HOME") or (env.get("USERPROFILE") if windows else "") or ""
+        home = env.get("HOME") or (env.get("USERPROFILE") if host.WINDOWS else "") or ""
         xdg = env.get("XDG_CONFIG_HOME") or (os.path.join(home, ".config") if home else "")
         if xdg:
             paths.append(os.path.join(xdg, "git", "config"))
@@ -444,21 +443,23 @@ def folder_url(path: str, env=None) -> str | None:
             return f"file://wsl.localhost/{quote(distro)}{quote(path)}"
         except UnicodeEncodeError:
             return None
-    host = os.uname().nodename if hasattr(os, "uname") else ""
+    netloc = os.uname().nodename if hasattr(os, "uname") else ""
     path = path.replace(os.sep, "/")
     drive = ""
     if re.match(r"^[A-Za-z]:/", path):  # Windows: file:///C:/x, the colon as it is
         drive, path = "/" + path[:2], path[2:]
-    elif WINDOWS and path.startswith("//"):
+    elif host.WINDOWS and path.startswith("//"):
         # A share, \\server\share\x (\\wsl.localhost\Ubuntu\x too): file://server/share/x.
         server, _, rest = path[2:].partition("/")
         if not server or server in ("?", ".") or not rest:  # \\?\ and \\.\: device paths
             return None
-        host, path = server, "/" + rest
+        if server.lower() == "wsl$":  # the older name, which Windows Terminal doesn't open
+            server = "wsl.localhost"
+        netloc, path = server, "/" + rest
     elif not path.startswith("/"):
         path = "/" + path
     try:
-        return f"file://{host}{drive}{quote(path)}"
+        return f"file://{netloc}{drive}{quote(path)}"
     except UnicodeEncodeError:
         return None
 
@@ -560,49 +561,64 @@ def _start(args: list, cwd: str, env: dict):
     )
 
 
-def _kill(proc) -> None:
-    """Kill git and everything it started (hooks, filters, an alias's shell)."""
+def _kill(*procs) -> None:
+    """Kill each git and everything it started (hooks, filters, an alias's shell)."""
     import contextlib
     import signal
 
-    if WINDOWS:
+    if host.WINDOWS:
         # No process groups: taskkill /T ends git's whole tree (git for Windows runs
         # hooks through its own sh, which can hold the pipe open after git is gone).
+        # One taskkill for all of them: starting it is most of what it costs.
         import subprocess
 
+        pids = [arg for proc in procs for arg in ("/PID", str(proc.pid))]
         with contextlib.suppress(OSError, subprocess.SubprocessError):
             subprocess.run(
-                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                ["taskkill", "/F", "/T", *pids],
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 timeout=TASKKILL_WAIT,
             )
-        with contextlib.suppress(OSError):
-            proc.kill()
+        for proc in procs:
+            with contextlib.suppress(OSError):
+                proc.kill()
         return
+    for proc in procs:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (AttributeError, OSError):  # no process groups here, or git already gone
+            with contextlib.suppress(OSError):
+                proc.kill()
+
+
+def _reap(proc) -> None:
+    """Collect a killed git, briefly."""
+    import subprocess
+
     try:
-        os.killpg(proc.pid, signal.SIGKILL)
-    except (AttributeError, OSError):  # no process groups here, or git already gone
-        with contextlib.suppress(OSError):
-            proc.kill()
+        proc.communicate(timeout=KILL_WAIT)
+    except subprocess.TimeoutExpired:
+        # Something left the group and still holds the pipe: don't wait for it. On
+        # Windows a thread is reading it, and closing would wait for that read.
+        if not host.WINDOWS:
+            proc.stdout.close()
 
 
-def _finish(proc, deadline: float) -> str | None:
+def _finish(proc, deadline: float, also=()) -> str | None:
+    """git's output, or None when it fails or is still running at `deadline`; then it
+    is killed, and with it the gits in `also`, whose answers are no use without it."""
     import subprocess
     import time
 
     try:
         out, _ = proc.communicate(timeout=max(0.01, deadline - time.monotonic()))
     except subprocess.TimeoutExpired:
-        _kill(proc)
-        try:
-            proc.communicate(timeout=KILL_WAIT)
-        except subprocess.TimeoutExpired:
-            # Something left the group and still holds the pipe: don't wait for it. On
-            # Windows a thread is reading it, and closing would wait for that read.
-            if not WINDOWS:
-                proc.stdout.close()
+        others = [p for p in also if p.poll() is None]
+        _kill(proc, *others)
+        for p in (proc, *others):
+            _reap(p)
         return None
     return out.decode("utf-8", "replace") if proc.returncode == 0 else None
 
@@ -719,10 +735,13 @@ def _inspect(state: RepoState, env) -> None:
         numstat = _start([*diff, "HEAD"], root, genv)
     except OSError:
         return  # no git
-    status_text = _finish(status, deadline)
-    numstat_text = _finish(numstat, deadline)
+    status_text = _finish(status, deadline, also=(numstat,))
     if status_text is None:
+        # Timed out, numstat went with it; failed (not a repo after all): let it end.
+        if numstat.poll() is None and time.monotonic() < deadline:
+            _finish(numstat, deadline)
         return
+    numstat_text = _finish(numstat, deadline)
     state.git = True
     parse_status(status_text, state)
     if state.upstream and "# branch.ab " not in status_text:
