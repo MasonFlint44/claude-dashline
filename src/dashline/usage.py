@@ -291,7 +291,9 @@ def _break_lock(path: str, stale, now: float) -> None:
     try:
         current = _lock_id(path)
         if current is not None and current[0] == stale:
-            _remove(path)
+            # On Windows another render reading it keeps it from going for a moment;
+            # given up on, no render would take the lock this time round.
+            _remove(path, held=True)
     finally:
         _remove(guard)
 

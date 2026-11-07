@@ -55,7 +55,8 @@ with open(os.path.join('tests', 'fixtures', 'stdin', 'after-first-response.json'
 shell = ['powershell', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command']
 r = subprocess.run(shell + [command], input=session, capture_output=True, timeout=60)
 out = r.stdout.decode('utf-8', 'replace')
-print(out, end='')
+sys.stdout.buffer.write(r.stdout)  # as bytes: this stdout is in the ANSI code page
+sys.stdout.flush()
 err = r.stderr.decode('utf-8', 'replace').strip()
 if err:
     sys.exit('the render wrote to stderr:\n' + err)

@@ -1330,3 +1330,12 @@ def test_a_probe_file_left_by_an_earlier_run_is_removed(tmp_path, monkeypatch):
     left.write_text("")
     assert host.can_write_in(str(tmp_path))
     assert not left.exists()
+
+
+def test_breaking_a_stale_lock_waits_for_a_reader_on_windows(isolated_home, monkeypatch):
+    """Another render reading the dead child's lock holds it open for a moment."""
+    env = env_for(isolated_home)
+    assert usage.take_lock(env, NOW - usage.LOCK_STALE)
+    calls = held_once(monkeypatch, "unlink", lambda path: path.endswith("fetch.lock"))
+    assert usage.take_lock(env, NOW)
+    assert len(calls) == 2

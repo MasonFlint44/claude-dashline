@@ -1362,8 +1362,9 @@ def test_windows_command_runs_in_each_shell(installed, tmp_path, monkeypatch, sh
 def test_command_not_found_in_powershell_7(installed, tmp_path, monkeypatch):
     """PowerShell 7 writes `python3: <message>` and a line of advice, no record."""
     as_windows_writes_it(installed)
+    py = doctor.first_word(get_settings(installed)["statusLine"]["command"])  # python on Windows
     concise = (
-        "python3: The term 'python3' is not recognized as a name of a cmdlet, function, "
+        f"{py}: The term '{py}' is not recognized as a name of a cmdlet, function, "
         "script file, or executable program.\n"
         "Check the spelling of the name, or if a path was included, verify that the path "
         "is correct and try again."
@@ -1372,8 +1373,8 @@ def test_command_not_found_in_powershell_7(installed, tmp_path, monkeypatch):
         installed, tmp_path, monkeypatch, "PowerShell 7", stderr=concise, returncode=1
     )
     assert status == "fail"
-    assert text.startswith("The term 'python3' is not recognized")
-    assert fix.startswith("python3 must be on the PATH Claude Code sees: install Python")
+    assert text.startswith(f"The term '{py}' is not recognized")
+    assert fix.startswith(f"{py} must be on the PATH Claude Code sees: install Python")
 
 
 def test_powershell_unwrapped_needs_the_whole_record():
