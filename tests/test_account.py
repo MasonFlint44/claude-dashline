@@ -269,6 +269,7 @@ def test_keychain_names():
     assert account.keychain_account({"USER": "user"}) == "user"
     assert account.keychain_account({"USER": "bad user"}) == "claude-code-user"
     assert account.keychain_account({}) == "claude-code-user"
+    assert account.keychain_account({"USER": "jos\u00e9"}) == "claude-code-user"  # ASCII only
 
 
 def test_token_from_env_first(isolated_home):

@@ -96,3 +96,16 @@ def test_decomposed_hangul_measures_like_composed():
         for limit in range(cols(word) + 1):
             kept = cut(decomposed, limit)
             assert unicodedata.normalize("NFC", kept) == word[: limit // 2]
+
+
+def test_soft_hyphen_takes_a_column():
+    """A format character, but most terminals draw it."""
+    assert cols("Sonnet\u00ad5.5") == 10  # 6, the hyphen, 3
+
+
+def test_clean_keeps_at_most_max_shown():
+    """Measuring a huge name, character by character, is what slowed a render."""
+    from dashline.text import MAX_SHOWN
+
+    assert len(clean("é" * 100_000)) == MAX_SHOWN
+    assert clean("abc") == "abc"

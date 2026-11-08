@@ -40,8 +40,15 @@ def collapse_home(path: str, home: str | None) -> str:
     return path if os.sep == "/" else path.replace(os.sep, "/")
 
 
+# The most of a name clean() keeps: past any row's width (COLUMNS is capped at 1000).
+# Measuring every character of a huge one (from a broken endpoint, say) is what costs.
+MAX_SHOWN = 4096
+
+
 def clean(text: str) -> str:
-    """`text` with control characters, line separators and bidi controls as `?`."""
+    """`text` with control characters, line separators and bidi controls as `?`, cut to
+    MAX_SHOWN characters."""
+    text = text[:MAX_SHOWN]
     if text.isprintable():  # the usual case, and cheap
         return text
     import unicodedata
@@ -87,6 +94,8 @@ def _char_cols(c: str) -> int:
         return 0  # a Hangul vowel or final, joined to the syllable before it
     if _regional(c) or unicodedata.east_asian_width(c) in ("W", "F"):
         return 2
+    if c == "\u00ad":
+        return 1  # a soft hyphen: a format character, but most terminals draw it
     if unicodedata.combining(c) or unicodedata.category(c) in ("Mn", "Me", "Cf"):
         return 0  # drawn over the character before it (or not at all: ZWJ, VS16)
     return 1

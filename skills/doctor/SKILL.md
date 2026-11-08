@@ -61,14 +61,16 @@ Do this without asking, only when the `settings` line is `ok` (or warns only abo
 full, like `C:/Users/pat/.claude/settings.json`). When it names a project or managed
 file, ask first (next list): `--install` writes the user file, which would turn
 dashline on in every other project too.
-- `install` warns that the copy is old or differs, or fails saying `statusline.py is
-  missing` (the rest of the copy is there); `command` says its statusline.py is missing
+- `install` warns that the copy is another version (`0.1.9; this copy is 0.2.0`) or
+  that `its files differ from this copy`, or fails saying `statusline.py is missing`
+  (the rest of the copy is there); `command` says its statusline.py is missing
   while `install` doesn't say `nothing installed`; `command`'s fix says install
   `rewrites this command for Windows` (also when its Python no longer runs and another
   does); or `settings` warns that there's no `refreshInterval`: run
   `DASHLINE --install`. With the entry already dashline's, it updates the copy and
-  keeps the command and glyph set as written. If it exits 3 or 4 anyway, stop and
-  handle it as in the ask-first list below.
+  keeps the glyph set and the command as written, apart from the two Windows rewrites
+  just named. If it exits 3 or 4 anyway, stop and handle it as in the ask-first list
+  below.
   Not when `install` says the installed copy is newer than this one: that means this
   plugin is out of date, so tell the user to update it (`/plugin`) instead.
 
@@ -96,9 +98,11 @@ Ask first (AskUserQuestion), and act only on a yes:
   `DASHLINE --install --replace`. It writes dashline's own command in place of their
   edit, keeping the glyph set.
 - `command` warns that `its symbols came back changed` (Windows, PowerShell on a
-  system whose code page lacks them): ask whether to switch to `ascii` glyphs
-  (`DASHLINE --install --glyphs ascii`) or to install Git for Windows, so Claude Code
-  runs the statusline in Git Bash (then restart Claude Code).
+  system whose code page lacks them): ask whether to install Git for Windows
+  (recommended: Claude Code then runs the statusline in Git Bash, which passes every
+  character; restart Claude Code after) or to switch to `ascii` glyphs
+  (`DASHLINE --install --glyphs ascii`), which fixes the bars and separators but not
+  accented or CJK names in the statusline.
 - `settings` warns that `--glyphs <x> isn't a glyph set` (a typo like `Nerd`): don't
   reset it to unicode. Run the glyph step of `/dashline:install` (it asks which set;
   comparing them first is the user's choice), then `DASHLINE --install --glyphs <set>`.
@@ -112,6 +116,9 @@ Explain, and leave to the user:
   doctor's `fix:` line says what can. A project's statusLine is the user's to remove;
   managed settings only an administrator can change.
 - `disableAllHooks`: it turns off hooks too, so removing it is the user's decision.
+- `command`'s fix says to write the Windows command in a project's or managed
+  settings file: `--install` writes only the user's, so the edit is the user's (or,
+  for managed settings, an administrator's).
 - `login` / `usage` asking for `/login` (also after a 401 or 403 where the server
   asked to wait: follow the `fix:` line): only the user can sign in. A 403 with
   `CLAUDE_CODE_OAUTH_TOKEN` set means a `claude setup-token` token, which can't read
@@ -138,6 +145,9 @@ Explain, and leave to the user:
   wait; worth reporting only if it keeps happening.
 - An expired token (`warn`): Claude Code renews it on its next request. No action
   needed.
+- `login` / `usage` saying `CLAUDE_CODE_OAUTH_TOKEN has a character a request can't
+  carry`: the variable holds a stray line ending or space (often from a file saved on
+  Windows); the user sets it again. `the stored token has …`: `/login` writes a new one.
 - `command` failing with `python3` not found (on Windows, also `is not recognized`):
   Claude Code's PATH lacks the Python the command names. The user can install Python
   (see `/dashline:install` step 1) or, on macOS and Linux, edit the command to use a

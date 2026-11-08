@@ -47,7 +47,8 @@ uses `unicode`.
 - **Exit 0:** done. The output says where it copied the files and what settings.json
   now runs. Pass on any `note:` line: a project's own settings override the user
   entry there; files from an interrupted install were kept in
-  `scripts/statusline.kept`; the command was rewritten for Windows. A note that
+  `scripts/statusline.kept`; the command was rewritten for Windows (or, after
+  `--replace`, `wrote dashline's own command in place of the edited one`). A note that
   `--glyphs <x> isn't a glyph set` means the command keeps a typo (like `Nerd`) and
   the statusline shows an error until it names a set: ask the glyph question (step 4).
 - **Exit 3:** nothing was changed, because something else is there. The output says

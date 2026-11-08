@@ -445,3 +445,31 @@ def test_absurd_numbers_stay_short():
     assert "$99999.99" in first
     assert "999%" in first
     assert "\u21bb" not in first  # no recache count from a negative number
+
+
+# ---- found in the fifth review ----
+
+
+def test_plan_label_goes_on_line_1_only_without_plan_bars():
+    """E3: the plan's name heads line 2 when there are plan bars, else it's on line 1."""
+    s = make_session()
+    with_bars = lines_text(s, make_ctx(120), plan_label="Ultra")
+    assert with_bars[1].startswith("Ultra │ 7d ")
+    assert "Ultra" not in with_bars[0]
+    without = lines_text(s, make_ctx(120), plan=[], plan_label="API")
+    assert " · API · " in without[0]
+    assert len(without) == 1
+
+
+def test_countdown_comes_with_the_70_percent_it_shows():
+    ctx = make_ctx(120)
+    shown = layout.to_str(layout.bar_suffix(Bar("5h", 69.6, NOW + 3600), ctx, True))
+    assert shown == " 70% (1h)"
+    below = layout.to_str(layout.bar_suffix(Bar("5h", 69.4, NOW + 3600), ctx, True))
+    assert below == " 69%"
+
+
+def test_cache_note_without_a_context_bar_is_its_own_item():
+    s = make_session(context_window={"used_percentage": None}, prompt_cache={"warm": False})
+    line = lines_text(s, make_ctx(120), plan=[])[0]
+    assert " · cache cold" in line

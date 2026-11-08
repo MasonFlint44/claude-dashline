@@ -28,7 +28,7 @@ from dashline import host
 from dashline.host import retry_held
 from dashline.stdin import _dig, _num, _str, iso_time
 from dashline.text import clean
-from dashline.theme import _read_json, config_dir
+from dashline.theme import _read_json, config_dir, is_absolute
 
 API_URL = "https://api.anthropic.com"
 USAGE_PATH = "/api/oauth/usage"
@@ -45,6 +45,7 @@ MAX_BODY = 1 << 20  # a usage answer is a few KB; anything past 1 MiB is not one
 # Rows of `limits` kept and read: a real answer has a handful. Thousands (a broken proxy
 # or endpoint) would make every render slow, laying out a bar for each.
 MAX_LIMITS = 32
+MAX_LABEL = 20  # columns of a bar's label from the server (a model's or a limit's name)
 LATE = -1  # get()'s status for a request that missed its deadline
 # Backoff after a failure: the first wait and the cap.
 BACKOFF_FIRST, BACKOFF_MAX = 60, 1800
@@ -363,16 +364,31 @@ CHILD_CODE = (
 )
 
 
+def _child_cwd(env, home: str) -> str | None:
+    """Where the fetch child runs: the config folder, not the install folder (on
+    Windows a folder some process runs in can't be renamed, and /dashline:install swaps
+    that one). With a relative CLAUDE_CONFIG_DIR, the render's own folder instead, so the
+    child finds the same config folder (its name stays as written: macOS names the
+    Keychain item after it)."""
+    custom = env.get("CLAUDE_CONFIG_DIR")
+    if custom and not is_absolute(custom):
+        return None
+    return home if os.path.isdir(home) else None
+
+
 def spawn(env, now: float) -> bool:
-    """Start the detached fetch child. Returns False if one is already running."""
-    nonce = take_lock(env, now)
+    """Start the detached fetch child. Returns False if one is already running, or the
+    cache folder can't be written (read-only, full: doctor's cache line says so; a
+    traceback on every render wouldn't)."""
+    try:
+        nonce = take_lock(env, now)
+    except OSError:
+        return False
     if not nonce:
         return False
     import subprocess
 
     package_parent = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    # Not run from the install folder: on Windows a folder that is some process's
-    # working folder can't be renamed, and /dashline:install swaps that folder.
     home = config_dir(env)
     kwargs = {}
     if os.name == "nt":
@@ -387,7 +403,7 @@ def spawn(env, now: float) -> bool:
             stderr=subprocess.DEVNULL,
             close_fds=True,
             env=dict(env),
-            cwd=home if os.path.isdir(home) else None,
+            cwd=_child_cwd(env, home),
             **kwargs,
         )
     except OSError:
@@ -700,13 +716,28 @@ def _merge(endpoint: tuple, other: tuple | None) -> tuple:
     return (max(percent, other[0]), resets_at or other[1])
 
 
+def _label(value) -> str | None:
+    """A bar's label from the server: shown cleaned, without outer spaces, and at most
+    MAX_LABEL columns (one long name would push 5h and 7d off the row). None if blank."""
+    from dashline.text import cut
+
+    text = _str(value)
+    return cut(clean(text).strip(), MAX_LABEL).strip() or None if text else None
+
+
 def plan_bars(session, account, data: dict | None, now: float) -> list:
     """Line 2's bars from the usage response and stdin, in display order."""
     from dashline.layout import Bar
 
     data = data if isinstance(data, dict) else {}
     spend = data.get("spend") if isinstance(data.get("spend"), dict) else {}
-    windows, used_stdin = [], set()
+    windows, used_stdin, seen = [], set(), set()
+
+    def add(label: str, percent: float, resets_at) -> None:
+        # One bar per label: a second `session` row (a broken proxy) isn't another 5h.
+        if label and label not in seen:
+            seen.add(label)
+            windows.append(Bar(label, percent, resets_at))
 
     limits = data.get("limits")
     for row in limits[:MAX_LIMITS] if isinstance(limits, list) else []:
@@ -720,23 +751,26 @@ def plan_bars(session, account, data: dict | None, now: float) -> list:
             percent, resets_at = 0.0, None  # the window rolled over since the fetch
         if kind in WINDOW_LABELS:
             key = STDIN_WINDOWS[kind]
+            if key in used_stdin:
+                continue
             used_stdin.add(key)
             percent, resets_at = _merge((percent, resets_at), _live(session.windows.get(key), now))
-            windows.append(Bar(WINDOW_LABELS[kind], percent, resets_at))
+            add(WINDOW_LABELS[kind], percent, resets_at)
         elif kind == "weekly_scoped":
             # A model's weekly limit: shown while you use that model (even at 0%), and
             # whenever it has use this week, since subagents and other sessions spend it.
-            name = _str(_dig(row, "scope", "model", "display_name"))
+            name = _label(_dig(row, "scope", "model", "display_name"))
             if name and (percent > 0 or _model_matches(name, session)):
-                windows.append(Bar(clean(name), percent, resets_at))
+                add(name, percent, resets_at)
         else:
-            windows.append(Bar(clean(kind.replace("_", " ")), percent, resets_at))
+            add(_label(kind.replace("_", " ")), percent, resets_at)
 
-    # Windows the endpoint didn't list (or no cache yet) still come from stdin.
+    # Windows the endpoint didn't list (or no cache yet) still come from stdin; only
+    # for a subscription (a provider flag, Bedrock say, means no plan bars).
     stdin_only = []
     for key, label in (("five_hour", "5h"), ("seven_day", "7d")):
         window = _live(session.windows.get(key), now)
-        if window and key not in used_stdin:
+        if window and key not in used_stdin and getattr(account, "mode", None) != "api":
             stdin_only.append(Bar(label, *window))
     windows = stdin_only + windows
     windows.sort(key=lambda b: {"5h": 0, "7d": 1}.get(b.label, 2))

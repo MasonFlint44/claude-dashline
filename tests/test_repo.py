@@ -964,6 +964,12 @@ def test_rewrite_url(url, expanded):
     assert repo.rewrite_url(url, rules) == expanded
 
 
+def test_rewrite_url_takes_the_longest_prefix_wherever_it_is_listed():
+    rules = [("gh:", "https://github.com/"), ("gh:org/", "https://github.com/org-mirror/")]
+    assert repo.rewrite_url("gh:org/r", rules) == "https://github.com/org-mirror/r"
+    assert repo.rewrite_url("gh:org/r", rules[::-1]) == "https://github.com/org-mirror/r"
+
+
 def test_url_rewrites_from_config():
     entries = repo.parse_config(
         '[url "https://github.com/"]\n\tinsteadOf = gh:\n\tpushInsteadOf = ghp:\n'
@@ -1364,7 +1370,8 @@ def test_kill_on_windows_ends_each_tree_with_one_taskkill(monkeypatch):
             killed.append(self.pid)
 
     repo._kill(Proc(11), Proc(12))
-    assert [argv for argv, _ in runs] == [["taskkill", "/F", "/T", "/PID", "11", "/PID", "12"]]
+    taskkill = host.system_program("System32", "taskkill.exe")  # never one in the project
+    assert [argv for argv, _ in runs] == [[taskkill, "/F", "/T", "/PID", "11", "/PID", "12"]]
     assert runs[0][1]["timeout"] == repo.TASKKILL_WAIT
     assert killed == [11, 12]
     # No taskkill (or it hangs): each git is still killed.

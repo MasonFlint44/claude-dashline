@@ -1339,10 +1339,15 @@ def test_a_success_clears_a_hold_held_open_on_windows(server, logged_in, monkeyp
 
 @pytest.mark.parametrize("token", ["tok\nX-Evil: 1", "tok\u2019", "tok\r"])
 def test_a_token_no_header_can_hold_is_refused_unsent(server, logged_in, token):
-    """http.client puts the header, token and all, in its error: it's never shown."""
+    """Never sent, and said for what it is (not a network fault, which doctor would
+    blame on the proxy); the token itself is never written."""
     env = dict(logged_in, CLAUDE_CODE_OAUTH_TOKEN=token)
     reason = usage.refresh(env, NOW, server.url, "linux")
-    assert reason == "no answer (network)"
+    assert reason == account.BAD_ENV_TOKEN
+    assert server.requests == []
+    # Should one reach the request anyway (a stored token, say), http.client puts the
+    # header, token and all, in its error: that's never shown either.
+    assert usage.get(server.url, token)[0] == 0
     assert server.requests == []
     for path in Path(usage.cache_dir(env)).iterdir():
         assert "tok" not in path.read_text()
@@ -1398,3 +1403,96 @@ def test_breaking_a_stale_lock_waits_for_a_reader_on_windows(isolated_home, monk
     usage._break_lock(path, stale, NOW)
     assert not Path(path).exists()
     assert len(calls) == 2
+
+
+# ---- found in the fifth review ----
+
+
+def test_a_long_label_from_the_server_is_cut():
+    """One verbose name would push 5h and 7d off the row: at most MAX_LABEL columns."""
+    data = {
+        "limits": [
+            {"kind": "session", "percent": 55},
+            {"kind": "weekly_scoped_opus_promotional_allowance_2026", "percent": 12},
+            {"kind": "weekly_scoped", "percent": 9, "scope": {"model": {"display_name": "x" * 99}}},
+        ]
+    }
+    plan = usage.plan_bars(make_session(rate_limits=None), ULTRA, data, NOW)
+    assert [b.label for b in plan] == ["5h", "weekly scoped opus p", "x" * 20]
+
+
+def test_a_blank_model_name_draws_no_bar():
+    row = {"kind": "weekly_scoped", "percent": 12, "scope": {"model": {"display_name": "   "}}}
+    plan = usage.plan_bars(make_session(rate_limits=None), ULTRA, {"limits": [row]}, NOW)
+    assert plan == []
+
+
+def test_duplicate_rows_draw_one_bar():
+    data = {
+        "limits": [
+            {"kind": "session", "percent": 0},
+            {"kind": "session", "percent": 90},
+            {"kind": "odd", "percent": 1},
+            {"kind": "odd", "percent": 2},
+        ]
+    }
+    plan = usage.plan_bars(make_session(rate_limits=None), ULTRA, data, NOW)
+    assert [(b.label, b.percent) for b in plan] == [("5h", 0), ("odd", 1)]
+
+
+def test_provider_sessions_draw_no_plan_windows_from_stdin():
+    """PLAN §1: a provider flag (Bedrock, say) means no plan bars, whatever stdin says."""
+    bedrock = Account("api", "Bedrock")
+    session = make_session()  # has a seven_day window
+    assert usage.plan_bars(session, ULTRA, None, NOW) != []
+    assert usage.plan_bars(session, bedrock, None, NOW) == []
+
+
+def test_relative_config_dir_is_the_same_folder_for_the_child(tmp_path, monkeypatch):
+    """A relative CLAUDE_CONFIG_DIR is read from the current folder; the fetch child
+    starts there too, so it finds the same one (and the name stays as written: the
+    macOS Keychain item is named after it)."""
+    from dashline import theme
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".cc").mkdir()  # there, so only being relative keeps the child out of it
+    env = {"HOME": str(tmp_path / "home"), "CLAUDE_CONFIG_DIR": ".cc"}
+    assert theme.config_dir(env) == str(tmp_path / ".cc")
+    assert usage._child_cwd(env, theme.config_dir(env)) is None  # the render's own folder
+    (tmp_path / "abs").mkdir()
+    absolute = {"CLAUDE_CONFIG_DIR": str(tmp_path / "abs")}
+    assert usage._child_cwd(absolute, theme.config_dir(absolute)) == str(tmp_path / "abs")
+    assert account.keychain_service(env) == account.keychain_service(dict(env))
+
+
+@posix_only
+def test_spawn_with_a_read_only_cache_is_quiet(isolated_home, capsys):
+    """Doctor's cache line says why; a traceback on every render wouldn't."""
+    import os
+
+    if os.geteuid() == 0:
+        pytest.skip("root writes anywhere")
+    env = env_for(isolated_home)
+    folder = Path(usage.cache_dir(env))
+    folder.mkdir(parents=True)
+    folder.chmod(0o500)
+    try:
+        assert REAL_SPAWN(env, NOW) is False
+    finally:
+        folder.chmod(0o700)
+    assert capsys.readouterr().err == ""
+
+
+@pytest.mark.parametrize("stored", [False, True])
+def test_a_token_with_a_stray_character_says_so(isolated_home, stored):
+    import time
+
+    env = env_for(isolated_home)
+    if stored:
+        creds = {"claudeAiOauth": {"accessToken": "tok\r", "expiresAt": (NOW + 3600) * 1000}}
+        (isolated_home / ".claude").mkdir(exist_ok=True)
+        (isolated_home / ".claude" / ".credentials.json").write_text(json.dumps(creds))
+        assert account.find_token(env, NOW, "linux")[1] == account.BAD_STORED_TOKEN
+    else:
+        env["CLAUDE_CODE_OAUTH_TOKEN"] = "tok\n"
+        assert account.find_token(env, time.time(), "linux")[1] == account.BAD_ENV_TOKEN

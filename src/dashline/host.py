@@ -7,6 +7,7 @@ API is called (process creation flags, `os.kill`), which flipping it can't stand
 
 from __future__ import annotations
 
+import functools  # already loaded: re uses it
 import os
 
 WINDOWS = os.name == "nt"
@@ -52,3 +53,70 @@ def can_write_in(folder: str) -> bool:
     with contextlib.suppress(OSError):
         os.unlink(probe)
     return True
+
+
+def plain_file(path: str, limit: int) -> bool:
+    """Whether `path` is a regular file of at most `limit` bytes, safe to read in a
+    render. Not a pipe or a device: reading one can block forever, or never end (a
+    repo's `.claude/settings.json` can be a link to `/dev/zero`)."""
+    import stat
+
+    try:
+        st = os.stat(path)
+    except (OSError, ValueError):
+        return False
+    return stat.S_ISREG(st.st_mode) and st.st_size <= limit
+
+
+def program(name: str, env=None) -> str:
+    """What to run for the program `name` (`git`, `python`): `name` itself, found on PATH
+    as usual, except on Windows.
+
+    There Windows (CreateProcess) and shutil.which look in the current folder before
+    PATH, and dashline runs in the project's folder: a cloned repo's own `git.exe` would
+    run on every render. So on Windows it's the full path found on PATH alone, without
+    relative entries (`.`), which also mean the current folder. Raises FileNotFoundError
+    when there is none, as running a program that isn't there would.
+    """
+    if not WINDOWS:
+        return name
+    found = which(name, env)
+    if found is None:
+        raise FileNotFoundError(2, "not found on PATH", name)
+    return found
+
+
+def which(name: str, env=None) -> str | None:
+    """shutil.which, from `env`'s PATH; on Windows without the current folder (program)."""
+    env = os.environ if env is None else env
+    if not WINDOWS:
+        import shutil
+
+        return shutil.which(name, path=_get(env, "PATH") or None)
+    return _on_path(name, _get(env, "PATH"), _get(env, "PATHEXT"))
+
+
+def system_program(*parts: str) -> str:
+    """A program of Windows' own, by its full path (`System32`, `taskkill.exe`)."""
+    root = os.environ.get("SYSTEMROOT") or "C:\\Windows"  # any case there
+    return os.path.join(root, *parts)
+
+
+def _get(env, name: str) -> str:
+    """`name` from `env` in any case (os.environ's keys are upper case on Windows)."""
+    return env.get(name) or env.get(name.upper()) or env.get(name.capitalize()) or ""
+
+
+@functools.cache
+def _on_path(name: str, path: str, pathext: str) -> str | None:
+    """The first `name` (with each of PATHEXT's extensions) in PATH's absolute folders."""
+    exts = [""] if os.path.splitext(name)[1] else (pathext or ".COM;.EXE;.BAT;.CMD").split(";")
+    for folder in path.split(os.pathsep):
+        folder = folder.strip().strip('"')
+        if not folder or not os.path.isabs(folder):
+            continue
+        for ext in exts:
+            candidate = os.path.join(folder, name + ext.strip())
+            if os.path.isfile(candidate):
+                return candidate
+    return None

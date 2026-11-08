@@ -122,7 +122,8 @@ def truncate(line: list, limit: int, ellipsis: str, style: str) -> list:
 
 def bar_suffix(bar: Bar, ctx: Ctx, countdown: bool) -> list:
     out = [(" ", ""), ctx.seg(bars.percent_text(bar.percent), "text")]
-    if countdown and bar.resets_at and bar.percent >= bars.COUNTDOWN_FROM:
+    # The percent as shown: `70%` gets its countdown even at 69.6.
+    if countdown and bar.resets_at and bars.round_half_up(bar.percent) >= bars.COUNTDOWN_FROM:
         left = bar.resets_at - ctx.now
         if left > 0:
             out += [(" ", ""), ctx.seg(f"({bars.duration(left)})", "inactive")]
@@ -291,7 +292,9 @@ def fit_line_1(session, ctx: Ctx, context: Bar | None, share: int, label: str | 
     def build(with_agent, compact, short, cells):
         """(line, the bar's cells) for a variant, or None if it can't have a bar."""
         tail = cache_state(session, ctx, compact)
-        tail = [(" ", ""), *tail] if tail else []
+        # After the context bar a space; with no bar, the cache is one more item.
+        lead = (" ", "") if context else ctx.seg(ctx.g["sep_item"], "inactive")
+        tail = [lead, *tail] if tail else []
         model_max = None
         if short:
             if model_w <= MODEL_MIN:

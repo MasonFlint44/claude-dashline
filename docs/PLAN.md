@@ -100,7 +100,12 @@ effort, fast mode, permission mode, vim mode, PR status.
   `month` bar; `ANTHROPIC_AUTH_TOKEN`, an `ANTHROPIC_API_KEY` the user approved
   (`customApiKeyResponses.approved` holds its last 20 chars), or no `oauthAccount` and
   no `CLAUDE_CODE_OAUTH_TOKEN` → `API`. Plan windows on stdin override all but the
-  provider flags: the CLI sends them only to subscribers.
+  provider flags: the CLI sends them only to subscribers. In API mode they're never
+  drawn, even if stdin has them (0.2.0).
+- **Plan label with `CLAUDE_CODE_OAUTH_TOKEN`:** the bars are that token's account, but
+  the label still comes from `.claude.json`'s stored login, which can be another
+  account; nothing in the usage answer names the plan. Accepted (0.2.0 review): such a
+  token is usually the user's own, and one from `claude setup-token` can't read usage.
 - **Token (background fetch only, never a render):** `CLAUDE_CODE_OAUTH_TOKEN`, then
   on macOS the Keychain (`security find-generic-password -a $USER -w -s "Claude
   Code-credentials"`, with `-<sha256(CLAUDE_CONFIG_DIR)[:8]>` appended when that is
@@ -162,6 +167,11 @@ ${CLAUDE_CONFIG_DIR:-~/.claude}/cache/statusline/
   fetch.lock  fetch.lock.break           shared by all logins
 ```
 
+The lock's name is generic, in a folder other tools may share: a `fetch.lock` of
+theirs a minute old would be taken for a dead child's and removed. Accepted (0.2.0
+review): renaming it would make one release's renders and the next one's fetch side by
+side once.
+
 Fetching (Phase 3): a render that finds this login's cache missing or ≥ 3 min old, and
 no hold in force for it, takes `fetch.lock` (O_EXCL; a lock ≥ 60 s old
 belongs to a dead child; only one process at a time may break it, through
@@ -198,7 +208,26 @@ files stay 0600), written atomically through a new temp file (`O_EXCL`, never on
 in its place). A usage answer's `limits` are kept and read up to 32 rows (a real one
 has a handful; thousands from a broken proxy made every render take minutes). When the
 fetch child can write neither the cache nor a hold (a full disk), it keeps the lock, so
-the next fetch waits for it to go stale (60 s) instead of starting on every render.
+the next fetch waits for it to go stale (60 s) instead of starting on every render; a
+render that can't take the lock at all (a read-only folder) starts no fetch, quietly,
+and doctor's cache line says why. A child killed between writing the cache and
+clearing the hold leaves a hold beside fresh data (a microsecond window; the hold
+expires on its own). A token an HTTP header can't carry (a stray line ending) is
+reported as such, not sent.
+
+What a render reads it reads only from plain files of a bounded size (64 MiB for
+`.claude.json`, which grows with history: at 10 MB it takes most of the 40 ms budget;
+1 MiB for git's own files): a project's `.claude/settings.json` or a file under
+`.git/` can be a link to a pipe or `/dev/zero`, which would block the render or never
+end. A relative `CLAUDE_CONFIG_DIR` is read from the current folder, as Claude Code
+reads it; the fetch child then starts in that same folder, so it finds the same one.
+
+Trust: a project's `.claude/settings.json` that the user trusted can set `env` for the
+statusline too (`CLAUDE_CONFIG_DIR`, `HTTPS_PROXY`, `SSL_CERT_FILE`,
+`CLAUDE_CODE_OAUTH_TOKEN`), redirecting where dashline reads and where its one request
+goes, just as it does for Claude Code's own requests. dashline doesn't second-guess
+that. Doctor reads managed settings only from the `managed-settings.json` file, not
+from MDM policies or the admin console, which Claude Code also applies.
 
 settings.json, written literally so a devcontainer mounting `~/.claude` under
 another user still resolves it:
@@ -269,11 +298,16 @@ to the ANSI code page); doctor runs the command in the same shell Claude Code wo
 found in Claude Code's order (2.1.319: `CLAUDE_CODE_GIT_BASH_PATH`; Git in Program
 Files, 64- then 32-bit; the Git for Windows that git on PATH belongs to, `bin\bash.exe`
 up to three folders above it, since in Git Bash git is `ucrt64\bin\git.exe`; else
-PowerShell 7 from Program Files; else Windows PowerShell, with Claude Code's options),
+PowerShell 7 from Program Files; else Windows PowerShell, with Claude Code's options;
+read from Claude Code 2.1.319, whose docs name only Git Bash or PowerShell),
 reads PowerShell 5.1's error records (localized, wrapped) for the program's own
 message, warns when PowerShell's code page garbled the symbols, and calls the command
 slow only past 2.5 s, since starting either shell takes much of 500 ms. All this is
-gated by `host.WINDOWS`, so the tests run the Windows paths on Linux too.
+gated by `host.WINDOWS`, so the tests run the Windows paths on Linux too. Windows
+looks for a program named without a path in the current folder before PATH, and the
+statusline runs in the project's folder: dashline runs git, Python and PowerShell by
+the full path found on PATH alone (`host.program`; relative entries skipped too), and
+taskkill from System32, so a cloned repo's own `git.exe` never runs (0.2.0).
 
 ---
 
@@ -333,11 +367,13 @@ E1 (plan name on line 1), E2 (bars stretch to fill each line).
 | `5h` | 2 | `limits[kind=session]`, fallback stdin `five_hour` | the row exists |
 | `7d` | 2 | `limits[kind=weekly_all]`, fallback stdin `seven_day` | the row exists |
 | model-scoped (`Fable`, …) | 2 | `limits[kind=weekly_scoped, scope.model]` | current model matches the scope (even at 0%), or its percent is above 0 (11/5) |
-| `credits` | 2 | endpoint `spend` | enabled and used > 0 |
 | `month` | 2 | endpoint `spend` on Team/Enterprise caps; stdin `spend_limit` behind a gateway | the account has a monthly cap (shown at 0% too; Enterprise's `limits[]` is empty, so this is its only bar) |
+| `credits` | 2 | endpoint `spend` | enabled and used > 0 |
 
 Unknown `kind`s are rendered by their server label rather than dropped. That is
-how a new meter shows up without a release.
+how a new meter shows up without a release. A label from the server (a kind, a
+model's name) is cut to 20 columns, a blank one draws no bar, and a second row with the
+same label is dropped (0.2.0: one long label pushed 5h and 7d off the row).
 
 ### Bar style (settled 11/4)
 
@@ -398,7 +434,8 @@ how a new meter shows up without a release.
   2-col indent + 2 at the right; a line of exactly `COLUMNS − 4` fits, one more is
   cut with `…`). `COLUMNS` is passed to the command as the full terminal width.
 - **Reset countdown** `(1h40m)` after a bar at ≥ **70%**, the gold anchor, so color and
-  countdown change together (settled 11/4).
+  countdown change together (settled 11/4). "At 70%" is the percent as shown: 69.6
+  reads `70%` and has its countdown (0.2.0).
 - **Limit reached:** a bar at 100% is simply full, in coral, with its countdown:
   `5h ▆▆▆▆▆▆ 100% (1h12m)` (changed 11/5 by the author; until 0.1.1 a blocked window
   showed `limit · resets 2h10m` with no cells). A full bar is the clearest signal, and
@@ -647,8 +684,10 @@ Widths are counted in terminal columns (0.1.6, asked by the author): East Asian 
 and Fullwidth characters (CJK, most emoji) count 2, combining marks and format
 characters 0, everything else 1, including the ambiguous-width ones below and Nerd
 icons. A character followed by VS16 (U+FE0F, emoji presentation, as in ❤️) counts 2,
-and cutting text never splits the pair (0.1.7); a ZWJ sequence counts each emoji, which
-errs wide. A flag (two regional indicators) counts 2 and is never split, and Hangul
+and cutting text never splits the pair (0.1.7); a ZWJ sequence counts each emoji, and a
+skin-tone modifier counts 2 as well, which errs wide. A soft hyphen counts 1: most
+terminals draw it. A displayed name is cut to 4096 characters before it's measured
+(0.2.0: measuring a huge one is what costs). A flag (two regional indicators) counts 2 and is never split, and Hangul
 vowel and final jamo count 0, so a decomposed (NFD) Korean name measures like the
 composed one (0.1.8). ASCII text skips the lookup, so a normal render costs nothing extra. Before
 0.1.6 a CJK branch or model name overflowed its line. stdin is read as UTF-8 whatever
@@ -737,7 +776,7 @@ writes. If hiding elements ever earns its keep, a file goes in
 `--install [--replace] [--downgrade]` · `--preview [SCENARIO]` · `--glyphs SET` ·
 `--version` · `--help`. `COLUMNS` counts only as plain digits, capped at 1000, in
 render and preview alike; more than 4 significant digits reads as 1000 without parsing
-(0.1.8).
+(0.1.8); `0` (or none) means 80.
 
 - `--doctor`: one line per check (`ok` / `warn` / `fail` / `info`, a `fix:` line under
   problems), exit 1 on any `fail`. Checks: python, install (installed copy vs the

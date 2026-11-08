@@ -102,7 +102,14 @@ class RepoState:
 # ---- finding the repo (no git process) ----
 
 
+MAX_GIT_FILE = 1 << 20  # HEAD, a gitdir: link, a rebase's state: a few bytes each
+
+
 def _read(path: str) -> str | None:
+    """A small file of the repo's, or None. A pipe or device in its place (a repo can
+    hold anything) isn't read: that could block the render (host.plain_file)."""
+    if not host.plain_file(path, MAX_GIT_FILE):
+        return None
     try:
         with open(path, encoding="utf-8", errors="replace") as f:
             return f.read()
@@ -556,7 +563,8 @@ def _start(args: list, cwd: str, env: dict):
         # it (exit 129), so there the row shows the folder alone (PLAN §5).
         # No fsmonitor: its hook is a program the repo's config names, run on each status.
         # Empty means off on every git: a hook path before 2.36, a boolean since.
-        ["git", "--no-optional-locks", "-c", "core.fsmonitor=", *args],
+        # On Windows git's full path: not a git.exe in the project (host.program).
+        [host.program("git", env), "--no-optional-locks", "-c", "core.fsmonitor=", *args],
         cwd=cwd,
         env=env,
         stdin=subprocess.DEVNULL,
@@ -580,7 +588,7 @@ def _kill(*procs) -> None:
         pids = [arg for proc in procs for arg in ("/PID", str(proc.pid))]
         with contextlib.suppress(OSError, subprocess.SubprocessError):
             subprocess.run(
-                ["taskkill", "/F", "/T", *pids],
+                [host.system_program("System32", "taskkill.exe"), "/F", "/T", *pids],
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,

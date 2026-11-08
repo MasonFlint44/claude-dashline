@@ -33,7 +33,27 @@ def home_dir(env) -> str:
 
 
 def config_dir(env) -> str:
-    return env.get("CLAUDE_CONFIG_DIR") or os.path.join(home_dir(env), ".claude")
+    """Claude Code's config folder. A relative CLAUDE_CONFIG_DIR is read from the
+    current folder, as Claude Code reads it (the fetch child starts in the same one,
+    usage.spawn); an absolute one is kept as written."""
+    custom = env.get("CLAUDE_CONFIG_DIR")
+    if not custom:
+        return os.path.join(home_dir(env), ".claude")
+    if is_absolute(custom):
+        return custom
+    try:
+        return os.path.abspath(custom)
+    except OSError:  # the current folder was deleted
+        return custom
+
+
+def is_absolute(path: str) -> bool:
+    """os.path.isabs, by Windows' rules where host.WINDOWS says so (`C:\\x`, `\\\\srv`)."""
+    if host.WINDOWS:
+        import ntpath
+
+        return ntpath.isabs(path)
+    return os.path.isabs(path)
 
 
 # Where the CLI reads managed settings, by platform. Tests point MANAGED_SETTINGS elsewhere.
@@ -50,8 +70,15 @@ def managed_settings_path() -> str | None:
     return MANAGED_SETTINGS
 
 
+# The most a JSON file dashline reads may hold. `.claude.json` grows with project
+# history (tens of MB is possible); settings, the cache and credentials are a few KB.
+MAX_JSON = 64 << 20
+
+
 def _read_json(path: str | None) -> dict:
-    if not path:
+    """A JSON object from `path`, or {} if it's missing, unreadable, not an object, or
+    not a plain file within MAX_JSON (host.plain_file)."""
+    if not path or not host.plain_file(path, MAX_JSON):
         return {}
     try:
         with open(path, encoding="utf-8-sig") as f:  # -sig: a BOM some editors add

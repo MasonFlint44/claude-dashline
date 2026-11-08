@@ -92,12 +92,20 @@ POLICY = ("blockedbygrouppolicy", "applocker", "softwarerestr")
 NOT_FOUND = ("nosuchfile", "notfound", "isnotrecognized")
 
 
-def program_missing(why: str) -> bool:
-    """Whether a failed command's reason says its program (Python) wasn't found.
-    Read without spaces: PowerShell may have wrapped it mid-word."""
+def program_missing(why: str, program: str) -> bool:
+    """Whether a failed command's reason says its program (Python) wasn't found: it
+    names the program (`'py' is not recognized`, `python3: command not found`). Read
+    without spaces: PowerShell may have wrapped it mid-word."""
     said = why.lower().replace(" ", "")
-    # Python's own "can't open file … No such file" is the script missing, not Python.
-    return "can'topenfile" not in said and any(s in said for s in NOT_FOUND)
+    name = program.replace("\\", "/").rsplit("/", 1)[-1].lower().replace(" ", "")
+    # Python's own "can't open file … No such file" is the script missing, not Python;
+    # a FileNotFoundError inside dashline names no program.
+    return (
+        "can'topenfile" not in said
+        and bool(name)
+        and name in said
+        and any(s in said for s in NOT_FOUND)
+    )
 
 
 def failure_fix(why: str, program: str) -> str | None:
@@ -108,7 +116,7 @@ def failure_fix(why: str, program: str) -> str | None:
         return f"a policy on this PC blocks {program}: ask whoever manages it"
     if "can'topenfile" in said:
         return "the command's statusline.py is missing: run /dashline:install"
-    if program_missing(why):
+    if program_missing(why, program):
         if host.WINDOWS:  # no full path with spaces runs in both shells
             return (
                 f"{program} must be on the PATH Claude Code sees: install Python, "
@@ -121,7 +129,7 @@ def failure_fix(why: str, program: str) -> str | None:
 def summarize(data: dict) -> str:
     """The usage answer in a few words: `5h 22% · 7d 48% · Fable 24% · credits 12%`."""
     from dashline.stdin import _dig, _num, _str
-    from dashline.usage import MAX_LIMITS, WINDOW_LABELS
+    from dashline.usage import MAX_LIMITS, WINDOW_LABELS, _label
 
     parts = []
     limits = data.get("limits") if isinstance(data, dict) else None
@@ -131,8 +139,8 @@ def summarize(data: dict) -> str:
         kind, percent = _str(row.get("kind")), _num(row.get("percent"))
         if kind is None or percent is None:
             continue
-        label = WINDOW_LABELS.get(kind) or _str(_dig(row, "scope", "model", "display_name"))
-        parts.append(f"{label or kind.replace('_', ' ')} {percent:.0f}%")
+        label = WINDOW_LABELS.get(kind) or _label(_dig(row, "scope", "model", "display_name"))
+        parts.append(f"{label or _label(kind.replace('_', ' ')) or '?'} {percent:.0f}%")
     spend = data.get("spend") if isinstance(data, dict) else None
     if isinstance(spend, dict) and spend.get("enabled"):
         percent = _num(spend.get("percent"))
@@ -183,9 +191,7 @@ def windows_shell(env, which=None) -> tuple:
     in on Windows, found as it finds it. Git Bash when there is one (git_bashes), else
     PowerShell 7 from Program Files, else Windows PowerShell.
     """
-    import shutil
-
-    which = which or (lambda name: shutil.which(name, path=_env(env, "PATH") or None))
+    which = which or (lambda name: host.which(name, env))
     bash = env.get("CLAUDE_CODE_GIT_BASH_PATH")
     if not (bash and os.path.isfile(bash)):
         bash = next((b for b in git_bashes(env, which) if os.path.isfile(b)), None)
@@ -194,7 +200,13 @@ def windows_shell(env, which=None) -> tuple:
     pwsh = os.path.join(program_files(env), "PowerShell", "7", "pwsh.exe")
     if os.path.isfile(pwsh):
         return [pwsh, *POWERSHELL_OPTIONS], "PowerShell 7"
-    return ["powershell", *POWERSHELL_OPTIONS], "PowerShell"
+    return [windows_powershell(), *POWERSHELL_OPTIONS], "PowerShell"
+
+
+def windows_powershell() -> str:
+    """Windows PowerShell, by its full path: by name, Windows would look in the
+    project's folder first (host.program)."""
+    return host.system_program("System32", "WindowsPowerShell", "v1.0", "powershell.exe")
 
 
 # The `+ …` lines of an error record PowerShell 5.1 prints for a program's stderr.
@@ -252,9 +264,17 @@ KEYCHAIN_FIX = (
 )
 
 
-def login_fix(why: str) -> str:
-    from dashline.account import KEYCHAIN_LOCKED
+BAD_ENV_TOKEN_FIX = (
+    "set CLAUDE_CODE_OAUTH_TOKEN again without the stray character (often a line ending "
+    "from a file saved on Windows)"
+)
 
+
+def login_fix(why: str) -> str:
+    from dashline.account import BAD_ENV_TOKEN, KEYCHAIN_LOCKED
+
+    if why == BAD_ENV_TOKEN:
+        return BAD_ENV_TOKEN_FIX
     return KEYCHAIN_FIX if why == KEYCHAIN_LOCKED else "run /login in Claude Code"
 
 
@@ -333,6 +353,7 @@ class Doctor:
         self.fetch_now = fetch_now  # fetch even while the server has asked us to wait
         self.results = []  # (status, name, text, fix)
         self.entry = None  # dashline's statusLine entry, once found
+        self.entry_path, self.entry_is_user = None, True  # the file it's in
         self.account = None
         self._shell = None  # self.shell()
 
@@ -368,7 +389,8 @@ class Doctor:
 
     def python(self):
         v = sys.version_info
-        text = f"{v.major}.{v.minor}.{v.micro} ({sys.executable})"
+        where = sys.executable.replace("\\", "/") if host.WINDOWS else sys.executable
+        text = f"{v.major}.{v.minor}.{v.micro} ({where})"
         if v[:2] < MIN_PYTHON:
             self.add(FAIL, "python", text, "dashline needs Python 3.9 or newer")
         else:
@@ -448,6 +470,7 @@ class Doctor:
             )
             return
         self.entry = entry
+        self.entry_path, self.entry_is_user = path, is_user
         if hooks is not None and hooks[1]["disableAllHooks"] is True:
             self.add(
                 FAIL,
@@ -537,12 +560,14 @@ class Doctor:
 
     def user_fix(self, reason) -> str | None:
         """The fix for a fetch that failed for `reason`, when it is the user's to make."""
-        from dashline.account import KEYCHAIN_LOCKED
+        from dashline.account import BAD_ENV_TOKEN, BAD_STORED_TOKEN, KEYCHAIN_LOCKED
         from dashline.usage import FORBIDDEN, REJECTED
 
         relogin = "run /login in Claude Code"
         return {
             "no Claude login found": relogin,
+            BAD_ENV_TOKEN: BAD_ENV_TOKEN_FIX,
+            BAD_STORED_TOKEN: relogin,
             KEYCHAIN_LOCKED: KEYCHAIN_FIX,
             REJECTED: relogin,
             FORBIDDEN: (
@@ -582,7 +607,7 @@ class Doctor:
                 INFO,
                 "usage",
                 "not fetched: a fetch is running in the background",
-                "run doctor again in a moment to see its result",
+                "the statusline shows its result once it's done",
             )
             return
         start = time.monotonic()
@@ -743,19 +768,26 @@ class Doctor:
             "its $-variables or ~ are Bash, which PowerShell reads differently: "
             "/dashline:install with --replace writes the Windows command"
         )
+        if not self.entry_is_user:  # install writes only the user's settings
+            where = self.short(self.entry_path)
+            rewrite_fix = replace_fix = (
+                f"PowerShell can't run it: write the Windows command in {where} "
+                "(/dashline:install writes only your user settings)"
+            )
         if r.returncode != 0 or not lines or "internal error" in r.stdout:
             why = command_reason(err, lines, program, powershell)
             why = why or f"exit {r.returncode}, {len(lines)} lines"
+            missing = host.WINDOWS and program_missing(why, program)
             fix = "run /dashline:install"
             if rewrite:
                 fix = rewrite_fix
             elif bash_only and powershell:
                 fix = replace_fix
-            elif unknown_glyphs(self.entry) is not None:
+            elif unknown_glyphs(self.entry) is not None and not missing:
                 fix = "its --glyphs isn't a glyph set: see the settings line"
             else:
                 fix = (
-                    (host.WINDOWS and program_missing(why) and self.other_python())
+                    (missing and self.entry_is_user and self.other_python())
                     or failure_fix(why, program)
                     or fix
                 )
@@ -779,8 +811,9 @@ class Doctor:
                 WARN,
                 "command",
                 text + ", but its symbols came back changed",
-                "PowerShell here doesn't pass them through: use ascii glyphs "
-                "(/dashline:install), or install Git for Windows",
+                "PowerShell here doesn't pass them through: install Git for Windows, so "
+                "Claude Code runs it in Git Bash; ascii glyphs (/dashline:install) fix only "
+                "the symbols, not other letters this code page lacks",
             )
             return
         if ms > (SLOW_MS_WINDOWS if host.WINDOWS else SLOW_MS):
@@ -821,19 +854,18 @@ class Doctor:
         import subprocess
 
         git = "git"
-        argv, name = self.shell()
-        if host.WINDOWS and name == "Git Bash":
-            # Git installed for Git Bash only isn't on PATH, but the statusline, run in
-            # Git Bash, has it: use that one.
-            import shutil
-
-            root = os.path.dirname(os.path.dirname(argv[0]))
-            beside = os.path.join(root, "cmd", "git.exe")
-            if not shutil.which("git", path=_env(self.env, "PATH") or None) and os.path.isfile(
-                beside
-            ):
-                git = beside
+        if host.WINDOWS:  # by its full path, as the render runs it (host.program)
+            git = host.which("git", self.env)
+            argv, name = self.shell()
+            if not git and name == "Git Bash":
+                # Git installed for Git Bash only isn't on PATH, but the statusline, run
+                # in Git Bash, has it: use that one.
+                root = os.path.dirname(os.path.dirname(argv[0]))
+                beside = os.path.join(root, "cmd", "git.exe")
+                git = beside if os.path.isfile(beside) else None
         try:
+            if git is None:
+                raise FileNotFoundError("git")
             r = subprocess.run([git, "--version"], capture_output=True, text=True, timeout=5)
         except (OSError, subprocess.SubprocessError):
             self.add(WARN, "git", "not found: the directory row shows the folder only")
@@ -912,7 +944,8 @@ def run(
 
     env = os.environ if env is None else env
     out = out or sys.stdout
-    cwd = cwd or env.get("CLAUDE_PROJECT_DIR") or os.getcwd()
+    # The current folder may have been deleted: then the home folder stands in.
+    cwd = cwd or env.get("CLAUDE_PROJECT_DIR") or install.current_dir() or theme.home_dir(env)
     now = time.time() if now is None else now
     doctor = Doctor(env, now, cwd, base_url, fetch_now=fetch_now)
     results = doctor.run()

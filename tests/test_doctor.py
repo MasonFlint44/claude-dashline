@@ -853,7 +853,7 @@ def test_usage_leaves_a_running_fetch_alone(sub, server, tmp_path, fetch_now):
     status, text, fix = usage_only(sub, tmp_path, server.url, fetch_now=fetch_now)
     assert server.requests == []
     assert (status, text) == ("info", "not fetched: a fetch is running in the background")
-    assert fix == "run doctor again in a moment to see its result"
+    assert fix == "the statusline shows its result once it's done"
     assert json.loads(lock.read_text())["nonce"] == "theirs"  # not taken, not removed
 
 
@@ -1104,20 +1104,21 @@ def test_command_errors_through_powershell(installed, tmp_path, monkeypatch):
     as_windows_writes_it(installed)
     monkeypatch.setattr(host, "WINDOWS", True)
     monkeypatch.setattr(doctor, "windows_shell", lambda env, which=None: (["pwsh-x"], "PowerShell"))
+    program = doctor.first_word(get_settings(installed)["statusLine"]["command"])  # py on Windows
     not_found = (
-        "py : The term 'py' is not recognized as the name of a cmdlet, function, script "
-        "file, or operable program.\n"
+        f"{program} : The term '{program}' is not recognized as the name of a cmdlet, "
+        "function, script file, or operable program.\n"
         "At line:1 char:1\n"
-        "+ py -3 -I -S C:/Users/pat/.claude/scripts/statusline/statusline.py\n"
+        f"+ {program} -I -S C:/Users/pat/.claude/scripts/statusline/statusline.py\n"
         "+ ~~\n"
-        "    + CategoryInfo          : ObjectNotFound: (py:String) [], CommandNotFoundException\n"
+        f"    + CategoryInfo          : ObjectNotFound: ({program}:String) [], "
+        "CommandNotFoundException\n"
         "    + FullyQualifiedErrorId : CommandNotFoundException\n"
     )
     fake_run(monkeypatch, "pwsh-x", stderr=not_found, returncode=1)
     status, text, fix = check(installed, "command", tmp_path)
     assert status == "fail"
-    assert text.startswith("The term 'py' is not recognized")
-    program = doctor.first_word(get_settings(installed)["statusLine"]["command"])  # py on Windows
+    assert text.startswith(f"The term '{program}' is not recognized")
     assert fix == (
         f"{program} must be on the PATH Claude Code sees: install Python, or add it to "
         "PATH, then restart Claude Code"
@@ -1263,7 +1264,7 @@ def test_git_for_git_bash_only(installed, tmp_path, monkeypatch):
     monkeypatch.setattr(
         doctor, "windows_shell", lambda env, which=None: ([str(bash), "-c"], "Git Bash")
     )
-    monkeypatch.setattr("shutil.which", lambda name, path=None: None)
+    monkeypatch.setattr(host, "which", lambda name, env=None: None)
     fake_run(monkeypatch, str(tmp_path / "Git" / "cmd" / "git.exe"), stdout="git version 2.50.1\n")
     status, text, _ = check(installed, "git", tmp_path)
     assert (status, text) == ("ok", "2.50.1")
@@ -1302,7 +1303,7 @@ def git_for_windows(root):
     return root / "bin" / "bash.exe"
 
 
-POWERSHELL = ["powershell", *doctor.POWERSHELL_OPTIONS]
+POWERSHELL = [doctor.windows_powershell(), *doctor.POWERSHELL_OPTIONS]
 
 
 @pytest.mark.parametrize("git", ["cmd/git.exe", "ucrt64/bin/git.exe"])
@@ -1616,7 +1617,115 @@ def test_git_on_path_wins_over_git_bashs_own(installed, tmp_path, monkeypatch):
     monkeypatch.setattr(
         doctor, "windows_shell", lambda env, which=None: ([str(bash), "-c"], "Git Bash")
     )
-    monkeypatch.setattr("shutil.which", lambda name, path=None: "C:/other/git.exe")
-    fake_run(monkeypatch, "git", stdout="git version 2.51.0\n")
+    monkeypatch.setattr(host, "which", lambda name, env=None: "C:/other/git.exe")
+    fake_run(monkeypatch, "C:/other/git.exe", stdout="git version 2.51.0\n")
     status, text, _ = check(installed, "git", tmp_path)
     assert (status, text) == ("ok", "2.51.0")
+
+
+# ---- found in the fifth review ----
+
+
+def test_warnings_alone_exit_0(installed, tmp_path):
+    """The skills and smoke tests read the exit code: 1 only when something fails."""
+    data = get_settings(installed)
+    del data["statusLine"]["refreshInterval"]
+    set_settings(installed, data)
+    code, out = report(installed, tmp_path)
+    assert "Working, with warnings: settings" in out
+    assert code == 0
+
+
+def test_git_at_the_oldest_it_needs(installed, tmp_path, monkeypatch):
+    fake_run(monkeypatch, "git", stdout="git version 2.15.0\n")
+    assert check(installed, "git", tmp_path)[:2] == ("ok", "2.15.0")
+
+
+def test_no_color_also_on_a_terminal(installed, tmp_path):
+    class Terminal(io.StringIO):
+        def isatty(self):
+            return True
+
+    out = Terminal()
+    doctor.run(dict(installed, NO_COLOR="1"), out, str(tmp_path), CLOSED, now=NOW)
+    assert "\x1b[" not in out.getvalue()
+    out = Terminal()
+    doctor.run(installed, out, str(tmp_path), CLOSED, now=NOW)
+    assert "\x1b[" in out.getvalue()
+
+
+def test_a_missing_python_is_one_the_reason_names():
+    """`No such file` inside dashline (a traceback's last line) isn't Python missing."""
+    assert doctor.program_missing("bash: python3: command not found", "python3")
+    assert doctor.program_missing("The term 'py' is not recognized as a name", "py")
+    assert doctor.program_missing("C:/Py/python.exe: No such file", "C:\\Py\\python.exe")
+    assert not doctor.program_missing(
+        "FileNotFoundError: [Errno 2] No such file or directory: 'x.json'", "py"
+    )
+    assert not doctor.program_missing(
+        "C:\\Py\\python.exe: can't open file 'C:\\x\\statusline.py': [Errno 2] No such file",
+        "C:\\Py\\python.exe",
+    )
+
+
+def test_missing_script_is_said_even_with_another_python(installed, tmp_path, monkeypatch):
+    as_windows_writes_it(installed)
+    monkeypatch.setattr(install, "windows_python", lambda *args, **kwargs: "python")
+    py = doctor.first_word(get_settings(installed)["statusLine"]["command"])
+    missing = f"{py}: can't open file 'C:/x/statusline.py': [Errno 2] No such file or directory"
+    _, _, fix = windows_command_check(
+        installed, tmp_path, monkeypatch, stderr=missing, returncode=2
+    )
+    assert fix == "the command's statusline.py is missing: run /dashline:install"
+
+
+def test_a_missing_python_comes_before_a_glyph_typo(installed, tmp_path, monkeypatch):
+    """Both wrong: the Python first, or fixing the glyphs takes a second run to see it."""
+    as_windows_writes_it(installed)
+    data = get_settings(installed)
+    data["statusLine"]["command"] = data["statusLine"]["command"].replace("nerd", "Nerd")
+    set_settings(installed, data)
+    py = doctor.first_word(data["statusLine"]["command"])
+    _, _, fix = windows_command_check(
+        installed, tmp_path, monkeypatch, "PowerShell 7", stderr=not_recognized(py), returncode=1
+    )
+    assert fix.startswith(f"{py} must be on the PATH")
+
+
+def test_install_fixes_arent_offered_for_a_projects_entry(installed, tmp_path, monkeypatch):
+    """/dashline:install writes only user settings: a project's command is edited there."""
+    entry = dict(get_settings(installed)["statusLine"], command=install.command("nerd"))
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude" / "settings.json").write_text(json.dumps({"statusLine": entry}))
+    monkeypatch.setattr(install, "windows_python", lambda *args, **kwargs: "python")
+    _, _, fix = windows_command_check(
+        installed, tmp_path, monkeypatch, "Git Bash", stdout="a │ b\nc\n"
+    )
+    project = (tmp_path / ".claude" / "settings.json").as_posix()
+    assert fix == (
+        f"PowerShell can't run it: write the Windows command in {project} "
+        "(/dashline:install writes only your user settings)"
+    )
+
+
+def test_python_line_uses_forward_slashes_on_windows(installed, tmp_path, monkeypatch):
+    monkeypatch.setattr(host, "WINDOWS", True)
+    monkeypatch.setattr(sys, "executable", "C:\\Py\\python.exe")
+    _, text, _ = check(installed, "python", tmp_path)
+    assert text.endswith("(C:/Py/python.exe)")
+
+
+def test_a_token_with_a_stray_line_ending(installed, tmp_path):
+    env = dict(installed, CLAUDE_CODE_OAUTH_TOKEN="tok\r")
+    (Path(installed["HOME"]) / ".claude.json").write_text(
+        json.dumps({"oauthAccount": {"emailAddress": "a@b.c", "organizationType": "claude_max"}})
+    )
+    status, text, fix = check(env, "login", tmp_path)
+    assert status == "fail"
+    assert account.BAD_ENV_TOKEN in text
+    assert fix.startswith("set CLAUDE_CODE_OAUTH_TOKEN again")
+
+
+def test_long_limit_names_are_cut_in_the_summary():
+    data = {"limits": [{"kind": "k" * 500, "percent": 5}, {"kind": "session", "percent": 9}]}
+    assert doctor.summarize(data) == f"{'k' * 20} 5% · 5h 9%"

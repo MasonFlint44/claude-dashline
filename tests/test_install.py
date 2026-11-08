@@ -1753,3 +1753,67 @@ def test_windows_python_prefers_the_launcher(monkeypatch):
 
     assert install.windows_python(found.get, run) == "py -3"
     assert install.WINDOWS_PYTHONS == ("py -3", "python", "python3")
+
+
+# ---- found in the fifth review ----
+
+
+def test_odd_leftover_names_dont_stop_an_install(conf, env, monkeypatch):
+    """A number too long to be a pid is someone else's folder; one no process can have
+    is no install's."""
+    scripts = conf / "scripts"
+    scripts.mkdir()
+    (scripts / f"statusline.old-{'9' * 200}").mkdir()
+    (scripts / "statusline.old-9999999999").mkdir()
+    code, out = run(env)
+    assert code == 0, out
+    names = sorted(p.name for p in scripts.iterdir())
+    assert f"statusline.old-{'9' * 200}" in names
+    if os.name != "nt":  # there pids can't be asked: the folder's age decides
+        assert "statusline.old-9999999999" not in names
+
+
+def test_a_leftover_that_is_a_file_is_removed(conf, env, monkeypatch):
+    monkeypatch.setattr(install, "_alive", lambda pid: False)
+    scripts = conf / "scripts"
+    scripts.mkdir()
+    (scripts / "statusline.new-11").write_text("x")
+    (scripts / f"statusline.new-{os.getpid()}").write_text("x")  # this install's pid
+    code, out = run(env)
+    assert code == 0, out
+    assert sorted(p.name for p in scripts.iterdir()) == ["statusline"]
+
+
+@posix_only
+def test_install_from_a_deleted_folder(conf, env, tmp_path, monkeypatch):
+    """The folder it was run from is gone: the install still succeeds, quietly."""
+    gone = tmp_path / "gone"
+    gone.mkdir()
+    monkeypatch.chdir(gone)
+    gone.rmdir()
+    out = io.StringIO()
+    assert install.run(None, env=env, out=out, windows=False) == 0, out.getvalue()
+
+
+def test_replace_over_another_tools_folder_with_a_version_file(conf, env):
+    """Its VERSION isn't dashline's: --replace backs the folder up, no exit 4."""
+    other = conf / "scripts" / "statusline"
+    other.mkdir(parents=True)
+    (other / "VERSION").write_text("99.0\n")
+    (other / "run.sh").write_text("echo theirs\n")
+    code, out = run(env, replace=True)
+    assert code == 0, out
+    assert (conf / "scripts" / "statusline.backup" / "run.sh").exists()
+
+
+def test_a_dead_python_is_asked_once(conf, env):
+    target = (conf / "scripts" / "statusline" / "statusline.py").as_posix()
+    write_settings(conf, {"statusLine": {"type": "command", "command": f'py -3 -I -S "{target}"'}})
+    asked = []
+
+    def find(names=install.WINDOWS_PYTHONS):
+        asked.append(names)
+        return pythons("python")(names)
+
+    assert win(env, python=find)[0] == 0
+    assert asked == [("py -3",), ("python", "python3")]

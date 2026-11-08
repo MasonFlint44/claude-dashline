@@ -38,6 +38,9 @@
   denied" for a lock that's being removed; one that stays denied is reported, not
   taken for a fetch in progress.
 - settings.json keeps `\n` line endings when `/dashline:install` rewrites it.
+- A cloned repo with its own `git.exe` (or `python.exe`) at the top can no longer get
+  it run: Windows looks in the current folder, the project, before PATH, so dashline
+  now runs git, Python, PowerShell and taskkill by their full paths.
 - `--replace`'s move of another statusline's folder, and its move back after a failed
   install, also try again while a file in it is open. A successful fetch clears the
   last wait even while a render is reading it, so the next failure waits 1 min again,
@@ -58,6 +61,8 @@
   folder as they really are on Windows, and skips the file-permission check, which
   doesn't apply there. PowerShell 7's short error form gets its own reason and fix,
   and an error text that only mentions a PowerShell record no longer stops the check.
+  Its `python` line uses `/` too. On a code page that garbles the symbols, it now
+  recommends Git for Windows first (ascii glyphs fix only the symbols).
   A command that works in Git Bash but not in PowerShell is a warning that says so,
   not one that reads like a fault; a full path to Python (`C:\Python312\python.exe`)
   is read with its backslashes.
@@ -96,6 +101,28 @@
 - `theme: auto` with an odd `COLORFGBG` (`15;²`) no longer shows "internal error", and a
   custom theme's name can't point outside the `themes/` folder.
 - The cache's temporary file is always a new file, never one left in its place.
+- A project's `.claude/settings.json` (or a file under `.git/`) that is a link to a pipe
+  or a device no longer freezes the statusline: dashline reads only plain files of a
+  sensible size.
+- A relative `CLAUDE_CONFIG_DIR` (like `.cc`) works: the background fetch used to look
+  for it from another folder, so there were never any plan bars.
+- A limit name from the server is cut to 20 columns, a blank one draws no bar, and a
+  repeated one is drawn once, so 5h and 7d always keep their place. Very long names no
+  longer slow a render.
+- With Bedrock, Vertex, Foundry or an API key, no 5h or 7d bar is drawn even if
+  Claude Code's input has one.
+- A bar showing `70%` gets its reset countdown, also at 69.6%; the cache note has its
+  separator when there's no context bar; a soft hyphen counts as the column it takes.
+- A `CLAUDE_CODE_OAUTH_TOKEN` with a stray line ending is reported as that, with how to
+  fix it, instead of as a network failure.
+- A read-only cache folder no longer writes a traceback to stderr on every render.
+- `/dashline:install` no longer crashes on an odd leftover folder name, removes a
+  leftover that's a file, and no longer prints a traceback after a successful install
+  run from a folder that was deleted meanwhile (doctor neither).
+- Doctor no longer takes a "No such file" inside dashline for Python missing, says a
+  missing Python before a glyph typo, gives a project's or managed entry a fix it can
+  use (install writes only user settings), and no longer suggests running itself again
+  while a background fetch runs.
 - Doctor: a statusLine whose type isn't `"command"` isn't run (Claude Code wouldn't run
   it); a `--glyphs` after the end of dashline's command (`… || echo --glyphs x`) is no
   longer taken for dashline's; the command runs at a 120-column width, so a narrow
@@ -123,8 +150,13 @@
   stderr. The Windows command test runs in Git Bash, PowerShell 7 and Windows
   PowerShell, and fails on CI if one is missing. The smoke tests use a home folder
   named `José Müller` and a project with an accented name, which must show intact, and
-  the PowerShell one runs the `py -3` command too. Tests that let a retry or a
-  timeout go unchecked now check them. The Apple-Python job fails when that
+  the PowerShell one runs the `py -3` command too, then the rewrites of a command whose
+  Python is gone and of the old Bash-only one, and the render in PowerShell 7, all
+  without `HOME` set, as in a real session. The Git Bash one runs the installed command
+  through `bash -c`, as Claude Code does. Tests that let a retry or a timeout go
+  unchecked now check them, and more edges are pinned (the plan name's line, doctor's
+  exit code with warnings, overlapping git `insteadOf` rules, git 2.15.0, `NO_COLOR` on
+  a terminal). The Apple-Python job fails when that
   Python is missing instead of passing, and pytest names every skipped test.
 
 ## 0.1.10 — 2026-11-06

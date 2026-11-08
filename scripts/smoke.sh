@@ -103,6 +103,19 @@ if ! grep -q "projé" "$tmp/out"; then
   echo "::error::the project's name didn't reach the statusline intact"; exit 1
 fi
 
+# The same, as Claude Code runs it: settings.json's command, through the shell (Git
+# Bash on Windows), with the accented session on stdin.
+"$py" -I -S - "$home_dir/.claude/settings.json" > "$tmp/command" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as f:
+    sys.stdout.buffer.write(json.load(f)["statusLine"]["command"].encode())
+PY
+bash -c "$(cat "$tmp/command")" < "$tmp/session.json" > "$tmp/out" 2> "$tmp/err"
+if [ -s "$tmp/err" ] || ! grep -q "projé" "$tmp/out"; then
+  echo "::error::the command through bash -c didn't render the project intact"
+  cat "$tmp/out" "$tmp/err"; exit 1
+fi
+
 # With no login every check is ok or info, so exit 1 is a real failure.
 "${hide[@]}" "${run[@]}" statusline.py --doctor | tee "$tmp/doctor"
 if ! grep -q "command  *printed .*${shell:+ $shell}" "$tmp/doctor"; then

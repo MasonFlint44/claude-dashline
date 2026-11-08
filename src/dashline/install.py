@@ -46,7 +46,7 @@ GLYPHS_QUOTED = re.compile(GLYPHS.pattern + r"['\"]?")  # and its closing quote,
 PYTHON = re.compile(r"(?i)^(?:python[0-9.]*|py)(?:\.exe)?$")
 ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 # An install folder's name for leftovers: statusline.new-PID, statusline.old-PID.
-LEFTOVER = r"^{}\.(?:new|old)-(\d+)$"
+LEFTOVER = r"^{}\.(?:new|old)-(\d{{1,10}})$"  # a pid: more digits is someone else's name
 LEFTOVER_AGE = 3600  # where a process can't be asked whether it's alive (Windows)
 # What an install consists of, at the top of its folder. Anything else there is the
 # user's, and an update carries it over.
@@ -188,10 +188,9 @@ def windows_python(which=None, run=None, names=WINDOWS_PYTHONS) -> str | None:
     Run, not just looked up: `python3` can be the Microsoft Store's stand-in, which
     opens the Store instead of running anything.
     """
-    import shutil
     import subprocess
 
-    which = which or shutil.which
+    which = which or host.which  # on Windows, never a python.exe in the current folder
     run = run or subprocess.run
     check = "import sys; print(sys.version_info >= (3, 9))"
     for name in names:
@@ -549,12 +548,13 @@ def folder_state(target: str) -> str:
 
 
 def _rmtree(path: str) -> None:
+    """Remove a folder, or a link or file in its place (not what a link points to)."""
     import shutil
 
-    if os.path.islink(path):
-        os.unlink(path)
-    elif os.path.isdir(path):
+    if os.path.isdir(path) and not os.path.islink(path):
         shutil.rmtree(path, ignore_errors=True)
+    elif os.path.lexists(path):
+        os.unlink(path)
 
 
 def _alive(pid: int) -> bool | None:
@@ -563,7 +563,7 @@ def _alive(pid: int) -> bool | None:
         return None  # os.kill(pid, 0) sends Ctrl-C there
     try:
         os.kill(pid, 0)
-    except ProcessLookupError:
+    except (ProcessLookupError, OverflowError):  # gone, or a number no process can have
         return False
     except OSError:
         return True  # someone else's process
@@ -955,9 +955,20 @@ def overridden_by(env, project_dir: str | None) -> tuple | None:
     return None
 
 
-def project_dir(env, cwd: str | None) -> str:
-    """The project whose settings may override the user's: Claude Code's, else cwd."""
-    return cwd if cwd is not None else env.get("CLAUDE_PROJECT_DIR") or os.getcwd()
+def project_dir(env, cwd: str | None) -> str | None:
+    """The project whose settings may override the user's: Claude Code's, else cwd
+    (None if that folder was deleted meanwhile)."""
+    if cwd is not None:
+        return cwd
+    return env.get("CLAUDE_PROJECT_DIR") or current_dir()
+
+
+def current_dir() -> str | None:
+    """os.getcwd(), or None when the folder this runs in has been deleted."""
+    try:
+        return os.getcwd()
+    except OSError:
+        return None
 
 
 def describe(entry: dict) -> str:
@@ -1027,9 +1038,11 @@ def run(
             )
             return NEEDS_DOWNGRADE
         # Past both stops, so Python is looked for only when a command will be written,
-        # and only once settings.json is known to be writable. The Windows command
-        # install wrote is kept while its Python runs; once it doesn't (py gone after a
-        # switch to the Store's Python, say), it's rewritten with one that does.
+        # and only once settings.json is known to be writable. One exception: the
+        # Windows command install wrote is kept while its own Python runs, so that one
+        # is asked first; once it doesn't (py gone after a switch to the Store's Python,
+        # say), the command is rewritten with another that does, and a read-only
+        # settings.json then stops the install (the command can't work as it is).
         dead = None
         if on_windows and ours and not rewrite:
             dead = windows_form(current, env)
@@ -1038,7 +1051,10 @@ def run(
         rewrite = rewrite or ("dead" if dead else None)
         if on_windows and not (ours and not rewrite):
             check_writable(path, env)
-            entry = windows_entry(entry, safe_glyphs(used), False, env, python)
+            others = tuple(name for name in WINDOWS_PYTHONS if name != dead)  # asked already
+            entry = windows_entry(
+                entry, safe_glyphs(used), False, env, lambda: python(names=others)
+            )
         text = None
         if entry != current:
             check_writable(path, env)

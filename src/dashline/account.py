@@ -263,6 +263,17 @@ def _read_keychain(env, wait: float = KEYCHAIN_WAIT) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+# A token an HTTP header can't carry (a stray line ending from a file saved on Windows,
+# a space): the request would fail before it's sent, which reads like a network fault.
+BAD_ENV_TOKEN = "CLAUDE_CODE_OAUTH_TOKEN has a character a request can't carry"
+BAD_STORED_TOKEN = "the stored token has a character a request can't carry"
+
+
+def _sendable(token: str) -> bool:
+    """Printable ASCII without spaces: what a bearer token is made of."""
+    return token.isascii() and token.isprintable() and " " not in token
+
+
 def find_token(
     env, now: float, platform: str | None = None, keychain_wait: float = KEYCHAIN_WAIT
 ) -> tuple:
@@ -274,6 +285,8 @@ def find_token(
     """
     token = env.get("CLAUDE_CODE_OAUTH_TOKEN")
     if token:
+        if not _sendable(token):
+            return None, BAD_ENV_TOKEN, None
         return token, "CLAUDE_CODE_OAUTH_TOKEN", None
     platform = platform or sys.platform
     sources = []
@@ -296,6 +309,8 @@ def find_token(
         expires = expires / 1000 if expires is not None else None
         if expires is not None and expires < now + EXPIRY_MARGIN:
             return None, "token expired (Claude Code renews it on its next request)", expires
+        if not _sendable(token):
+            return None, BAD_STORED_TOKEN, expires
         return token, source, expires
     return None, locked or "no Claude login found", None
 
