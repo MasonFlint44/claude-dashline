@@ -106,6 +106,8 @@
   sensible size.
 - A relative `CLAUDE_CONFIG_DIR` (like `.cc`) works: the background fetch used to look
   for it from another folder, so there were never any plan bars.
+  On Windows a value from the drive's root (`/cfg`) is kept as written on every Python,
+  as Claude Code reads it (Python 3.13 stopped counting it as absolute).
 - A limit name from the server is cut to 20 columns, a blank one draws no bar, and a
   repeated one is drawn once, so 5h and 7d always keep their place. Very long names no
   longer slow a render.

@@ -174,6 +174,16 @@ def test_config_dir_follows_the_env_home(tmp_path):
     assert theme.config_dir({**env, "CLAUDE_CONFIG_DIR": "/cfg"}) == "/cfg"
 
 
+def test_absolute_by_windows_rules(monkeypatch):
+    """As Node's path.isAbsolute on Windows: `/cfg` (the current drive's root) counts,
+    on every Python (3.13 stopped counting it); a drive-relative `C:cfg` doesn't."""
+    monkeypatch.setattr(host, "WINDOWS", True)
+    for path in ("/cfg", "\\cfg", "C:\\cfg", "c:/cfg", "\\\\srv\\share"):
+        assert theme.is_absolute(path), path
+    for path in ("cfg", ".cc", "C:cfg", ""):
+        assert not theme.is_absolute(path), path
+
+
 def test_settings_with_a_bom(home):
     path = home / ".claude" / "settings.json"
     path.write_bytes(b"\xef\xbb\xbf" + b'{"theme": "light"}')

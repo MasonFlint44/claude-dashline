@@ -619,7 +619,7 @@ def test_git_missing(installed, tmp_path, monkeypatch):
     real = subprocess.run
 
     def fake(args, **kwargs):
-        if args[0] == "git":
+        if runs(args, "git"):
             raise FileNotFoundError("git")
         return real(args, **kwargs)
 
@@ -1009,6 +1009,16 @@ def shell():
     return argv[0], name
 
 
+def runs(args, program) -> bool:
+    """Whether `args` runs `program`: a bare name matches it by file name too, as on
+    Windows doctor runs git by its full path (C:/.../git.exe)."""
+    if args[0] == program:
+        return True
+    from pathlib import PureWindowsPath  # either slash
+
+    return "/" not in program and PureWindowsPath(args[0]).stem.lower() == program
+
+
 def fake_run(monkeypatch, program, error=None, stdout="", stderr="", returncode=0):
     """subprocess.run, with `program` faked: it raises `error` or prints `stdout` and
     `stderr`, exiting `returncode`."""
@@ -1018,7 +1028,7 @@ def fake_run(monkeypatch, program, error=None, stdout="", stderr="", returncode=
         pass
 
     def fake(args, **kwargs):
-        if args[0] != program:
+        if not runs(args, program):
             return real(args, **kwargs)
         if error is not None:
             raise error

@@ -48,11 +48,15 @@ def config_dir(env) -> str:
 
 
 def is_absolute(path: str) -> bool:
-    """os.path.isabs, by Windows' rules where host.WINDOWS says so (`C:\\x`, `\\\\srv`)."""
+    """os.path.isabs, by Windows' rules where host.WINDOWS says so (`C:\\x`, `\\\\srv`).
+
+    On Windows a path from the root of the current drive (`/cfg`) counts too, as Node's
+    path.isAbsolute (Claude Code) has it; Python 3.13 stopped counting it.
+    """
     if host.WINDOWS:
         import ntpath
 
-        return ntpath.isabs(path)
+        return path.startswith(("/", "\\")) or ntpath.isabs(path)
     return os.path.isabs(path)
 
 
