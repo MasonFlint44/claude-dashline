@@ -1,6 +1,6 @@
 # dashline — plan
 
-Status: built; 0.2.0 on 2026-11-07. Draft 4 (2026-11-04) was the design the build followed;
+Status: built; 0.2.0 on 2026-11-08. Draft 4 (2026-11-04) was the design the build followed;
 later changes are marked with their date.
 
 Repo `~/git/claude-dashline`; plugin `dashline` (skills `/dashline:install`,

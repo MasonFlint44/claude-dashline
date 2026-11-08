@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.0 — 2026-11-07
+## 0.2.0 — 2026-11-08
 
 **Windows**
 - dashline now runs on Windows itself, not only in WSL. Claude Code runs the statusline
