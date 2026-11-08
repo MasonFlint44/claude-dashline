@@ -126,7 +126,9 @@ It's undocumented, so any shape change must degrade to a hidden bar, never a cra
 
 - Python ≥ 3.9 (macOS command-line tools ship 3.9.6), standard library only. Runs on
   macOS, Linux, WSL and (since 0.2.0) Windows. Imports are lazy in
-  `__main__`. Budget: 40 ms per render with a warm cache.
+  `__main__`. Budget: 40 ms per render with a warm cache. One Windows case can add up
+  to 0.5 s, after the lines are printed: breaking a dead fetch's lock while another
+  render has it open for a moment (retried, or no fetch would start that round).
 - No tqdm: we draw the bar ourselves (a few lines: `▆` fill and `▁` empty in
   whole cells, one color; see §4).
 - Network: `urllib` in a detached background child; the render never waits on
@@ -189,9 +191,14 @@ failure, even one the code didn't foresee, writes a hold. Times more than a minu
 ahead of the clock (it was set back: an NTP step, a restored VM; daylight saving
 doesn't move epoch time) count as unknown: the cache refetches, and a lock or hold
 from the future is ignored. With `CLAUDE_CODE_OAUTH_TOKEN` the `account` tag is a
-salted hash of that token. Data older than a day is dropped. Files are 0600 in a 0700 directory (0700 when dashline creates it; a folder another
-tool made is left as it is, since its files stay 0600), written
-atomically.
+salted hash of that token. Data older than a day is dropped. Files are 0600 in a 0700
+`statusline/` folder (0700 when dashline creates it; a `cache/` above it that dashline
+makes gets the usual mode, and a folder another tool made is left as it is, since its
+files stay 0600), written atomically through a new temp file (`O_EXCL`, never one left
+in its place). A usage answer's `limits` are kept and read up to 32 rows (a real one
+has a handful; thousands from a broken proxy made every render take minutes). When the
+fetch child can write neither the cache nor a hold (a full disk), it keeps the lock, so
+the next fetch waits for it to go stale (60 s) instead of starting on every render.
 
 settings.json, written literally so a devcontainer mounting `~/.claude` under
 another user still resolves it:
@@ -228,10 +235,17 @@ shells) is refused. An entry already dashline's keeps its command as written, as
 everywhere, with one exception (11/7, the author's call): on Windows the command
 earlier versions wrote (`COMMAND`, `--glyphs` aside, with any Python in place of
 `python3`: `python`, `py -3`, a full path, which a Windows user had to change for it to
-run) is rewritten in the Windows form, since it's Bash only. Other edits are kept;
-`--replace` rewrites one that still uses `$`-variables, and doctor's `command` line
-says which applies. Checked in CI: the installed command runs and prints in both
-shells (`smoke.sh` in Git Bash, `smoke.ps1` in Windows PowerShell with Git hidden).
+run) is rewritten in the Windows form, since it's Bash only. So is the Windows command
+install wrote (one of the three names and the path, `--glyphs` aside) once its Python
+no longer runs here (11/7, the author's call: `py` gone after a switch to the Store's
+Python, say): another that runs takes its place, since nobody edited that text. Other
+edits are kept; `--replace` rewrites any of them (`$`-variables, a `~/` path, a full
+path to a Python that's gone) in the Windows form, glyph set kept, and doctor's
+`command` line says which applies. Checked in CI: the installed command runs and prints
+in both shells (`smoke.sh` in Git Bash, `smoke.ps1` in Windows PowerShell with Git
+hidden), from a profile folder with a space and accented letters and for a project
+named with them, and as `py -3` (PowerShell). A profile folder on a network share
+(`\\server\share\…`) is untested.
 
 Other Windows differences: home is `USERPROFILE` first (Node's `os.homedir`; HOME can
 be Git Bash's own); credentials are in `.credentials.json` as on Linux; paths shown in
@@ -531,7 +545,9 @@ Details:
   its real path, so a symlink works and shows no false drift. Mid-rebase, the branch's
   configured upstream decides "never pushed". An interrupted cherry-pick or revert
   sequence (`sequencer/todo`) shows. Displayed names have control characters replaced,
-  and a link is attached only to a printable-ASCII URL.
+  and a link is attached only to a printable-ASCII URL. Not prevented: filters a
+  repo's own config sets (`filter.<x>.clean`) run when `git status` reads a changed
+  file, as they would for any git command there, within the 1 s limit.
 - 0.1.7: a rebase of a detached commit shows no `local` (there's no branch to push).
   The repo search stops at `GIT_CEILING_DIRECTORIES` as git's does, and
   `GIT_CONFIG_NOSYSTEM` is read as git's boolean. In a reftable repo (git 2.45+) the
@@ -759,7 +775,9 @@ render and preview alike; more than 4 significant digits reads as 1000 without p
   writable before writing anything, so exit 3 changes nothing; `--replace` moves
   another tool's folder to `statusline.backup`. dashline's own entry keeps its command
   as written (e.g. a full path to Python); only `--glyphs` changes. A failed swap puts
-  the old copy back; folders left by an interrupted install are removed. A BOM in
+  the old copy back; folders left by an interrupted install are removed, or renamed
+  `statusline.kept` (named in a `note:`) when they hold the user's files, also when a
+  later install got the same pid. A BOM in
   settings.json is kept. An installed copy newer than this one is left alone: exit 4,
   and the skill asks (updating the plugin is the recommended answer) before
   `--downgrade` installs the older copy (0.1.6, asked by the author).
@@ -792,7 +810,19 @@ render and preview alike; more than 4 significant digits reads as 1000 without p
   no-ask `--install` fix applies only when the `settings` line is ok and names the
   user settings.json (since 0.1.8; a project's or managed entry being ok isn't
   enough), because otherwise it would turn on a statusline the user may have removed.
-  An unknown glyph set goes through the glyph step, never a reset to unicode.
+  An unknown glyph set goes through the glyph step, never a reset to unicode: a plain
+  `--install` keeps it as written and says so in a `note:` (0.2.0).
+
+  0.2.0 also:
+  - settings.json is read again just before it's written, and the entry goes into what's
+    there then (Claude Code may have written it meanwhile); if its statusLine changed,
+    install exits 1 and leaves it;
+  - an entry in a project's or managed settings is dashline's only when its whole
+    command is Python running `statusline.py` (no `;`, `&&`, `||`): a repo's settings
+    that merely name the path aren't, and doctor doesn't run them;
+  - doctor strips control characters from every line (settings and a command's stderr
+    are quoted in them), and compares versions before files (a newer release can ship
+    the same code).
 - `--glyphs all` (preview only) prints each set in turn, for comparing them.
 - `--preview [SCENARIO|all]`: built-in scenarios with fake data at a fixed clock:
   `pro-trial`, `pro`, `ultra-fable`, `team`, `enterprise`, `api`, `limit`, `rebase`,

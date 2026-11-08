@@ -489,14 +489,21 @@ def test_hand_edited_command_only_changes_its_glyphs(conf, env):
     assert settings(conf)["statusLine"]["command"] == f"{EDITED} --glyphs nerd"
 
 
-def test_unknown_glyphs_in_the_command_are_dropped(conf, env):
-    write_settings(
-        conf, {"statusLine": {"type": "command", "command": f"{ENTRY_CMD} --glyphs fancy"}}
-    )
+def test_unknown_glyphs_in_the_command_are_kept(conf, env):
+    """A typo like `--glyphs Nerd` meant a set: a plain install keeps it and says so,
+    for the glyph step to ask which (PLAN §9: never a reset to unicode)."""
+    mine = f"{ENTRY_CMD} --glyphs Nerd"
+    write_settings(conf, {"statusLine": {"type": "command", "command": mine}})
     code, out = run(env)
-    assert code == 0
-    assert settings(conf)["statusLine"]["command"] == ENTRY_CMD
-    assert "now runs it with unicode glyphs" in out
+    assert code == 0, out
+    assert settings(conf)["statusLine"]["command"] == mine
+    assert "now runs it with --glyphs Nerd" in out
+    assert "note: --glyphs Nerd isn't a glyph set (nerd, unicode or ascii)" in out
+    # Asked for a set, it's replaced.
+    code, out = run(env, "nerd")
+    assert code == 0, out
+    assert settings(conf)["statusLine"]["command"] == f"{ENTRY_CMD} --glyphs nerd"
+    assert "isn't a glyph set" not in out
 
 
 @pytest.mark.parametrize(
@@ -578,7 +585,8 @@ def test_read_only_settings_are_refused(conf, env, capsys):
         before = (conf / "settings.json").read_text()
         code, _ = run(env)
         assert code == 1
-        assert "read-only" in capsys.readouterr().err
+        # The path as the rest of install's messages give it.
+        assert "dashline: ~/.claude/settings.json is read-only" in capsys.readouterr().err
         assert (conf / "settings.json").read_text() == before
         assert not (conf / "scripts").exists()  # checked before copying
     finally:
@@ -715,8 +723,7 @@ def test_leftovers_where_pids_cant_be_checked(conf, monkeypatch):
     (scripts / "statusline.old-11").mkdir(parents=True)
     (scripts / "statusline.old-12").mkdir()
     os.utime(scripts / "statusline.old-11", (NOW_REAL - 7200, NOW_REAL - 7200))
-    removed = install.clean_leftovers(str(scripts), NOW_REAL)
-    assert removed == ["statusline.old-11"]
+    assert install.clean_leftovers(str(scripts), NOW_REAL) == (["statusline.old-11"], [])
     assert (scripts / "statusline.old-12").exists()
 
 
@@ -725,7 +732,7 @@ def test_leftover_that_vanishes_mid_scan(conf, monkeypatch):
     scripts = conf / "scripts"
     scripts.mkdir()
     monkeypatch.setattr(os, "listdir", lambda path: ["statusline.old-11"])  # gone already
-    assert install.clean_leftovers(str(scripts), NOW_REAL) == []
+    assert install.clean_leftovers(str(scripts), NOW_REAL) == ([], [])
 
 
 def test_home_short():
@@ -1145,27 +1152,38 @@ def test_windows_python_takes_the_first_that_runs_3_9(monkeypatch):
 
 def test_windows_install_writes_a_command_both_shells_run(conf, env):
     out = io.StringIO()
-    code = install.run("nerd", env=env, out=out, cwd="/", windows=True, python=lambda: "python")
+    code = install.run("nerd", env=env, out=out, cwd="/", windows=True, python=pythons("python"))
     assert code == 0, out.getvalue()
     cmd = settings(conf)["statusLine"]["command"]
     target = (conf / "scripts" / "statusline" / "statusline.py").as_posix()
     assert cmd == f'python -I -S "{target}" --glyphs nerd'
     assert install.is_ours(settings(conf)["statusLine"], env)
-    # An update keeps it, and changing the glyph set edits only the flag.
-    assert win(env, "ascii", python=no_python)[0] == 0  # no Python looked for
+    # An update keeps it while its Python runs, and changing the glyph set edits only
+    # the flag.
+    assert win(env, "ascii")[0] == 0
     assert settings(conf)["statusLine"]["command"] == f'python -I -S "{target}" --glyphs ascii'
 
 
 def test_windows_install_without_python_changes_nothing(conf, env, capsys):
-    code = install.run(None, env=env, out=io.StringIO(), cwd="/", windows=True, python=lambda: None)
+    code = install.run(None, env=env, out=io.StringIO(), cwd="/", windows=True, python=pythons())
     assert code == 1
     assert "no Python 3.9 or newer runs as py -3, python or python3" in capsys.readouterr().err
     assert not (conf / "settings.json").exists()
     assert not (conf / "scripts").exists()
 
 
-def win(env, glyphs=None, replace=False, python=lambda: "python"):
-    """install.run as on Windows, with `python` as the Python it finds."""
+def pythons(*working):
+    """A stand-in for install.windows_python where `working` are the names that run."""
+
+    def find(names=install.WINDOWS_PYTHONS):
+        return next((name for name in names if name in working), None)
+
+    return find
+
+
+def win(env, glyphs=None, replace=False, python=None):
+    """install.run as on Windows, with `python` finding the Pythons that run (python)."""
+    python = python or pythons("python")
     out = io.StringIO()
     code = install.run(
         glyphs, replace=replace, env=env, out=out, cwd="/", windows=True, python=python
@@ -1173,7 +1191,7 @@ def win(env, glyphs=None, replace=False, python=lambda: "python"):
     return code, out.getvalue()
 
 
-def no_python():
+def no_python(names=None):
     raise AssertionError("no Python is looked for here")
 
 
@@ -1238,26 +1256,32 @@ def test_windows_install_keeps_a_command_edited_by_hand(conf, env):
     code, out = win(env)
     assert code == 0, out
     assert settings(conf)["statusLine"]["command"] == mine
-    code, out = win(env, replace=True, python=lambda: "py -3")
+    code, out = win(env, replace=True, python=pythons("py -3"))
     assert code == 0, out
     target = (conf / "scripts" / "statusline" / "statusline.py").as_posix()
     assert settings(conf)["statusLine"]["command"] == f'py -3 -I -S "{target}"'
     assert "used shell variables" in out
 
 
-def test_windows_replace_keeps_a_full_path_without_variables(conf, env):
+def test_windows_edited_command_is_kept_unless_replace(conf, env):
+    """A full path to Python is the user's edit: kept, even when that Python is gone
+    (doctor says so), until --replace writes dashline's own command."""
     target = (conf / "scripts" / "statusline" / "statusline.py").as_posix()
-    mine = f'"C:/Py/python.exe" -I -S "{target}"'
+    mine = f'"C:/Py/python.exe" -I -S "{target}" --glyphs nerd'
     write_settings(conf, {"statusLine": {"type": "command", "command": mine}})
-    code, out = win(env, replace=True)
+    code, out = win(env, python=no_python)
     assert code == 0, out
     assert settings(conf)["statusLine"]["command"] == mine
+    code, out = win(env, replace=True)
+    assert code == 0, out
+    assert settings(conf)["statusLine"]["command"] == f'python -I -S "{target}" --glyphs nerd'
+    assert "note: --replace wrote dashline's own command in place of the edited one" in out
 
 
 def test_windows_install_rewrites_an_old_command_with_another_python(conf, env):
     old = ENTRY_CMD.replace("python3", "python", 1) + " --glyphs nerd"
     write_settings(conf, {"statusLine": {"type": "command", "command": old}})
-    code, out = win(env, python=lambda: "py -3")
+    code, out = win(env, python=pythons("py -3"))
     assert code == 0, out
     target = (conf / "scripts" / "statusline" / "statusline.py").as_posix()
     assert settings(conf)["statusLine"]["command"] == f'py -3 -I -S "{target}" --glyphs nerd'
@@ -1274,7 +1298,7 @@ def test_windows_newer_copy_stops_before_looking_for_python(conf, env):
 def test_windows_install_without_python_keeps_the_old_command(conf, env, capsys):
     write_settings(conf, {"statusLine": {"type": "command", "command": ENTRY_CMD}})
     before = (conf / "settings.json").read_text()
-    assert win(env, python=lambda: None)[0] == 1
+    assert win(env, python=pythons())[0] == 1
     assert "no Python 3.9 or newer" in capsys.readouterr().err
     assert (conf / "settings.json").read_text() == before
 
@@ -1449,8 +1473,9 @@ def test_leftover_with_the_users_files_is_kept(conf, monkeypatch):
     (old / "dashline").mkdir(parents=True)
     (old / "VERSION").write_text("0.1.0\n")
     (old / "notes.txt").write_text("mine\n")
-    assert install.clean_leftovers(str(scripts), NOW_REAL) == ["statusline.old-11"]
     kept = scripts / "statusline.kept"
+    removed = install.clean_leftovers(str(scripts), NOW_REAL)
+    assert removed == (["statusline.old-11"], [str(kept)])
     assert sorted(p.name for p in kept.iterdir()) == ["notes.txt"]
 
 
@@ -1527,3 +1552,204 @@ def test_null_statusline_counts_as_none(conf, env):
     write_settings(conf, {"statusLine": None})
     assert run(env)[0] == 0
     assert settings(conf)["statusLine"]["command"] == ENTRY_CMD
+
+
+# ---- found in the fourth review ----
+
+
+def test_settings_changed_while_installing_are_kept(conf, env, monkeypatch):
+    """Claude Code (or the user) writes settings.json while install copies: the entry
+    goes into what's there then, not over it."""
+    write_settings(conf, {"model": "opus"})
+    real_copy = install.copy
+
+    def copy_while_someone_writes(env):
+        result = real_copy(env)
+        write_settings(conf, {"model": "sonnet", "permissions": {"allow": ["Bash(ls)"]}})
+        return result
+
+    monkeypatch.setattr(install, "copy", copy_while_someone_writes)
+    code, out = run(env)
+    assert code == 0, out
+    data = settings(conf)
+    assert data["model"] == "sonnet"
+    assert data["permissions"] == {"allow": ["Bash(ls)"]}
+    assert data["statusLine"]["command"] == ENTRY_CMD
+
+
+def test_statusline_changed_while_installing_is_left_alone(conf, env, monkeypatch, capsys):
+    real_copy = install.copy
+
+    def copy_while_someone_writes(env):
+        result = real_copy(env)
+        write_settings(conf, {"statusLine": {"type": "command", "command": "echo mine"}})
+        return result
+
+    monkeypatch.setattr(install, "copy", copy_while_someone_writes)
+    code, _ = run(env)
+    assert code == 1
+    assert "statusLine changed while installing" in capsys.readouterr().err
+    assert settings(conf)["statusLine"]["command"] == "echo mine"
+
+
+def test_an_earlier_install_with_this_pid_keeps_the_users_files(conf, env):
+    """An install killed while moving the user's files left them in .new-PID; a later
+    install that gets the same pid keeps them instead of clearing the folder."""
+    stale_install(env, conf)
+    new = conf / "scripts" / f"statusline.new-{os.getpid()}"
+    (new / "dashline").mkdir(parents=True)
+    (new / "notes.txt").write_text("mine\n")
+    code, out = run(env)
+    assert code == 0, out
+    kept = conf / "scripts" / "statusline.kept"
+    assert (kept / "notes.txt").read_text() == "mine\n"
+    assert "note: files from an interrupted install are in ~/.claude/scripts/statusline.kept" in out
+    assert not new.exists()
+
+
+def test_leftover_with_the_users_files_gets_a_note(conf, env, monkeypatch):
+    run(env)
+    monkeypatch.setattr(install, "_alive", lambda pid: False)
+    old = conf / "scripts" / "statusline.old-11"
+    (old / "dashline").mkdir(parents=True)
+    (old / "notes.txt").write_text("mine\n")
+    code, out = run(env)  # nothing to update: the note comes all the same
+    assert code == 0, out
+    assert "already has dashline" in out
+    assert "note: files from an interrupted install are in ~/.claude/scripts/statusline.kept" in out
+
+
+@posix_only
+def test_leftovers_beside_a_linked_folder_are_cleaned(conf, env, isolated_home, monkeypatch):
+    """scripts/statusline links to a folder of another name: its leftovers have that
+    name."""
+    dots = isolated_home / "dots"
+    dots.mkdir()
+    (conf / "scripts").mkdir()
+    (conf / "scripts" / "statusline").symlink_to(dots / "sl", target_is_directory=True)
+    (dots / "sl").mkdir()
+    monkeypatch.setattr(install, "_alive", lambda pid: False)
+    for name in ("sl.new-4242", "sl.old-4243"):
+        (dots / name / "dashline").mkdir(parents=True)
+    assert run(env)[0] == 0
+    assert sorted(p.name for p in dots.iterdir()) == ["sl"]
+
+
+def test_a_linked_leftover_is_unlinked_not_emptied(conf, tmp_path, monkeypatch):
+    monkeypatch.setattr(install, "_alive", lambda pid: False)
+    scripts = conf / "scripts"
+    scripts.mkdir()
+    elsewhere = tmp_path / "elsewhere"
+    (elsewhere / "dashline").mkdir(parents=True)
+    (elsewhere / "notes.txt").write_text("mine\n")
+    (scripts / "statusline.old-11").symlink_to(elsewhere, target_is_directory=True)
+    assert install.clean_leftovers(str(scripts), NOW_REAL) == (["statusline.old-11"], [])
+    assert (elsewhere / "dashline").is_dir()
+    assert (elsewhere / "notes.txt").exists()
+
+
+@pytest.mark.parametrize(
+    ("cmd", "bash_only"),
+    [
+        ("python -I -S ~/.claude/scripts/statusline/statusline.py", True),
+        ('python -I -S "C:/x/statusline.py" --out=~/x', True),
+        ("python -I -S $HOME/.claude/scripts/statusline/statusline.py", True),
+        ('python -I -S "C:/Users/pat/.claude/scripts/statusline/statusline.py"', False),
+        ('python -I -S "C:/x~/statusline.py"', False),
+    ],
+)
+def test_uses_variables(cmd, bash_only):
+    assert install.uses_variables({"command": cmd}) is bash_only
+
+
+def test_windows_replace_rewrites_a_tilde_path(conf, env):
+    """PowerShell passes `~` to Python as it is: Bash only, like a $-variable."""
+    mine = "python -I -S ~/.claude/scripts/statusline/statusline.py"
+    write_settings(conf, {"statusLine": {"type": "command", "command": mine}})
+    assert win(env, python=no_python)[0] == 0
+    assert settings(conf)["statusLine"]["command"] == mine  # the user's edit
+    code, out = win(env, replace=True)
+    assert code == 0, out
+    target = (conf / "scripts" / "statusline" / "statusline.py").as_posix()
+    assert settings(conf)["statusLine"]["command"] == f'python -I -S "{target}"'
+    assert "used shell variables or ~" in out
+
+
+def test_windows_form(env, conf):
+    target = (conf / "scripts" / "statusline" / "statusline.py").as_posix()
+    form = install.windows_form
+    assert form({"command": f'py -3 -I -S "{target}"'}, env) == "py -3"
+    assert form({"command": f'python3 -I -S "{target}" --glyphs nerd'}, env) == "python3"
+    assert form({"command": f'PYTHON -I -S "{target.upper()}"'}, env) == "python"
+    assert form({"command": f'py -3 -I -S "{target}" 2>NUL'}, env) is None
+    assert form({"command": f'"C:/Py/python.exe" -I -S "{target}"'}, env) is None
+    assert form({"command": ENTRY_CMD}, env) is None
+    assert form({"command": 3}, env) is None
+
+
+def test_windows_command_whose_python_is_gone_is_rewritten(conf, env):
+    """py is gone (a switch to the Store's Python, say): a plain install writes the
+    command again with a Python that runs, glyph set kept."""
+    target = (conf / "scripts" / "statusline" / "statusline.py").as_posix()
+    assert win(env, "nerd", python=pythons("py -3"))[0] == 0
+    assert settings(conf)["statusLine"]["command"] == f'py -3 -I -S "{target}" --glyphs nerd'
+    probed = []
+
+    def only_python(names=install.WINDOWS_PYTHONS):
+        probed.append(names)
+        return pythons("python")(names)
+
+    code, out = win(env, python=only_python)
+    assert code == 0, out
+    assert settings(conf)["statusLine"]["command"] == f'python -I -S "{target}" --glyphs nerd'
+    assert "note: the statusLine command's Python (py -3) doesn't run here any more" in out
+    assert probed[0] == ("py -3",)  # its own Python first
+    # While it runs, only that one is asked, and the command stays.
+    probed.clear()
+    code, out = win(env, python=only_python)
+    assert code == 0, out
+    assert probed == [("python",)]
+    assert "note:" not in out
+
+
+def test_windows_command_whose_python_is_gone_with_none_left(conf, env, capsys):
+    target = (conf / "scripts" / "statusline" / "statusline.py").as_posix()
+    write_settings(conf, {"statusLine": {"type": "command", "command": f'py -3 -I -S "{target}"'}})
+    before = (conf / "settings.json").read_text()
+    assert win(env, python=pythons())[0] == 1
+    assert "no Python 3.9 or newer runs as py -3, python or python3" in capsys.readouterr().err
+    assert (conf / "settings.json").read_text() == before
+
+
+def test_windows_rewrite_keeps_an_unknown_glyph_set(conf, env):
+    """The glyph step asks about `--glyphs Nerd`: a rewrite keeps it for that."""
+    write_settings(
+        conf, {"statusLine": {"type": "command", "command": f"{ENTRY_CMD} --glyphs Nerd"}}
+    )
+    code, out = win(env)
+    assert code == 0, out
+    target = (conf / "scripts" / "statusline" / "statusline.py").as_posix()
+    assert settings(conf)["statusLine"]["command"] == f'python -I -S "{target}" --glyphs Nerd'
+    assert "--glyphs Nerd isn't a glyph set" in out
+
+
+def test_windows_rewrite_drops_a_glyph_value_that_isnt_a_word(conf, env):
+    """A value the command quoted (`'a;b'`) would be shell text unquoted."""
+    write_settings(
+        conf, {"statusLine": {"type": "command", "command": f"{ENTRY_CMD} --glyphs 'a;b'"}}
+    )
+    code, out = win(env, replace=True)
+    assert code == 0, out
+    target = (conf / "scripts" / "statusline" / "statusline.py").as_posix()
+    assert settings(conf)["statusLine"]["command"] == f'python -I -S "{target}"'
+
+
+def test_windows_python_prefers_the_launcher(monkeypatch):
+    """py -3 first (python.org's launcher, on PATH by default), then python."""
+    found = {"py": "C:/Windows/py.exe", "python": "C:/py/python.exe"}
+
+    def run(argv, **kwargs):
+        return subprocess.CompletedProcess(argv, 0, "True\n", "")
+
+    assert install.windows_python(found.get, run) == "py -3"
+    assert install.WINDOWS_PYTHONS == ("py -3", "python", "python3")

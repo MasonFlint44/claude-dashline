@@ -550,14 +550,17 @@ def test_worktree_of_a_bare_repo(tmp_path, project):
 
 
 def test_hung_hook_is_killed_with_git(project, monkeypatch, tmp_path):
-    """A hook that outlives git used to hold the pipe open and the render with it."""
+    """A hook that outlives git used to hold the pipe open and the render with it.
+    Both gits hang (status and numstat), and both hooks are ended: each writes its own
+    pidfile, so the test knows which it checks."""
     monkeypatch.setattr(repo, "GIT_TIMEOUT", 0.2)
-    pidfile = tmp_path / "pid"
+    pidfiles = []
     real_start = repo._start
 
     def hung(args, cwd, env):
         # The hook's pid: on Windows its Windows pid (Git Bash's own $$ is another).
-        pf = pidfile.as_posix()
+        pf = (tmp_path / f"pid-{len(pidfiles)}").as_posix()
+        pidfiles.append(Path(pf))
         alias = (
             f"alias.hang=!cat /proc/$$/winpid > '{pf}' 2>/dev/null || echo $$ > '{pf}'; "
             "exec sleep 30"
@@ -571,25 +574,32 @@ def test_hung_hook_is_killed_with_git(project, monkeypatch, tmp_path):
     assert row(project) == "proj"
     # GIT_TIMEOUT, then the kill: on Windows taskkill, slower to start on a busy runner.
     assert time.monotonic() - began < (2.0 if os.name == "nt" else 1.5)
-    pid = int(pidfile.read_text())
+    assert len(pidfiles) == 2, pidfiles  # status and numstat
+    # A hook Git Bash hadn't started by the kill (slow on Windows) has nothing to end.
+    written = [pf for pf in pidfiles if pf.exists()] if os.name == "nt" else pidfiles
+    assert written
+    for pf in written:
+        assert_ended(int(pf.read_text()))
+
+
+def assert_ended(pid):
+    import time
+
     if os.name == "nt":  # taskkill /T ended the hook's tree with git
         for _ in range(50):
             if not windows_process_alive(pid):
-                break
+                return
             time.sleep(0.1)
-        else:
-            subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True)
-            raise AssertionError("the hook outlived the timeout")
-        return
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True)
+        raise AssertionError("the hook outlived the timeout")
     for _ in range(300):  # killed, and reaped once its parent is gone (slow under load)
         if not process_alive(pid):
-            break
+            return
         time.sleep(0.01)
-    else:
-        if "sleep" in process_info(pid)[1]:
-            with contextlib.suppress(OSError):
-                os.kill(pid, 9)  # only our hook, never a reused pid
-        raise AssertionError("the hook's sleep outlived the timeout")
+    if "sleep" in process_info(pid)[1]:
+        with contextlib.suppress(OSError):
+            os.kill(pid, 9)  # only our hook, never a reused pid
+    raise AssertionError("the hook's sleep outlived the timeout")
 
 
 def windows_process_alive(pid) -> bool:

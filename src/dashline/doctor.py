@@ -92,6 +92,14 @@ POLICY = ("blockedbygrouppolicy", "applocker", "softwarerestr")
 NOT_FOUND = ("nosuchfile", "notfound", "isnotrecognized")
 
 
+def program_missing(why: str) -> bool:
+    """Whether a failed command's reason says its program (Python) wasn't found.
+    Read without spaces: PowerShell may have wrapped it mid-word."""
+    said = why.lower().replace(" ", "")
+    # Python's own "can't open file … No such file" is the script missing, not Python.
+    return "can'topenfile" not in said and any(s in said for s in NOT_FOUND)
+
+
 def failure_fix(why: str, program: str) -> str | None:
     """The fix for a failed command from its reason (command_reason), when that says
     what's wrong. Read without spaces: PowerShell may have wrapped it mid-word."""
@@ -100,7 +108,7 @@ def failure_fix(why: str, program: str) -> str | None:
         return f"a policy on this PC blocks {program}: ask whoever manages it"
     if "can'topenfile" in said:
         return "the command's statusline.py is missing: run /dashline:install"
-    if any(s in said for s in NOT_FOUND):
+    if program_missing(why):
         if host.WINDOWS:  # no full path with spaces runs in both shells
             return (
                 f"{program} must be on the PATH Claude Code sees: install Python, "
@@ -113,11 +121,11 @@ def failure_fix(why: str, program: str) -> str | None:
 def summarize(data: dict) -> str:
     """The usage answer in a few words: `5h 22% · 7d 48% · Fable 24% · credits 12%`."""
     from dashline.stdin import _dig, _num, _str
-    from dashline.usage import WINDOW_LABELS
+    from dashline.usage import MAX_LIMITS, WINDOW_LABELS
 
     parts = []
     limits = data.get("limits") if isinstance(data, dict) else None
-    for row in limits if isinstance(limits, list) else []:
+    for row in limits[:MAX_LIMITS] if isinstance(limits, list) else []:
         if not isinstance(row, dict):
             continue
         kind, percent = _str(row.get("kind")), _num(row.get("percent"))
@@ -220,11 +228,18 @@ def powershell_unwrapped(err: list) -> list:
 
 
 def first_word(cmd: str) -> str:
-    """The program a shell command runs: `python3` in `python3 -I -S x.py`."""
-    try:
-        words = shlex.split(cmd)
-    except ValueError:
-        words = cmd.split()
+    """The program a shell command runs: `python3` in `python3 -I -S x.py`.
+
+    On Windows a backslash is a path's separator, not an escape: `C:\\Python312\\python.exe`.
+    """
+    if host.WINDOWS:
+        tokens = install._split(cmd)
+        words = [t[1] for t in tokens if t[0] == "word"] if tokens else cmd.split()
+    else:
+        try:
+            words = shlex.split(cmd)
+        except ValueError:
+            words = cmd.split()
     return words[0] if words else "python3"
 
 
@@ -243,14 +258,7 @@ def login_fix(why: str) -> str:
     return KEYCHAIN_FIX if why == KEYCHAIN_LOCKED else "run /login in Claude Code"
 
 
-def unknown_glyphs(entry) -> str | None:
-    """The --glyphs value of an entry's command when it names no glyph set, else None.
-
-    install.glyphs_of reads such a value as unicode, but the statusline refuses it.
-    """
-    cmd = entry.get("command") if isinstance(entry, dict) else None
-    value = install.flag_value(cmd) if isinstance(cmd, str) else None
-    return None if value is None or value in install.GLYPH_SETS else value
+unknown_glyphs = install.unknown_glyphs
 
 
 def font_guess(env, platform: str) -> tuple:
@@ -329,7 +337,11 @@ class Doctor:
         self._shell = None  # self.shell()
 
     def add(self, status: str, name: str, text: str, fix: str | None = None) -> None:
-        self.results.append((status, name, text, fix))
+        """A check's line. Its text can quote what others wrote (a project's settings,
+        a command's stderr), so control characters go: no escapes reach the terminal."""
+        from dashline.text import clean
+
+        self.results.append((status, name, clean(text), clean(fix) if fix else fix))
 
     def short(self, path: str) -> str:
         return install.home_short(path, self.env)
@@ -380,16 +392,9 @@ class Doctor:
         if os.path.realpath(root) == os.path.realpath(target):
             self.add(OK, "install", f"{where}: {version} (doctor ran from it)")
             return
-        mine = install.digest(install.files(root, install.source_shim(root)))
-        if mine == install.digest(found):
-            self.add(OK, "install", f"{where}: {version}, same as this copy")
-            return
-        if version == __version__:
-            text = f"{where}: {version}, but its files differ from this copy"
-        else:
-            text = f"{where}: {version}; this copy is {__version__}"
-        theirs, mine = version_tuple(version), version_tuple(__version__)
-        if theirs and mine and theirs > mine:
+        # The version first: a newer release can ship the same code (a docs-only one).
+        theirs, ours = version_tuple(version), version_tuple(__version__)
+        if theirs and ours and theirs > ours:
             self.add(
                 WARN,
                 "install",
@@ -397,6 +402,16 @@ class Doctor:
                 "update the dashline plugin (/plugin), then run /dashline:install",
             )
             return
+        same = install.digest(install.files(root, install.source_shim(root))) == install.digest(
+            found
+        )
+        if same and version == __version__:
+            self.add(OK, "install", f"{where}: {version}, same as this copy")
+            return
+        if version == __version__:
+            text = f"{where}: {version}, but its files differ from this copy"
+        else:
+            text = f"{where}: {version}; this copy is {__version__}"
         self.add(WARN, "install", text, "run /dashline:install to update it")
 
     def settings(self):
@@ -414,7 +429,10 @@ class Doctor:
         path, entry = winner
         where = self.short(path)
         is_user = os.path.realpath(path) == user
-        if not install.is_ours(entry, self.env):
+        # A project's or managed entry is dashline's only if it runs statusline.py
+        # directly: one that merely names the path (a repo's settings can say anything)
+        # isn't, and doctor doesn't run it.
+        if not install.is_ours(entry, self.env, direct=not is_user):
             cmd = entry.get("command") if isinstance(entry, dict) else None
             shown = f": {cmd}" if isinstance(cmd, str) else ""
             self.add(
@@ -426,7 +444,7 @@ class Doctor:
                 FAIL,
                 "settings",
                 f'{where}: statusLine type isn\'t "command"',
-                "run /dashline:install" if is_user else self.fix_for(path),
+                "run /dashline:install" if is_user else self.fix_for(path, wrong_type=True),
             )
             return
         self.entry = entry
@@ -446,7 +464,7 @@ class Doctor:
                 WARN,
                 "settings",
                 f"{where}: --glyphs {unknown} isn't a glyph set (nerd, unicode or ascii)",
-                "run /dashline:install, which fixes the flag"
+                "pick one: /dashline:install asks which (it runs --install --glyphs SET)"
                 if is_user
                 else f"fix --glyphs in {where}",
             )
@@ -462,8 +480,9 @@ class Doctor:
             return
         self.add(OK, "settings", text)
 
-    def fix_for(self, path: str) -> str:
-        """How to get dashline's statusLine used when `path` sets the one that wins."""
+    def fix_for(self, path: str, wrong_type: bool = False) -> str:
+        """How to get dashline's statusLine used when `path` sets the one that wins.
+        wrong_type: it is dashline's, but its type isn't "command"."""
         from dashline.theme import managed_settings_path
 
         where = self.short(path)
@@ -472,6 +491,8 @@ class Doctor:
         managed = managed_settings_path()
         if managed and os.path.realpath(path) == os.path.realpath(managed):
             return f"{where} is managed settings, set by an administrator; only they can change it"
+        if wrong_type:
+            return f'set its statusLine\'s "type" to "command" in {where}'
         return (
             f"{where} wins over your user settings here: remove its statusLine to use "
             "dashline, or leave it for this project"
@@ -696,7 +717,12 @@ class Doctor:
                 cwd=self.cwd,
             )
         except subprocess.TimeoutExpired:
-            self.add(FAIL, "command", "took over 10 s", "run /dashline:doctor again; report it")
+            self.add(
+                FAIL,
+                "command",
+                "took over 10 s",
+                "a hung git or a slow disk; report it if it keeps happening",
+            )
             return
         except OSError as e:
             self.add(FAIL, "command", f"couldn't run {shell_name}: {e}")
@@ -714,7 +740,7 @@ class Doctor:
         bash_only = host.WINDOWS and not rewrite and install.uses_variables(self.entry)
         rewrite_fix = "run /dashline:install: it rewrites this command for Windows"
         replace_fix = (
-            "its $-variables are Bash, which PowerShell reads differently: "
+            "its $-variables or ~ are Bash, which PowerShell reads differently: "
             "/dashline:install with --replace writes the Windows command"
         )
         if r.returncode != 0 or not lines or "internal error" in r.stdout:
@@ -725,8 +751,14 @@ class Doctor:
                 fix = rewrite_fix
             elif bash_only and powershell:
                 fix = replace_fix
+            elif unknown_glyphs(self.entry) is not None:
+                fix = "its --glyphs isn't a glyph set: see the settings line"
             else:
-                fix = failure_fix(why, program) or fix
+                fix = (
+                    (host.WINDOWS and program_missing(why) and self.other_python())
+                    or failure_fix(why, program)
+                    or fix
+                )
             self.add(FAIL, "command", why, fix)
             return
         text = f"printed {len(lines)} line{'s' if len(lines) != 1 else ''} in {ms:.0f} ms"
@@ -734,7 +766,11 @@ class Doctor:
             text += f" ({shell_name})"
         if rewrite or bash_only:
             fix = rewrite_fix if rewrite else replace_fix
-            self.add(WARN, "command", text + ", but PowerShell can't run this command", fix)
+            if powershell:
+                text += ", but PowerShell can't run this command"
+            else:  # it works here: only a PC without Git Bash would find out
+                text += "; without Git Bash, Claude Code would run it in PowerShell, which can't"
+            self.add(WARN, "command", text, fix)
             return
         if powershell and install.glyphs_of(self.entry) != "ascii" and "│" not in r.stdout:
             # PowerShell re-encodes a program's output in the console's code page, which
@@ -757,6 +793,23 @@ class Doctor:
             self.add(WARN, "command", text + " (slow)", fix)
             return
         self.add(OK, "command", text)
+
+    def other_python(self) -> str | None:
+        """On Windows, when the command's Python isn't found: the fix, if another Python
+        runs here for install to write instead. Dashline's own command is rewritten by
+        a plain install; one the user edited only with --replace."""
+        found = install.windows_python()
+        if found is None:
+            return None
+        if install.windows_form(self.entry, self.env):
+            return (
+                "run /dashline:install: it rewrites this command for Windows, "
+                f"with a Python that runs here ({found})"
+            )
+        return (
+            "/dashline:install with --replace writes the Windows command, "
+            f"with a Python that runs here ({found})"
+        )
 
     def shell(self) -> tuple:
         """(argv before the command, name): the shell Claude Code runs the statusLine in."""
@@ -817,7 +870,7 @@ class Doctor:
         likely, found = font_guess(self.env, self.platform)
         glyphs = install.glyphs_of(self.entry) if self.entry else None
         if glyphs and unknown_glyphs(self.entry) is not None:
-            text = f"{found}; the command names no glyph set (see the settings line)"
+            text = f"{found}; the command's --glyphs isn't a glyph set (see the settings line)"
         elif glyphs:
             text = f"{found}; using {glyphs} glyphs"
             if likely and glyphs != "nerd":

@@ -10,6 +10,10 @@
 # Program Files hidden from it, doctor has to find Git Bash from git on PATH (Git Bash's
 # own, in ucrt64\bin or mingw64\bin), the way Claude Code finds a Git installed elsewhere.
 #
+# The home folder has a space and accented letters (`José Müller`), as many profile
+# folders do, and so does the project the sample session is in: its name must reach the
+# statusline intact.
+#
 # The test suite runs on 3.10 and newer (its tools have dropped 3.9), so this is what
 # keeps dashline itself working on 3.9. Exits 1 on any failure.
 set -euo pipefail
@@ -37,14 +41,15 @@ print("imported", len(list(pkgutil.iter_modules(dashline.__path__))), "modules")
 "$py" -I -S statusline.py --preview all > /dev/null
 
 # Doctor's command check runs the Python settings.json names: make that this one.
-mkdir -p "$tmp/home"
+home_dir="$tmp/José Müller"
+mkdir -p "$home_dir/projé"
 case "$(uname -s)" in
   MINGW* | MSYS* | CYGWIN*)
     # No symlinks to lean on: this Python's own folder goes first, and the PATH leaves
     # out C:\Windows, so `py` (the launcher, which would pick another Python) isn't
     # found and `python` is this one. System32 stays for taskkill and PowerShell.
     # git stays too, from wherever Git Bash has it (ucrt64\bin, mingw64\bin or cmd).
-    home=$(cygpath -w "$tmp/home")
+    home=$(cygpath -w "$home_dir")
     sys32=$(cygpath -u "$SYSTEMROOT")/System32
     git_dir=$(dirname "$(command -v git)")
     echo "git: $(cygpath -w "$git_dir")"
@@ -57,12 +62,12 @@ case "$(uname -s)" in
     hide=(env "ProgramFiles=$empty" "ProgramW6432=$empty" "ProgramFiles(x86)=$empty")
     shell="(Git Bash)"
     run=("$py" -I -S)
-    installed="$tmp/home/.claude/scripts/statusline/statusline.py"
+    installed="$home_dir/.claude/scripts/statusline/statusline.py"
     ;;
   *)
     mkdir -p "$tmp/bin"
     ln -s "$py" "$tmp/bin/python3"
-    export HOME="$tmp/home" PATH="$tmp/bin:/usr/bin:/bin"
+    export HOME="$home_dir" PATH="$tmp/bin:/usr/bin:/bin"
     run=(python3 -I -S)
     installed="$HOME/.claude/scripts/statusline/statusline.py"
     hide=(env)
@@ -71,9 +76,19 @@ case "$(uname -s)" in
 esac
 "${run[@]}" statusline.py --install
 
+# The sample session, in the project folder.
+"$py" -I -S - "$home_dir/projé" > "$tmp/session.json" <<'PY'
+import json, sys
+with open("tests/fixtures/stdin/after-first-response.json", encoding="utf-8") as f:
+    session = json.load(f)
+session["cwd"] = sys.argv[1]
+session["workspace"] = {"current_dir": sys.argv[1], "project_dir": sys.argv[1]}
+# As Claude Code (Node) sends it: UTF-8, the accented letters not escaped.
+sys.stdout.buffer.write(json.dumps(session, ensure_ascii=False).encode())
+PY
+
 # A render that fails still exits 0 with a one-line error, so read what it printed.
-"${run[@]}" "$installed" \
-  < tests/fixtures/stdin/after-first-response.json > "$tmp/out" 2> "$tmp/err"
+"${run[@]}" "$installed" < "$tmp/session.json" > "$tmp/out" 2> "$tmp/err"
 cat "$tmp/out"
 if [ -s "$tmp/err" ]; then
   echo "::error::the render wrote to stderr"; cat "$tmp/err"; exit 1
@@ -83,6 +98,9 @@ if grep -q "internal error" "$tmp/out"; then
 fi
 if [ "$(wc -l < "$tmp/out")" -lt 2 ]; then
   echo "::error::the render printed fewer than 2 lines"; exit 1
+fi
+if ! grep -q "projé" "$tmp/out"; then
+  echo "::error::the project's name didn't reach the statusline intact"; exit 1
 fi
 
 # With no login every check is ok or info, so exit 1 is a real failure.

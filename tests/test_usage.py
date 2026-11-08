@@ -704,6 +704,45 @@ def test_child_releases_the_lock_and_holds_on_a_surprise(isolated_home, monkeypa
     assert usage.load(env, acct, time.time()).fetch is False
 
 
+def test_child_keeps_the_lock_when_nothing_could_be_written(isolated_home, monkeypatch):
+    """Neither the cache nor a hold written (a full disk, say): renders would see no
+    change and fetch again at once, so the lock stays until it's stale."""
+    import os
+    import time
+
+    def full(*args, **kwargs):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(usage, "refresh", lambda env, now, who=None: full())
+    monkeypatch.setattr(usage, "_write_json", full)
+    monkeypatch.setattr(os, "environ", env_for(isolated_home))
+    env = env_for(isolated_home)
+    now = time.time()
+    nonce = usage.take_lock(env, now)
+    usage.child(nonce)
+    assert Path(usage._path(env, "fetch.lock")).exists()
+    assert usage.take_lock(env, now + 1) is None  # no new fetch meanwhile
+    assert usage.take_lock(env, now + usage.LOCK_STALE + 1)  # until it's stale
+
+
+@posix_only
+def test_cache_write_never_follows_a_link_left_in_its_place(isolated_home):
+    """The temp file is made new: a link planted at its name is replaced, not written
+    through."""
+    env = env_for(isolated_home)
+    path = Path(usage._path(env, "usage-x.json"))
+    path.parent.mkdir(parents=True)
+    victim = isolated_home / "victim.txt"
+    victim.write_text("mine\n")
+    tmp = Path(f"{path}.{os.getpid()}.tmp")
+    tmp.symlink_to(victim)
+    usage._write_json(str(path), {"a": 1})
+    assert victim.read_text() == "mine\n"
+    assert json.loads(path.read_text()) == {"a": 1}
+    assert not tmp.is_symlink()
+    assert not tmp.exists()
+
+
 def fresh_credentials(env):
     """A token valid on the real clock, for code that reads time.time()."""
     import time
@@ -882,6 +921,22 @@ def test_backoff_doubles_and_caps(server, logged_in):
         now = held["until"]
     assert waits == [60, 120, 240, 480, 960, 1800, 1800]
     assert held["reason"] == "HTTP 503"
+
+
+def test_thousands_of_limits_rows_stay_cheap(server, logged_in):
+    """An answer with thousands of rows (a broken proxy or endpoint) used to lay out a
+    bar each, for minutes per render: only MAX_LIMITS are kept, and read."""
+    import time
+
+    rows = [{"kind": f"k{i}", "percent": 50} for i in range(10_000)]
+    server.reply(200, json.dumps({"limits": rows}))
+    assert usage.refresh(logged_in, NOW, server.url, "linux") == "ok"
+    stored = cache_files(logged_in)["cache"]["data"]["limits"]
+    assert len(stored) == usage.MAX_LIMITS
+    began = time.monotonic()
+    plan = usage.plan_bars(make_session(rate_limits=None), ULTRA, {"limits": rows}, NOW)
+    assert len(plan) == usage.MAX_LIMITS
+    assert time.monotonic() - began < 1
 
 
 def test_rate_limited_honors_retry_after(server, logged_in):
@@ -1333,9 +1388,13 @@ def test_a_probe_file_left_by_an_earlier_run_is_removed(tmp_path, monkeypatch):
 
 
 def test_breaking_a_stale_lock_waits_for_a_reader_on_windows(isolated_home, monkeypatch):
-    """Another render reading the dead child's lock holds it open for a moment."""
+    """Another render reading the dead child's lock holds it open for a moment: one
+    break still removes it (take_lock's own retries would hide a break that gave up)."""
     env = env_for(isolated_home)
     assert usage.take_lock(env, NOW - usage.LOCK_STALE)
-    calls = held_once(monkeypatch, "unlink", lambda path: path.endswith("fetch.lock"))
-    assert usage.take_lock(env, NOW)
+    path = usage._path(env, "fetch.lock")
+    stale = usage._lock_id(path)[0]
+    calls = held_once(monkeypatch, "unlink", lambda p: p.endswith("fetch.lock"))
+    usage._break_lock(path, stale, NOW)
+    assert not Path(path).exists()
     assert len(calls) == 2

@@ -15,7 +15,8 @@ usage: statusline.py [--glyphs SET] [--doctor [--fetch-now]
 With no mode, reads Claude Code's statusline JSON on stdin and prints the status lines.
 
   --glyphs SET         nerd, unicode (default) or ascii; --preview also takes all
-  --doctor             check the install, login, usage endpoint, cache and settings
+  --doctor             check Python, the install, settings, login, one usage fetch,
+                       the cache, the command, git, theme and font
   --fetch-now          with --doctor: fetch plan usage even if the server asked to wait
   --install            copy dashline into the config dir and point settings.json at it;
                        keeps the current glyph set unless --glyphs is given

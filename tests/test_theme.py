@@ -75,6 +75,10 @@ def test_broken_settings_are_skipped(home):
         ("0;default;8", "dark"),
         ("0;7", "light"),
         ("x", "dark"),
+        # Digits to str.isdigit() that int() refuses, or too many for it: not a crash.
+        ("15;\u00b2", "dark"),
+        ("15;" + "1" * 5000, "dark"),
+        ("15;\u0661", "dark"),  # an Arabic-Indic one
     ],
 )
 def test_auto(colorfgbg, expected):
@@ -104,6 +108,16 @@ def test_custom_theme(home):
     assert tokens["error"] == "ansi:magenta"
     assert tokens["subtle"] == THEMES["light"]["subtle"]
     assert "nonsense" not in tokens
+
+
+@pytest.mark.parametrize("slug", ["../outside", "..\\outside", "/abs/x", "C:x", ".hidden", ""])
+def test_custom_theme_name_stays_in_the_themes_folder(home, slug):
+    """`custom:<slug>` names a file in themes/: never a path out of it."""
+    (home / ".claude" / "themes").mkdir()
+    write(home / ".claude" / "outside.json", {"base": "light"})
+    write(home / ".claude" / "themes" / "x.json", {"base": "light"})
+    (home / ".claude" / "themes" / ".hidden.json").write_text('{"base": "light"}')
+    assert theme.resolve(f"custom:{slug}", {}) == THEMES["dark"]
 
 
 def test_missing_custom_theme_and_unknown_name_fall_back_to_dark(home):

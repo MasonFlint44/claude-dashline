@@ -9,7 +9,8 @@ On Windows, Claude Code runs the command in Git Bash, or in PowerShell when ther
 Git Bash, so the entry is one both read: a Python on PATH by name (`py -3`, `python` or
 `python3`, whichever runs Python 3.9 or newer) and the copy's full path in forward
 slashes and double quotes. An entry still running the command dashline wrote before it
-ran on Windows (Bash only) is rewritten that way too.
+ran on Windows (Bash only) is rewritten that way too, and so is the Windows command
+when the Python it names no longer runs. One the user edited is kept unless --replace.
 
 A statusLine that runs something else is never replaced without --replace: the skill
 shows it to the user and asks first. Neither is a scripts/statusline/ folder that holds
@@ -44,7 +45,8 @@ GLYPHS_QUOTED = re.compile(GLYPHS.pattern + r"['\"]?")  # and its closing quote,
 # What may run statusline.py directly: python3, python3.12, py (Windows), with options.
 PYTHON = re.compile(r"(?i)^(?:python[0-9.]*|py)(?:\.exe)?$")
 ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
-LEFTOVER = re.compile(r"^statusline\.(?:new|old)-(\d+)$")
+# An install folder's name for leftovers: statusline.new-PID, statusline.old-PID.
+LEFTOVER = r"^{}\.(?:new|old)-(\d+)$"
 LEFTOVER_AGE = 3600  # where a process can't be asked whether it's alive (Windows)
 # What an install consists of, at the top of its folder. Anything else there is the
 # user's, and an update carries it over.
@@ -94,7 +96,9 @@ def windows_command(env, python: str) -> str:
 # What follows the Python in COMMAND, and the options py takes to pick one (-3, -3.13-64).
 OLD_ARGS = COMMAND[len("python3") :]
 PY_VERSION = re.compile(r"^-\d+(?:\.\d+)?(?:-(?:32|64|arm64))?$")
-VARIABLE = re.compile(r"\$(?:\{|[A-Za-z_])")  # $HOME, ${X:-y}, PowerShell's $env:X
+# $HOME, ${X:-y}, PowerShell's $env:X, and a word starting `~/`: Bash reads each its
+# own way, and PowerShell passes `~` to Python as it is.
+VARIABLE = re.compile(r"\$(?:\{|[A-Za-z_])|(?:^|[\s\"'=])~[/\\]")
 
 
 def old_form(entry) -> bool:
@@ -121,20 +125,42 @@ def old_form(entry) -> bool:
 
 
 def uses_variables(entry) -> bool:
-    """A command with $-variables, which Git Bash and PowerShell read differently."""
+    """A command with $-variables or a `~/` path, which Git Bash and PowerShell read
+    differently."""
     cmd = entry.get("command") if isinstance(entry, dict) else None
     return isinstance(cmd, str) and bool(VARIABLE.search(cmd))
 
 
-def windows_rewrite(current, ours: bool, replace: bool) -> str | None:
+def windows_form(entry, env) -> str | None:
+    """The Python (a WINDOWS_PYTHONS name) of an entry whose command is the one install
+    writes on Windows (windows_command, with any --glyphs), else None."""
+    cmd = entry.get("command") if isinstance(entry, dict) else None
+    if not isinstance(cmd, str):
+        return None
+    rest = GLYPHS_QUOTED.sub("", cmd).strip().lower()  # Windows paths: any case
+    for name in WINDOWS_PYTHONS:
+        try:
+            if rest == windows_command(env, name).lower():
+                return name
+        except InstallError:
+            return None
+    return None
+
+
+def windows_rewrite(current, ours: bool, replace: bool, env) -> str | None:
     """Why dashline's own entry gets the Windows command in place of its own: "old" for
-    the Bash-only one it wrote before (old_form), "variables" for one with $-variables
-    when --replace was given. None: it's kept as written (or isn't dashline's)."""
+    the Bash-only one it wrote before (old_form); with --replace, "variables" for one
+    with $-variables or `~`, "edited" for any other edit of the user's. None: it's kept
+    as written (or isn't dashline's). The Windows command itself is kept here; run()
+    rewrites it if its Python no longer runs ("dead").
+    """
     if not ours:
         return None
     if old_form(current):
         return "old"
-    return "variables" if replace and uses_variables(current) else None
+    if not replace or windows_form(current, env):
+        return None
+    return "variables" if uses_variables(current) else "edited"
 
 
 def windows_entry(entry: dict, glyphs: str, keep: bool, env, python) -> dict:
@@ -156,8 +182,8 @@ def windows_entry(entry: dict, glyphs: str, keep: bool, env, python) -> dict:
     return {**entry, "command": command(glyphs, windows_command(env, name))}
 
 
-def windows_python(which=None, run=None) -> str | None:
-    """The first WINDOWS_PYTHONS name that runs Python 3.9 or newer, or None.
+def windows_python(which=None, run=None, names=WINDOWS_PYTHONS) -> str | None:
+    """The first of `names` (WINDOWS_PYTHONS) that runs Python 3.9 or newer, or None.
 
     Run, not just looked up: `python3` can be the Microsoft Store's stand-in, which
     opens the Store instead of running anything.
@@ -168,7 +194,7 @@ def windows_python(which=None, run=None) -> str | None:
     which = which or shutil.which
     run = run or subprocess.run
     check = "import sys; print(sys.version_info >= (3, 9))"
-    for name in WINDOWS_PYTHONS:
+    for name in names:
         program, *options = name.split()
         found = which(program)
         if not found:
@@ -203,13 +229,22 @@ def runs_install_dir(entry, env=None) -> bool:
     return any(prefix + MARK in cmd for prefix in prefixes)
 
 
-def is_ours(entry, env=None) -> bool:
+def is_ours(entry, env=None, direct: bool = False) -> bool:
     """A statusLine entry that runs the installed copy of dashline.
 
     The command must run the config dir's scripts/statusline/statusline.py, and that
     folder must hold dashline or nothing yet: another statusline may live at that path.
+    direct: and the command is only Python running it (dashline_args, and nothing
+    else: no `;`, `&&` or `||`), for an entry from a project's or managed settings,
+    which the user didn't write. One that names the path among other commands
+    (`touch x; python3 …/statusline.py`) isn't dashline's.
     """
     env = os.environ if env is None else env
+    if direct:
+        cmd = entry.get("command") if isinstance(entry, dict) else None
+        tokens = _split(cmd) if isinstance(cmd, str) else None
+        if tokens is None or dashline_args(cmd) is None or any(map(_is_separator, tokens)):
+            return False
     return runs_install_dir(entry, env) and folder_state(install_dir(env)) != "theirs"
 
 
@@ -218,6 +253,16 @@ def glyphs_of(entry) -> str:
     cmd = entry.get("command") if isinstance(entry, dict) else None
     value = flag_value(cmd) if isinstance(cmd, str) else None
     return value if value in GLYPH_SETS else "unicode"
+
+
+def unknown_glyphs(entry) -> str | None:
+    """The --glyphs value of an entry's command when it names no glyph set, else None.
+
+    glyphs_of reads such a value as unicode, but the statusline refuses it.
+    """
+    cmd = entry.get("command") if isinstance(entry, dict) else None
+    value = flag_value(cmd) if isinstance(cmd, str) else None
+    return None if value is None or value in GLYPH_SETS else value
 
 
 def flag_value(cmd: str) -> str | None:
@@ -525,19 +570,30 @@ def _alive(pid: int) -> bool | None:
     return True
 
 
-def clean_leftovers(parent: str, now: float) -> list:
-    """Remove statusline.new-PID / .old-PID folders an interrupted install left behind.
-    One that still holds the user's files (an install stopped while moving them) is
-    renamed statusline.kept instead, without dashline's own files."""
-    removed = []
+def _clear(path: str) -> str | None:
+    """Remove a folder an interrupted install left behind (statusline.new-PID or
+    .old-PID). One holding the user's files (an install stopped while moving them) is
+    renamed statusline.kept instead, without dashline's own files: returns its path."""
+    if not os.path.islink(path) and _extras(path):
+        return _keep(path)
+    _rmtree(path)
+    return None
+
+
+def clean_leftovers(parent: str, now: float, base: str = "statusline") -> tuple:
+    """Clear `base`.new-PID / .old-PID folders of installs that are over (_clear), where
+    `base` is the install folder's own name (a link's target can have another).
+    Returns (names cleared, statusline.kept paths made)."""
+    removed, kept = [], []
     try:
         names = os.listdir(parent)
     except OSError:
-        return removed
+        return removed, kept
+    leftover = re.compile(LEFTOVER.format(re.escape(base)))
     for name in names:
-        match = LEFTOVER.match(name)
+        match = leftover.match(name)
         if not match or int(match.group(1)) == os.getpid():
-            continue
+            continue  # this install's own: copy() clears those
         path = os.path.join(parent, name)
         alive = _alive(int(match.group(1)))
         if alive is None:
@@ -547,17 +603,15 @@ def clean_leftovers(parent: str, now: float) -> list:
                 continue
         if alive:
             continue
-        if _extras(path):  # the user's files, from an install stopped midway: kept
-            with contextlib.suppress(OSError):
-                _keep(path)
-                removed.append(name)
-        else:
-            _rmtree(path)
+        with contextlib.suppress(OSError):
+            made = _clear(path)
             removed.append(name)
-    return removed
+            if made:
+                kept.append(made)
+    return removed, kept
 
 
-def set_aside(target: str) -> str:
+def set_aside(target: str, env=None) -> str:
     """Move another tool's folder out of the way: statusline.backup, .backup-2, …"""
     n, aside = 1, f"{target}.backup"
     while os.path.lexists(aside):
@@ -566,7 +620,8 @@ def set_aside(target: str) -> str:
     try:
         retry_held(os.rename, target, aside)
     except OSError as e:
-        raise InstallError(f"couldn't move {target} aside: {e.strerror or e}") from e
+        where = home_short(target, env)
+        raise InstallError(f"couldn't move {where} aside: {e.strerror or e}") from e
     return aside
 
 
@@ -643,23 +698,32 @@ def copy(env) -> tuple:
     real = os.path.realpath(target)
     if os.path.realpath(root) == real:
         return target, "this is the installed copy", []
+    where = home_short(target, env)
     source = files(root, source_shim(root))
     if "statusline.py" not in source:
-        raise InstallError(f"no statusline.py next to {root}")
+        raise InstallError(f"no statusline.py next to {home_short(root, env)}")
     parent = os.path.dirname(real)
     if os.path.islink(target) and not os.path.isdir(parent):
-        raise InstallError(f"{target} is a link to {real}, whose folder doesn't exist")
-    clean_leftovers(parent, time.time())
+        shown = home_short(real, env)
+        raise InstallError(f"{where} is a link to {shown}, whose folder doesn't exist")
+    _, kept = clean_leftovers(parent, time.time(), os.path.basename(real))
+    notes = [f"files from an interrupted install are in {home_short(k, env)}" for k in kept]
     if digest(source) == digest(installed_files(env)) and installed_version(env) == __version__:
-        return target, "unchanged", []
+        return target, "unchanged", notes
 
     # Build the new copy beside the old one, then swap folders with two renames. A render
     # never reads a half-copied folder, but one starting between the renames finds no
     # folder and draws nothing that once.
     os.makedirs(parent, exist_ok=True)
     new, old = f"{real}.new-{os.getpid()}", f"{real}.old-{os.getpid()}"
-    _rmtree(new)
-    _rmtree(old)
+    for path in (new, old):  # an earlier install's, killed, whose pid this one now has
+        try:
+            made = _clear(path) if os.path.lexists(path) else None
+        except OSError as e:
+            shown = home_short(path, env)
+            raise InstallError(f"couldn't clear {shown}: {e.strerror or e}") from e
+        if made:
+            notes.append(f"files from an interrupted install are in {home_short(made, env)}")
     had = os.path.lexists(real)
     moved, stuck = [], []
     swapped = False
@@ -694,9 +758,8 @@ def copy(env) -> tuple:
             else:
                 _rmtree(new)
         if isinstance(e, OSError):
-            raise InstallError(f"couldn't copy to {target}: {e.strerror or e}") from e
+            raise InstallError(f"couldn't copy to {where}: {e.strerror or e}") from e
         raise
-    notes = []
     if stuck:
         try:
             kept = home_short(_keep(old), env)
@@ -715,30 +778,32 @@ def copy(env) -> tuple:
 BOM = "\ufeff"
 
 
-def read_settings(path: str) -> dict:
+def read_settings(path: str, shown: str | None = None) -> dict:
     """The settings file as a dict ({} if missing). Raises InstallError if unreadable.
 
-    A byte-order mark (some Windows editors add one) is read past.
+    A byte-order mark (some Windows editors add one) is read past. shown: the path as
+    messages give it (home_short).
     """
+    shown = shown or path
     try:
         with open(path, encoding="utf-8-sig") as f:
             text = f.read()
     except FileNotFoundError:
         return {}
     except OSError as e:
-        raise InstallError(f"can't read {path}: {e.strerror or e}") from e
+        raise InstallError(f"can't read {shown}: {e.strerror or e}") from e
     except UnicodeDecodeError as e:
-        raise InstallError(f"{path} isn't UTF-8 text; fix it and run again") from e
+        raise InstallError(f"{shown} isn't UTF-8 text; fix it and run again") from e
     if not text.strip():
         return {}
     try:
         data = json.loads(text)
     except ValueError as e:
-        raise InstallError(f"{path} isn't valid JSON ({e}); fix it and run again") from e
+        raise InstallError(f"{shown} isn't valid JSON ({e}); fix it and run again") from e
     except RecursionError as e:
-        raise InstallError(f"{path} isn't readable JSON (nested too deeply)") from e
+        raise InstallError(f"{shown} isn't readable JSON (nested too deeply)") from e
     if not isinstance(data, dict):
-        raise InstallError(f"{path} isn't a JSON object; fix it and run again")
+        raise InstallError(f"{shown} isn't a JSON object; fix it and run again")
     return data
 
 
@@ -750,9 +815,10 @@ def has_bom(path: str) -> bool:
         return False
 
 
-def check_writable(path: str) -> None:
+def check_writable(path: str, env=None) -> None:
     """Raise InstallError if settings.json can't be rewritten: the file is read-only
     (someone made it so), or its folder is, where the new file is written first."""
+    shown = home_short(path, env)
     real = os.path.realpath(path)
     try:
         mode = os.stat(real).st_mode
@@ -760,7 +826,7 @@ def check_writable(path: str) -> None:
         mode = None  # missing: it gets made
     if mode is not None and (not mode & 0o200 or not os.access(real, os.W_OK)):
         raise InstallError(
-            f"{path} is read-only, so it was left alone; make it writable, or add the "
+            f"{shown} is read-only, so it was left alone; make it writable, or add the "
             "statusLine entry yourself, then run again"
         )
     folder = os.path.dirname(real)
@@ -768,12 +834,12 @@ def check_writable(path: str) -> None:
         folder = os.path.dirname(folder)  # the nearest folder that exists gets the rest
     if not host.can_write_in(folder):
         raise InstallError(
-            f"can't write in {folder}, so {path} was left alone; make the folder "
+            f"can't write in {home_short(folder, env)}, so {shown} was left alone; make the folder "
             "writable, or add the statusLine entry yourself, then run again"
         )
 
 
-def settings_text(path: str, data: dict) -> str:
+def settings_text(shown: str, data: dict) -> str:
     """settings.json's new text. Made before anything is written, so a file that can't
     be written back fails the install while nothing has changed yet.
 
@@ -787,7 +853,7 @@ def settings_text(path: str, data: dict) -> str:
         except UnicodeEncodeError:
             text = json.dumps(data, indent=2)
     except (RecursionError, ValueError) as e:
-        raise InstallError(f"{path} can't be written back ({e}); fix it and run again") from e
+        raise InstallError(f"{shown} can't be written back ({e}); fix it and run again") from e
     return text + "\n"
 
 
@@ -835,31 +901,30 @@ def plan_entry(
 
     ours: `current` is dashline's (is_ours). It keeps its command as written (say, with
     a full path to Python): only the --glyphs flag changes, and only when asked for
-    another set or when it names an unknown one. A command where dashline's arguments
-    can't be told apart (`bash -lc '…'`) is left as it is; asked for another set there,
-    this raises InstallError with the edit to make by hand. rebuild: dashline's entry
-    gets a new command anyway (windows_rewrite), so its --glyphs flag isn't edited.
+    another set. An unknown one (`--glyphs Nerd`) stays too, for the glyph step to ask
+    about, never a reset to unicode. A command where dashline's arguments can't be told
+    apart (`bash -lc '…'`) is left as it is; asked for another set there, this raises
+    InstallError with the edit to make by hand. rebuild: dashline's entry gets a new
+    command anyway (windows_rewrite), so its --glyphs flag isn't edited. The glyphs
+    returned are the flag's value, even an unknown one.
     """
     if current is not None and not ours and not replace:
         return None, None
     if ours:
         entry = dict(current)
-        asked = glyphs
-        glyphs = glyphs or glyphs_of(current)
         cmd = current["command"]
-        if not rebuild and (flag_value(cmd) or "unicode") != glyphs:
+        written = flag_value(cmd) or "unicode"
+        glyphs = glyphs or written
+        if not rebuild and written != glyphs:
             changed = with_glyphs(cmd, glyphs)
-            if changed is not None:
-                cmd = changed
-            elif asked:
+            if changed is None:
                 raise InstallError(
                     "can't change --glyphs in this statusLine command automatically, "
                     f"because it doesn't run statusline.py directly:\n  {cmd}\n"
                     f"To use {glyphs} glyphs, edit {settings} yourself: "
                     f"{glyphs_edit(cmd, glyphs)}. Nothing was changed."
                 )
-            else:
-                glyphs = glyphs_of(current)
+            cmd = changed
         entry["command"] = cmd
     else:
         glyphs = glyphs or "unicode"
@@ -869,11 +934,11 @@ def plan_entry(
     return entry, glyphs
 
 
-def write_entry(path: str, text: str) -> None:
+def write_entry(path: str, text: str, shown: str) -> None:
     try:
         write_settings(path, text)
     except OSError as e:
-        raise InstallError(f"couldn't write {path}: {e.strerror or e}") from e
+        raise InstallError(f"couldn't write {shown}: {e.strerror or e}") from e
 
 
 def overridden_by(env, project_dir: str | None) -> tuple | None:
@@ -886,7 +951,7 @@ def overridden_by(env, project_dir: str | None) -> tuple | None:
             return None
         entry = _read_json(path).get("statusLine")
         if entry is not None:
-            return None if is_ours(entry, env) else (path, entry)
+            return None if is_ours(entry, env, direct=True) else (path, entry)
     return None
 
 
@@ -896,9 +961,9 @@ def project_dir(env, cwd: str | None) -> str:
 
 
 def describe(entry: dict) -> str:
-    glyphs = glyphs_of(entry)
+    unknown = unknown_glyphs(entry)
     refresh = entry.get("refreshInterval")
-    text = f"{glyphs} glyphs"
+    text = f"--glyphs {unknown}" if unknown else f"{glyphs_of(entry)} glyphs"
     if isinstance(refresh, (int, float)) and not isinstance(refresh, bool):
         text += f", refreshing every {refresh:g} s"
     return text
@@ -920,8 +985,9 @@ def run(
     wasn't given.
 
     windows: write the Windows command (default: when running on Windows), for a new
-    entry and in place of the old Bash-only one (old_form); python finds the Python it
-    names (windows_python), for tests to stand in for.
+    entry, in place of the old Bash-only one (old_form) and of one whose Python no
+    longer runs; python(names) finds the first of `names` that runs (windows_python),
+    for tests to stand in for.
     """
     from dashline import __version__
 
@@ -931,14 +997,14 @@ def run(
     settings = home_short(path, env)
     try:
         # Everything that can stop the install is checked before anything is written.
-        data = read_settings(path)
+        data = read_settings(path, settings)
         current = data.get("statusLine")
         target = install_dir(env)
         where = home_short(target, env)
         theirs_folder = folder_state(target) == "theirs"
         ours = runs_install_dir(current, env) and not theirs_folder
         on_windows = host.WINDOWS if windows is None else windows
-        rewrite = windows_rewrite(current, ours, replace) if on_windows else None
+        rewrite = windows_rewrite(current, ours, replace, env) if on_windows else None
         entry, used = plan_entry(current, glyphs, replace, ours, settings, bool(rewrite))
         if not replace and (theirs_folder or entry is None):
             if theirs_folder:
@@ -961,22 +1027,29 @@ def run(
             )
             return NEEDS_DOWNGRADE
         # Past both stops, so Python is looked for only when a command will be written,
-        # and only once settings.json is known to be writable.
-        keep = ours and not rewrite
-        if on_windows and not keep:
-            check_writable(path)
-            entry = windows_entry(entry, used, keep, env, python)
+        # and only once settings.json is known to be writable. The Windows command
+        # install wrote is kept while its Python runs; once it doesn't (py gone after a
+        # switch to the Store's Python, say), it's rewritten with one that does.
+        dead = None
+        if on_windows and ours and not rewrite:
+            dead = windows_form(current, env)
+            if dead and python(names=(dead,)) == dead:
+                dead = None
+        rewrite = rewrite or ("dead" if dead else None)
+        if on_windows and not (ours and not rewrite):
+            check_writable(path, env)
+            entry = windows_entry(entry, safe_glyphs(used), False, env, python)
         text = None
         if entry != current:
-            check_writable(path)
-            text = settings_text(path, {**data, "statusLine": entry})
+            check_writable(path, env)
+            text = settings_text(settings, {**data, "statusLine": entry})
     except InstallError as e:
         sys.stderr.write(f"dashline: {e}\n")
         return 1
     aside, done = None, False
     try:
         if theirs_folder:
-            aside = set_aside(target)
+            aside = set_aside(target, env)
             out.write(f"moved the files in {where} to {home_short(aside, env)}\n")
         target, copied, notes = copy(env)
         if copied == "unchanged":
@@ -988,7 +1061,18 @@ def run(
         for note in notes:
             out.write(f"note: {note}\n")
         if text is not None:
-            write_entry(path, text)
+            # Claude Code or the user may have changed settings.json since it was read
+            # (copying, and on Windows looking for Python, take a moment): write the
+            # entry into what's there now, not over it.
+            fresh = read_settings(path, settings)
+            if fresh != data:
+                if fresh.get("statusLine") != current:
+                    raise InstallError(
+                        f"{settings}'s statusLine changed while installing, so it was left "
+                        "alone; run again"
+                    )
+                text = settings_text(settings, {**fresh, "statusLine": entry})
+            write_entry(path, text, settings)
         done = True
     except (InstallError, OSError) as e:
         sys.stderr.write(f"dashline: {e}\n")
@@ -998,18 +1082,16 @@ def run(
         # folder, so put it back.
         if aside and not done:
             out.write(put_back(aside, target, env))
-    if rewrite == "old":
-        out.write(
-            "note: the old statusLine command was Bash only (PowerShell can't run it); "
-            f"it's now {entry['command']}\n"
-        )
-    elif rewrite:
-        out.write(
-            "note: the statusLine command used shell variables, which Git Bash and "
-            f"PowerShell read differently; it's now {entry['command']}\n"
-        )
+    if rewrite:
+        out.write(f"note: {REWRITTEN[rewrite].format(python=dead)}; it's now {entry['command']}\n")
     verb = "already runs" if entry == current else "now runs"
     out.write(f"{settings}: statusLine {verb} it with {describe(entry)}\n")
+    unknown = unknown_glyphs(entry)
+    if unknown:
+        out.write(
+            f"note: --glyphs {unknown} isn't a glyph set (nerd, unicode or ascii), so the "
+            "statusline shows an error until it names one: run again with --glyphs SET\n"
+        )
     other = overridden_by(env, project_dir(env, cwd))
     if other:
         out.write(
@@ -1017,3 +1099,21 @@ def run(
             f"{settings} in this project\n"
         )
     return 0
+
+
+# Why run() rewrote dashline's own command on Windows (windows_rewrite, and "dead").
+REWRITTEN = {
+    "old": "the old statusLine command was Bash only (PowerShell can't run it)",
+    "variables": (
+        "the statusLine command used shell variables or ~, which Git Bash and PowerShell "
+        "read differently"
+    ),
+    "edited": "--replace wrote dashline's own command in place of the edited one",
+    "dead": "the statusLine command's Python ({python}) doesn't run here any more",
+}
+
+
+def safe_glyphs(glyphs: str) -> str:
+    """A glyph value to write into a new command: as it was, if it's a plain word (even
+    an unknown one, which the glyph step then asks about), else none (unicode)."""
+    return glyphs if re.fullmatch(r"[A-Za-z0-9_.-]+", glyphs) else "unicode"

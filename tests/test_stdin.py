@@ -46,7 +46,7 @@ def test_miss_cause_is_the_first_cause():
 )
 def test_wrong_types_read_as_missing(data):
     s = stdin.Session(data)
-    assert s.model is None or isinstance(s.model, str)
+    assert s.model is None
     assert s.cost is None
     assert s.fast is False
     assert s.windows == {}

@@ -104,7 +104,8 @@ def theme_setting(project_dir: str | None, env, claude_json: dict | None = None)
 def auto_theme(env) -> str:
     """`auto` without a terminal to ask: COLORFGBG's background index, else dark."""
     last = (env.get("COLORFGBG") or "").split(";")[-1]
-    if last.isdigit() and int(last) <= 15:
+    # ASCII digits only: `²` is a digit to isdigit() but not to int().
+    if last.isascii() and last.isdigit() and len(last) <= 2 and int(last) <= 15:
         return "dark" if int(last) <= 6 or int(last) == 8 else "light"
     return "dark"
 
@@ -117,7 +118,11 @@ def resolve(setting: str, env) -> dict:
         return dict(THEMES[setting])
     if setting.startswith("custom:"):
         slug = setting[len("custom:") :]
-        custom = _read_json(os.path.join(config_dir(env), "themes", f"{slug}.json"))
+        # A name in themes/, not a path out of it (`custom:../../x`).
+        named = slug and not slug.startswith(".") and not any(c in slug for c in "/\\:\0")
+        custom = (
+            _read_json(os.path.join(config_dir(env), "themes", f"{slug}.json")) if named else {}
+        )
         base = custom.get("base")
         tokens = dict(THEMES[base if isinstance(base, str) and base in THEMES else "dark"])
         overrides = custom.get("overrides")

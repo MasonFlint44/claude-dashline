@@ -330,11 +330,16 @@ def test_keychain_reader_runs_security(monkeypatch):
 
     def run(argv, **kwargs):
         seen["argv"] = argv
+        seen["timeout"] = kwargs.get("timeout")
         return Done()
 
     monkeypatch.setattr(subprocess, "run", run)
     env = {"USER": "user"}
+    # Doctor's wait (time to answer macOS's prompt) reaches `security`; renders' too.
+    assert account._read_keychain(env, 60) == {"claudeAiOauth": {"accessToken": "k"}}
+    assert seen["timeout"] == 60
     assert account._read_keychain(env) == {"claudeAiOauth": {"accessToken": "k"}}
+    assert seen["timeout"] == 5
     assert seen["argv"] == [
         "security",
         "find-generic-password",

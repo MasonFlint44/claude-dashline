@@ -25,6 +25,13 @@ def no_lock_wait(monkeypatch):
     monkeypatch.setattr(doctor, "LOCK_WAIT", 0)
 
 
+@pytest.fixture(autouse=True)
+def no_other_python(monkeypatch):
+    """On Windows, a command whose Python isn't found makes doctor look for another
+    (install.windows_python): none here, unless a test says so."""
+    monkeypatch.setattr(install, "windows_python", lambda *args, **kwargs: None)
+
+
 @pytest.fixture
 def env(isolated_home):
     (isolated_home / ".claude").mkdir(exist_ok=True)
@@ -957,7 +964,8 @@ def test_bad_glyphs_in_the_command(installed, tmp_path):
     status, text, _ = results["command"]
     assert status == "fail"
     assert text == "dashline: unknown glyph set 'Nerd': use nerd, unicode or ascii"
-    assert "names no glyph set" in results["font"][1]
+    assert results["command"][2] == "its --glyphs isn't a glyph set: see the settings line"
+    assert "the command's --glyphs isn't a glyph set" in results["font"][1]
 
 
 @pytest.mark.parametrize(
@@ -1208,8 +1216,25 @@ def test_command_with_bash_variables_on_windows(installed, tmp_path, monkeypatch
         installed, tmp_path, monkeypatch, "Git Bash", stdout="a │ b\nc\n"
     )
     assert status == "warn"
-    assert text.endswith("but PowerShell can't run this command")
+    # It works here: the warning says when it wouldn't.
+    assert text.endswith(
+        "(Git Bash); without Git Bash, Claude Code would run it in PowerShell, which can't"
+    )
     assert "--replace" in fix
+    status, text, fix = windows_command_check(installed, tmp_path, monkeypatch, stdout="a │ b\nc\n")
+    assert status == "warn"
+    assert text.endswith("(PowerShell), but PowerShell can't run this command")
+    # In Git Bash, failing for another reason: that reason's fix, not --replace.
+    status, _, fix = windows_command_check(
+        installed,
+        tmp_path,
+        monkeypatch,
+        "Git Bash",
+        stderr="bash: python3: command not found",
+        returncode=127,
+    )
+    assert status == "fail"
+    assert fix.startswith("python3 must be on the PATH Claude Code sees")
 
 
 def test_command_symbols_changed_by_powershell(installed, tmp_path, monkeypatch):
@@ -1256,7 +1281,7 @@ def test_old_bash_only_command_on_windows(installed, tmp_path, monkeypatch):
         fake_run(monkeypatch, "sh", stdout="line 1\nline 2\n")
     status, text, fix = check(installed, "command", tmp_path)
     assert status == "warn"
-    assert text.endswith("but PowerShell can't run this command")
+    assert text.endswith("Claude Code would run it in PowerShell, which can't")
     assert fix == "run /dashline:install: it rewrites this command for Windows"
     fake_run(monkeypatch, "sh", stderr="sh: python3: command not found\n", returncode=127)
     status, _, fix = check(installed, "command", tmp_path)
@@ -1436,3 +1461,162 @@ def test_doctor_run_from_the_installed_copy(installed, tmp_path, monkeypatch):
     status, text, _ = check(installed, "install", tmp_path)
     assert status == "ok"
     assert text.endswith("(doctor ran from it)")
+
+
+# ---- found in the fourth review ----
+
+
+def test_newer_install_with_the_same_files(installed, isolated_home, tmp_path):
+    """A newer release can ship the same code (one that changed only docs): still
+    newer, not "same as this copy"."""
+    target = isolated_home / ".claude" / "scripts" / "statusline"
+    (target / "VERSION").write_text("99.0.0\n")
+    status, text, fix = check(installed, "install", tmp_path)
+    assert status == "warn"
+    assert "99.0.0 is newer than this copy" in text
+    assert fix.startswith("update the dashline plugin")
+    # The same files at an older version: an update writes the new VERSION.
+    (target / "VERSION").write_text("0.0.1\n")
+    status, text, _ = check(installed, "install", tmp_path)
+    assert status == "warn"
+    assert "0.0.1; this copy is" in text
+
+
+def test_project_entry_that_only_names_the_install_path(installed, tmp_path):
+    """A repo's settings can name dashline's path inside anything: that entry isn't
+    dashline's, doctor doesn't run it, and no escape it holds reaches the terminal."""
+    marker = tmp_path / "ran"
+    cmd = (
+        f"touch '{marker.as_posix()}'; printf '\x1b[31mEVIL'; "
+        "python3 $HOME/.claude/scripts/statusline/statusline.py"
+    )
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude" / "settings.json").write_text(
+        json.dumps({"statusLine": {"type": "command", "command": cmd}})
+    )
+    d = doctor.Doctor(installed, NOW, str(tmp_path), CLOSED, "linux")
+    results = {n: (s, t, f) for s, n, t, f in d.run()}
+    status, text, _ = results["settings"]
+    assert status == "fail"
+    assert "runs another statusline" in text
+    assert "\x1b" not in text
+    assert results["command"][0] == "info"
+    assert not marker.exists()
+    # The same entry in the user's own settings is theirs to write as they like.
+    assert install.is_ours({"command": cmd}, installed)
+    assert not install.is_ours({"command": cmd}, installed, direct=True)
+
+
+def test_project_dashline_entry_of_another_type(installed, tmp_path):
+    entry = dict(get_settings(installed)["statusLine"], type="static")
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude" / "settings.json").write_text(json.dumps({"statusLine": entry}))
+    status, _, fix = check(installed, "settings", tmp_path)
+    assert status == "fail"
+    assert fix.startswith('set its statusLine\'s "type" to "command" in ')
+
+
+def test_doctor_lines_carry_no_control_characters(installed, tmp_path):
+    data = get_settings(installed)
+    data["theme"] = "\x1b[31mred\x07"
+    set_settings(installed, data)
+    _, text, _ = check(installed, "theme", tmp_path)
+    assert text == "?[31mred?"
+
+
+def test_command_timeout_fix(installed, tmp_path, monkeypatch, shell):
+    fake_run(monkeypatch, shell[0], error=subprocess.TimeoutExpired(shell[0], 10))
+    _, _, fix = check(installed, "command", tmp_path)
+    assert fix == "a hung git or a slow disk; report it if it keeps happening"
+
+
+def test_command_that_prints_nothing_fails(installed, tmp_path, monkeypatch, shell):
+    fake_run(monkeypatch, shell[0], stdout="", returncode=0)
+    status, text, _ = check(installed, "command", tmp_path)
+    assert (status, text) == ("fail", "exit 0, 0 lines")
+
+
+def test_windows_has_its_own_slow_threshold(installed, tmp_path, monkeypatch):
+    """Starting the shell takes most of a second on Windows: SLOW_MS_WINDOWS there,
+    SLOW_MS elsewhere."""
+    as_windows_writes_it(installed)
+    monkeypatch.setattr(doctor, "SLOW_MS", -1)
+    monkeypatch.setattr(doctor, "SLOW_MS_WINDOWS", 60_000)
+    status, _, _ = windows_command_check(
+        installed, tmp_path, monkeypatch, "Git Bash", stdout="a │ b\nc\n"
+    )
+    assert status == "ok"
+    monkeypatch.setattr(host, "WINDOWS", False)
+    monkeypatch.setattr(doctor, "SLOW_MS", 60_000)
+    monkeypatch.setattr(doctor, "SLOW_MS_WINDOWS", -1)
+    assert check(installed, "command", tmp_path)[0] == "ok"
+
+
+def test_symbols_check_is_powershells_only(installed, tmp_path, monkeypatch):
+    """Git Bash passes UTF-8 through: a `?` there is the statusline's own text."""
+    as_windows_writes_it(installed)
+    status, _, _ = windows_command_check(
+        installed, tmp_path, monkeypatch, "Git Bash", stdout="Sonnet 5.5 ? x\n~/x\n"
+    )
+    assert status == "ok"
+
+
+def test_first_word_keeps_windows_backslashes(monkeypatch):
+    cmd = 'C:\\Python312\\python.exe -I -S "C:/Users/pat/.claude/scripts/statusline/statusline.py"'
+    monkeypatch.setattr(host, "WINDOWS", True)
+    assert doctor.first_word(cmd) == "C:\\Python312\\python.exe"
+    assert doctor.first_word('"C:\\Program Files\\Py\\python.exe" -I x') == (
+        "C:\\Program Files\\Py\\python.exe"
+    )
+    monkeypatch.setattr(host, "WINDOWS", False)
+    assert doctor.first_word("'/opt/my py/python3' -I x") == "/opt/my py/python3"
+
+
+def not_recognized(py):
+    return (
+        f"{py}: The term '{py}' is not recognized as a name of a cmdlet, function, "
+        "script file, or executable program."
+    )
+
+
+def test_windows_python_gone_but_another_runs(installed, tmp_path, monkeypatch):
+    """The Windows command's Python is gone (py, after a switch to the Store's Python):
+    a plain install rewrites dashline's own command with one that runs."""
+    as_windows_writes_it(installed)
+    py = doctor.first_word(get_settings(installed)["statusLine"]["command"])
+    monkeypatch.setattr(install, "windows_python", lambda *args, **kwargs: "python")
+    status, _, fix = windows_command_check(
+        installed, tmp_path, monkeypatch, "PowerShell 7", stderr=not_recognized(py), returncode=1
+    )
+    assert status == "fail"
+    assert fix == (
+        "run /dashline:install: it rewrites this command for Windows, "
+        "with a Python that runs here (python)"
+    )
+    # A command the user edited (a full path): only --replace rewrites it.
+    data = get_settings(installed)
+    data["statusLine"]["command"] = data["statusLine"]["command"].replace(py, "C:/Py/python.exe", 1)
+    set_settings(installed, data)
+    status, _, fix = windows_command_check(
+        installed,
+        tmp_path,
+        monkeypatch,
+        "PowerShell 7",
+        stderr=not_recognized("C:/Py/python.exe"),
+        returncode=1,
+    )
+    assert status == "fail"
+    assert fix.startswith("/dashline:install with --replace writes the Windows command")
+
+
+def test_git_on_path_wins_over_git_bashs_own(installed, tmp_path, monkeypatch):
+    """With git on PATH too, that's the one the statusline runs: doctor checks it."""
+    bash = git_for_windows(tmp_path / "Git")
+    monkeypatch.setattr(host, "WINDOWS", True)
+    monkeypatch.setattr(
+        doctor, "windows_shell", lambda env, which=None: ([str(bash), "-c"], "Git Bash")
+    )
+    monkeypatch.setattr("shutil.which", lambda name, path=None: "C:/other/git.exe")
+    fake_run(monkeypatch, "git", stdout="git version 2.51.0\n")
+    status, text, _ = check(installed, "git", tmp_path)
+    assert (status, text) == ("ok", "2.51.0")

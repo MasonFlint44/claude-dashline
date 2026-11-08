@@ -77,7 +77,8 @@ names. Nothing wraps.
 | `ascii` | nothing | `(main)  * +12  >2` |
 
 Switch with `/dashline:install`, or try one with
-`python3 ~/.claude/scripts/statusline/statusline.py --preview --glyphs nerd`.
+`python3 ~/.claude/scripts/statusline/statusline.py --preview --glyphs nerd`
+(on Windows, `py -3` or `python` in place of `python3`).
 
 Colors follow your Claude Code theme, including custom themes. `NO_COLOR`
 turns them off.

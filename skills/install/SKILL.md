@@ -23,8 +23,8 @@ dashline needs Python 3.9 or newer, by a name settings.json's command can run.
 - **Windows** (not WSL): try `py -3`, then `python`, then `python3`, each with
   `-c "import sys; print(sys.version)"`, and use the first that prints 3.9 or newer as
   `PYTHON`. `--install` picks the same way and writes that name into settings.json. A
-  `python3` that opens the Microsoft Store instead of printing a version doesn't count;
-  if it may have opened the Store window, tell the user they can close it.
+  `python3` that prints "Python was not found" (the Microsoft Store's stand-in) doesn't
+  count.
 
 To tell Windows from WSL: in Claude's shell `uname -s` prints `MINGW…` or `MSYS…` on
 Windows (Git Bash) and `Linux` in WSL. Where `uname` isn't found, the shell is
@@ -46,7 +46,10 @@ uses `unicode`.
 
 - **Exit 0:** done. The output says where it copied the files and what settings.json
   now runs. Pass on any `note:` line: a project's own settings override the user
-  entry there.
+  entry there; files from an interrupted install were kept in
+  `scripts/statusline.kept`; the command was rewritten for Windows. A note that
+  `--glyphs <x> isn't a glyph set` means the command keeps a typo (like `Nerd`) and
+  the statusline shows an error until it names a set: ask the glyph question (step 4).
 - **Exit 3:** nothing was changed, because something else is there. The output says
   what: settings.json runs a different statusline (the entry is shown), or
   `scripts/statusline/` holds another tool's files. Show it to the user and ask
@@ -59,7 +62,8 @@ uses `unicode`.
   then `/dashline:install` again. Only if the user wants the older version anyway,
   run `DASHLINE --install --downgrade` (add `--replace` if exit 3 asked for it too).
 - **Exit 1:** relay the error: usually settings.json that isn't valid JSON, or is
-  read-only (the file or its folder). On Windows it can also say no Python 3.9 or newer
+  read-only (the file or its folder), or whose statusLine changed while installing
+  (run it once more). On Windows it can also say no Python 3.9 or newer
   runs as `py -3`, `python` or `python3` (give step 1's Windows advice, and the
   message's note on a `py` that picks an older Python), or that the install path has a
   `$` or `` ` `` (relay its advice). Don't fix settings.json
@@ -78,9 +82,11 @@ An entry that is already dashline's keeps its command as written (for example a 
 path to Python); only the `--glyphs` flag changes. One exception, on Windows: the
 command older versions wrote (`python3 … "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/…"`, with
 any Python in place of `python3`) is Bash only, so `--install` rewrites it in the
-Windows form and a `note:` line says so; pass it on. A command edited further but
-still using `$`-variables is kept; `--install --replace` rewrites it too (doctor says
-so; ask first, as for exit 3).
+Windows form and a `note:` line says so; pass it on. So is the Windows command install
+wrote, once the Python it names no longer runs (another that does takes its place).
+Any other edit is kept, even one that PowerShell can't run (`$`-variables, `~`) or
+whose Python is gone; `--install --replace` rewrites it in the Windows form, keeping the
+glyph set (doctor says when; ask first, as for exit 3).
 
 ## 3. Check
 
@@ -96,8 +102,8 @@ Nerd Font) and which set is in use.
 
 Ask which glyph set to use when this was a first install (step 2's output said
 `installed`, not `updated` or `already has`), when the user asked about icons, boxes or
-question marks, or when doctor's `settings` line says the command names an unknown glyph
-set. On a plain update, keep the set in use and don't ask; if doctor's `font` line ends
+question marks, or when step 2's note or doctor's `settings` line says the command's
+`--glyphs` isn't a glyph set. On a plain update, keep the set in use and don't ask; if doctor's `font` line ends
 `(/dashline:install can switch to nerd)`, mention in one line that icons are available.
 If the user already named a set (e.g. "install with nerd fonts"), skip the question and
 pass `--glyphs` in step 2.
@@ -149,7 +155,9 @@ pass `--glyphs` in step 2.
      <https://github.com/microsoft/cascadia-code/releases/latest>, open
      `ttf\CascadiaCodeNF.ttf` and click Install. Then in Windows Terminal: Settings → the
      profile → Appearance → Font face → `Cascadia Code NF`, and restart the terminal if
-     it isn't listed yet.
+     it isn't listed yet. Ask first whether that list already has `Cascadia Code NF` or
+     `Cascadia Mono NF`: newer Windows Terminals bring their own copy, which doctor
+     can't see, so only picking it is needed.
 
    Some terminals need the font picked in their settings, or a restart. Afterwards,
    `/dashline:install` can switch to `nerd`. Never install fonts or edit terminal

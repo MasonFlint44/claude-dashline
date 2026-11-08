@@ -57,16 +57,18 @@ After applying any of these, run doctor once more to confirm (§1: no more than 
 
 Do this without asking, only when the `settings` line is `ok` (or warns only about
 `refreshInterval`) AND names the user settings file: `~/.claude/settings.json`, or
-`settings.json` in `$CLAUDE_CONFIG_DIR`. When it names a project or managed file, ask
-first (next list): `--install` writes the user file, which would turn dashline on in
-every other project too.
+`settings.json` in `$CLAUDE_CONFIG_DIR` (on Windows doctor may spell either out in
+full, like `C:/Users/pat/.claude/settings.json`). When it names a project or managed
+file, ask first (next list): `--install` writes the user file, which would turn
+dashline on in every other project too.
 - `install` warns that the copy is old or differs, or fails saying `statusline.py is
   missing` (the rest of the copy is there); `command` says its statusline.py is missing
   while `install` doesn't say `nothing installed`; `command`'s fix says install
-  `rewrites this command for Windows`; or `settings` warns that there's no
-  `refreshInterval`: run `DASHLINE --install`. With the entry already dashline's, it
-  updates the copy and keeps the command and glyph set as written. If it exits 3 or 4
-  anyway, stop and handle it as in the ask-first list below.
+  `rewrites this command for Windows` (also when its Python no longer runs and another
+  does); or `settings` warns that there's no `refreshInterval`: run
+  `DASHLINE --install`. With the entry already dashline's, it updates the copy and
+  keeps the command and glyph set as written. If it exits 3 or 4 anyway, stop and
+  handle it as in the ask-first list below.
   Not when `install` says the installed copy is newer than this one: that means this
   plugin is out of date, so tell the user to update it (`/plugin`) instead.
 
@@ -88,18 +90,21 @@ Ask first (AskUserQuestion), and act only on a yes:
   refused, stop: don't retry.
 - `cache` says other users can read one of its files: run the `chmod 600` in its `fix:` line.
   (Windows has no such check: files there take the profile folder's access.)
-- `command`'s fix says the command's `$`-variables are Bash and `--replace` writes the
-  Windows command (Windows only: a command the user edited, which PowerShell can't
-  run): show the user the command and ask before `DASHLINE --install --replace`.
+- `command`'s fix says `--replace writes the Windows command` (Windows only: a
+  command the user edited, which uses Bash's `$`-variables or `~`, or names a Python
+  that no longer runs): show the user the command and ask before
+  `DASHLINE --install --replace`. It writes dashline's own command in place of their
+  edit, keeping the glyph set.
 - `command` warns that `its symbols came back changed` (Windows, PowerShell on a
   system whose code page lacks them): ask whether to switch to `ascii` glyphs
   (`DASHLINE --install --glyphs ascii`) or to install Git for Windows, so Claude Code
   runs the statusline in Git Bash (then restart Claude Code).
 - `settings` warns that `--glyphs <x> isn't a glyph set` (a typo like `Nerd`): don't
-  reset it to unicode. Run the glyph step of `/dashline:install` (the preview, then the
-  user picks), then `DASHLINE --install --glyphs <set>`. If that exits 1 saying it
-  can't change `--glyphs` automatically, show the user the edit its message gives;
-  editing settings.json is theirs to do.
+  reset it to unicode. Run the glyph step of `/dashline:install` (it asks which set;
+  comparing them first is the user's choice), then `DASHLINE --install --glyphs <set>`.
+  A plain `--install` keeps the flag as written. If that exits 1 saying it can't change
+  `--glyphs` automatically, show the user the edit its message gives; editing
+  settings.json is theirs to do.
 
 Explain, and leave to the user:
 - `settings` says a project file (`.claude/settings.json`, `settings.local.json`) or
@@ -138,9 +143,14 @@ Explain, and leave to the user:
   (see `/dashline:install` step 1) or, on macOS and Linux, edit the command to use a
   full path to Python 3.9+; `--install` keeps that edit. On Windows no full path with
   spaces runs in both Git Bash and PowerShell, so there the fix is Python on PATH and a
-  restart of Claude Code, as the `fix:` line says.
+  restart of Claude Code, as the `fix:` line says. When another Python runs there,
+  the `fix:` line says so instead: install rewriting the command (§3, no need to ask)
+  or `--replace` (§3, ask first).
 - `command` failing because `a policy on this PC blocks` Python (AppLocker, Software
   Restriction): only whoever manages the PC can allow it.
+- `command` warns that PowerShell can't run the command while it works in Git Bash:
+  nothing is broken now; it would be on a PC without Git for Windows. Relay the fix and
+  let the user choose (it's the `--replace` case above when the fix says so).
 - `command` slow: usually a large git repo or slow disk. Mention it, nothing to fix.
   On Windows the line also names the shell it ran in (Git Bash, or PowerShell or
   PowerShell 7 when Git Bash isn't installed); starting the shell is part of the time.
@@ -148,6 +158,9 @@ Explain, and leave to the user:
   `/dashline:install`.
 - API key, Bedrock, Vertex, Foundry or a gateway: no plan bars is expected, because
   those bill per use.
+
+Any other `warn` or `fail`: relay its text and its `fix:` line as doctor gives them,
+and don't make up a fix it doesn't give.
 
 ## 4. Nothing failed but it still looks wrong
 

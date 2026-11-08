@@ -11,9 +11,12 @@
   with a `$` or `` ` `` in that path, which both shells would expand, it stops too.
 - An entry still running the command older versions wrote, which only Git Bash can
   run, is rewritten that way by `/dashline:install`, with its glyph set kept, also when
-  you had changed only the Python it runs (`python`, `py -3`, a full path). A command
-  you edited further is kept as written; if it has `$`-variables, `/dashline:doctor`
-  says so and `--replace` rewrites it.
+  you had changed only the Python it runs (`python`, `py -3`, a full path). So is the
+  command install wrote, once the Python it names stops running (`py` gone after a
+  switch to the Microsoft Store's Python, say): another that runs takes its place. A
+  command you edited is kept as written; when PowerShell can't run it (`$`-variables,
+  a `~/` path) or its Python is gone, `/dashline:doctor` says so and `--replace`
+  rewrites it in the Windows form.
 - The statusline's output is UTF-8, as Claude Code reads it (Python there writes a
   pipe in the ANSI code page, which has no bars or `│`); so is doctor's and install's.
 - Your home folder is `%USERPROFILE%`, as Claude Code has it.
@@ -55,6 +58,9 @@
   folder as they really are on Windows, and skips the file-permission check, which
   doesn't apply there. PowerShell 7's short error form gets its own reason and fix,
   and an error text that only mentions a PowerShell record no longer stops the check.
+  A command that works in Git Bash but not in PowerShell is a warning that says so,
+  not one that reads like a fault; a full path to Python (`C:\Python312\python.exe`)
+  is read with its backslashes.
 - The install and doctor skills find Python on Windows (`py -3`, `python`, `python3`)
   and tell Windows from WSL; the install skill says how to get Python
   (`winget install Python.Python.3.13`).
@@ -66,6 +72,30 @@
   install left behind with your files in it is kept that way, never deleted.
 - A render reads `.claude.json`, which grows with your project history, once instead
   of twice.
+- A usage answer with thousands of rows (from a broken proxy, say) no longer makes
+  every render take minutes: dashline keeps and reads at most 32.
+- When the cache folder can't be written (a full disk), the background fetch no longer
+  starts again on every render: it waits a minute between tries.
+- `/dashline:install` no longer turns a mistyped `--glyphs Nerd` into unicode: it keeps
+  the flag, says it isn't a glyph set, and the install skill asks which set you meant.
+- `/dashline:install` no longer undoes a change Claude Code or you made to settings.json
+  while it was copying: the entry goes into the file as it is when written.
+- Your files left behind by an interrupted install are never deleted, also when a later
+  install happens to get the same process ID, and a note now says they're in
+  `scripts/statusline.kept`. Leftovers beside a `scripts/statusline` that links to a
+  folder of another name are cleaned up too.
+- Install's error messages show paths as `~/…` with `/`, like its other output.
+- A project's `.claude/settings.json` (from a cloned repo, say) whose statusLine merely
+  mentions dashline's path among other commands no longer counts as dashline's:
+  doctor reports it as another statusline instead of running it. Doctor's output no
+  longer passes on terminal escape codes from settings files or a command's errors.
+- Doctor no longer calls a newer installed copy "same as this copy" when only its docs
+  changed, says a command that printed nothing failed, gives a project entry of the
+  wrong type the right fix (set its type), and no longer tells you to run doctor again
+  for a command that took over 10 s.
+- `theme: auto` with an odd `COLORFGBG` (`15;²`) no longer shows "internal error", and a
+  custom theme's name can't point outside the `themes/` folder.
+- The cache's temporary file is always a new file, never one left in its place.
 - Doctor: a statusLine whose type isn't `"command"` isn't run (Claude Code wouldn't run
   it); a `--glyphs` after the end of dashline's command (`… || echo --glyphs x`) is no
   longer taken for dashline's; the command runs at a 120-column width, so a narrow
@@ -82,14 +112,19 @@
   becomes `file:///…`, this machine; a share with such a name has no link).
 - The doctor skill no longer contradicts itself when only `statusline.py` is missing,
   says git warns (not fails), and covers a statusLine of another type and a cache
-  folder that can't be written.
+  folder that can't be written. It fixes without asking when doctor spells out the
+  user settings path on Windows, and relays any warning it doesn't list as doctor
+  gives it. `--help` lists all of doctor's checks.
 
 **CI**
 - The tests run on Windows too, and the Python 3.9 smoke test runs on Windows in Git
   Bash (finding Git Bash from git on PATH, with Program Files hidden), and in
   PowerShell with Git for Windows hidden, where a render must also write nothing to
   stderr. The Windows command test runs in Git Bash, PowerShell 7 and Windows
-  PowerShell, and fails on CI if one is missing. The Apple-Python job fails when that
+  PowerShell, and fails on CI if one is missing. The smoke tests use a home folder
+  named `José Müller` and a project with an accented name, which must show intact, and
+  the PowerShell one runs the `py -3` command too. Tests that let a retry or a
+  timeout go unchecked now check them. The Apple-Python job fails when that
   Python is missing instead of passing, and pytest names every skipped test.
 
 ## 0.1.10 — 2026-11-06

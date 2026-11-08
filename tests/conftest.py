@@ -95,6 +95,13 @@ SHELL_VARS = (
     "COLUMNS",
     "CLAUDE_PROJECT_DIR",
     "WSL_DISTRO_NAME",
+    # The developer's own config: a test's git and theme must not depend on it.
+    "XDG_CONFIG_HOME",
+    "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_SYSTEM",
+    "GIT_CONFIG_NOSYSTEM",
+    "GIT_CEILING_DIRECTORIES",
+    "GIT_DISCOVERY_ACROSS_FILESYSTEM",
 )
 
 

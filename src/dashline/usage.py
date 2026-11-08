@@ -42,6 +42,9 @@ MAX_AGE = 86400  # older data is dropped, not drawn
 LOCK_STALE = 60  # a lock this old belongs to a child that died
 CLOCK_SLACK = 60  # a time further ahead than this means the clock was set back
 MAX_BODY = 1 << 20  # a usage answer is a few KB; anything past 1 MiB is not one
+# Rows of `limits` kept and read: a real answer has a handful. Thousands (a broken proxy
+# or endpoint) would make every render slow, laying out a bar for each.
+MAX_LIMITS = 32
 LATE = -1  # get()'s status for a request that missed its deadline
 # Backoff after a failure: the first wait and the cap.
 BACKOFF_FIRST, BACKOFF_MAX = 60, 1800
@@ -151,13 +154,19 @@ def _write_json(path: str, data: dict) -> None:
     """
     os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
     tmp = f"{path}.{os.getpid()}.tmp"
+    # A new file, never one already there: not a link someone left in its place.
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     try:
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            fd = os.open(tmp, flags, 0o600)
+        except FileExistsError:
+            os.unlink(tmp)  # left by a killed writer that had this pid
+            fd = os.open(tmp, flags, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(data, f)
         retry_held(os.replace, tmp, path)
     finally:
-        if os.path.exists(tmp):
+        if os.path.lexists(tmp):
             os.unlink(tmp)
 
 
@@ -393,25 +402,33 @@ def child(nonce: str | None = None) -> None:
     It looks again first: between its render reading the cache and taking the lock,
     another child may have fetched, or been told to wait. A failure refresh didn't
     foresee still writes a backoff hold, so renders don't start a new fetch every time.
+    When neither the cache nor a hold could be written (a full disk, a file Windows
+    keeps open), the lock stays: renders would see nothing new and fetch again at once,
+    so the next fetch waits for the lock to go stale (LOCK_STALE).
     """
     import time
 
     env = os.environ
     now = time.time()
     who = None
+    wrote = False
     try:
         from dashline import account as account_mod
 
         who = account_mod.identity(env)
         if not _due(env, who, now, *cached(env, who, now)):
+            wrote = True  # nothing to write: someone else just did
             return
-        refresh(env, now, who=who)
+        refresh(env, now, who=who)  # writes the cache or a hold, or raises
+        wrote = True
     except Exception as e:
         # Nowhere to show a traceback; doctor shows what failed.
         with contextlib.suppress(Exception):
             _backoff(env, who, now, failed(e))
+            wrote = True
     finally:
-        release(env, nonce)
+        if wrote:
+            release(env, nonce)
 
 
 def failed(e: Exception) -> str:
@@ -607,6 +624,8 @@ def refresh(
     status, data, retry = get((base_url or API_URL).rstrip("/") + USAGE_PATH, token, now=now)
     del token
     if status == 200 and isinstance(data, dict):
+        if isinstance(data.get("limits"), list):
+            data = {**data, "limits": data["limits"][:MAX_LIMITS]}
         _write_json(
             _path(env, cache_name(who)),
             {"fetched_at": now, "account": who, "data": data},
@@ -690,7 +709,7 @@ def plan_bars(session, account, data: dict | None, now: float) -> list:
     windows, used_stdin = [], set()
 
     limits = data.get("limits")
-    for row in limits if isinstance(limits, list) else []:
+    for row in limits[:MAX_LIMITS] if isinstance(limits, list) else []:
         if not isinstance(row, dict):
             continue
         kind, percent = _str(row.get("kind")), _num(row.get("percent"))
