@@ -179,8 +179,8 @@ belongs to a dead child; only one process at a time may break it, through
 (new session, stdio on /dev/null, no token in argv). Once it holds the lock, the child
 checks the cache and hold again (another render may just have fetched), then fetches once
 and writes the cache `{fetched_at, account, data}` or the hold `{until, at, reason,
-failures, account, server}`. `account` is a hash of the account and org ids, so a different login never
-sees another's numbers. Holds: no login 10 min (a locked or denied macOS Keychain
+failures, account, server}`. `account` is a hash of the account and org ids (of the email when they're missing,
+0.2.0), so a different login never sees another's numbers. Holds: no login 10 min (a locked or denied macOS Keychain
 too: the background read gives a prompt 5 s, doctor's login check a minute, 0.2.0),
 expired token / 401 5 min, 403 1 h,
 404 6 h; anything else backs off 1, 2, 4 … 30 min, or longer when the server's
@@ -199,8 +199,8 @@ didn't foresee reaches the child's catch-all, never a thread traceback. The chil
 appends the install folder to `sys.path` rather than putting it first (0.1.8). Redirects are refused, so the token only goes to `api.anthropic.com`; any
 failure, even one the code didn't foresee, writes a hold. Times more than a minute
 ahead of the clock (it was set back: an NTP step, a restored VM; daylight saving
-doesn't move epoch time) count as unknown: the cache refetches, and a lock or hold
-from the future is ignored. With `CLAUDE_CODE_OAUTH_TOKEN` the `account` tag is a
+doesn't move epoch time) count as unknown: the cache isn't drawn (while fetches fail
+it would pass for fresh) and refetches, and a lock or hold from the future is ignored. With `CLAUDE_CODE_OAUTH_TOKEN` the `account` tag is a
 salted hash of that token. Data older than a day is dropped. Files are 0600 in a 0700
 `statusline/` folder (0700 when dashline creates it; a `cache/` above it that dashline
 makes gets the usual mode, and a folder another tool made is left as it is, since its
@@ -221,6 +221,9 @@ What a render reads it reads only from plain files of a bounded size (64 MiB for
 `.git/` can be a link to a pipe or `/dev/zero`, which would block the render or never
 end. A relative `CLAUDE_CONFIG_DIR` is read from the current folder, as Claude Code
 reads it; the fetch child then starts in that same folder, so it finds the same one.
+On Windows `/cfg` (the current drive's root) counts as relative too and gets its drive
+(`C:\cfg`), as Node resolves it: in the command as written, Git Bash would read it
+under its own root.
 
 Trust: a project's `.claude/settings.json` that the user trusted can set `env` for the
 statusline too (`CLAUDE_CONFIG_DIR`, `HTTPS_PROXY`, `SSL_CERT_FILE`,
@@ -417,7 +420,9 @@ same label is dropped (0.2.0: one long label pushed 5h and 7d off the row).
      drop order below; only with all of it gone does the bar shrink, down to 8, and
      then turn into `context NN%`. So a wider terminal never shows a narrower bar
      (changed 11/5 by the author for 0.1.6; until then the first drop step that left 8
-     cells won, so a cold cache gave 13 cells at 81 columns, 8 at 82, 13 again at 87).
+     cells won, so a cold cache gave 13 cells at 81 columns, 8 at 82, 13 again at 87),
+     but for the plan-bar quirk below, which `context` follows: with four plan bars it
+     can be 8 cells at 97 columns and 10 at 96.
      When line 2 has plan bars but they're all text, `context` is 8 cells. A model name
      longer than 16 columns (a Bedrock ARN, say) is cut with `…`, down to 16, so cost
      and context stay on the line (0.1.6, asked by the author).
@@ -776,7 +781,8 @@ writes. If hiding elements ever earns its keep, a file goes in
 `--install [--replace] [--downgrade]` · `--preview [SCENARIO]` · `--glyphs SET` ·
 `--version` · `--help`. `COLUMNS` counts only as plain digits, capped at 1000, in
 render and preview alike; more than 4 significant digits reads as 1000 without parsing
-(0.1.8); `0` (or none) means 80.
+(0.1.8). In a render `0` (or none) means 80; `--preview` without one uses the
+terminal's width, 100 when there's no terminal.
 
 - `--doctor`: one line per check (`ok` / `warn` / `fail` / `info`, a `fix:` line under
   problems), exit 1 on any `fail`. Checks: python, install (installed copy vs the

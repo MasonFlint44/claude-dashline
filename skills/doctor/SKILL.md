@@ -93,8 +93,8 @@ Ask first (AskUserQuestion), and act only on a yes:
 - `cache` says other users can read one of its files: run the `chmod 600` in its `fix:` line.
   (Windows has no such check: files there take the profile folder's access.)
 - `command`'s fix says `--replace writes the Windows command` (Windows only: a
-  command the user edited, which uses Bash's `$`-variables or `~`, or names a Python
-  that no longer runs): show the user the command and ask before
+  command the user edited, which uses Bash's `$`-variables or `~`, names a Python
+  that no longer runs, or fails for another reason): show the user the command and ask before
   `DASHLINE --install --replace`. It writes dashline's own command in place of their
   edit, keeping the glyph set.
 - `command` warns that `its symbols came back changed` (Windows, PowerShell on a
@@ -116,6 +116,14 @@ Explain, and leave to the user:
   doctor's `fix:` line says what can. A project's statusLine is the user's to remove;
   managed settings only an administrator can change.
 - `disableAllHooks`: it turns off hooks too, so removing it is the user's decision.
+- `settings` says settings.json `isn't valid JSON` (a stray comma, a comment),
+  `isn't UTF-8 text` or `isn't a JSON object`: Claude Code can't read the file either,
+  so none of its settings apply. Show the error doctor gives; `--install` refuses such
+  a file, and fixing it is the user's (edit it only if they ask).
+- `command`'s fix says `the command was edited, and /dashline:install keeps it as
+  written`: the user's own edit fails, and installing again won't change it. Show the
+  command and the error; the user fixes it, or removes the statusLine entry so
+  `/dashline:install` writes dashline's own.
 - `command`'s fix says to write the Windows command in a project's or managed
   settings file: `--install` writes only the user's, so the edit is the user's (or,
   for managed settings, an administrator's).
@@ -137,6 +145,10 @@ Explain, and leave to the user:
 - `usage` network failures: the statusline keeps the last numbers (marked with their
   age) and retries on its own. Point at proxy settings (`HTTPS_PROXY`) only if the user
   is behind one.
+- `usage` says `secure connection failed (certificate)`: something between here and
+  api.anthropic.com (usually a company proxy or firewall) presents its own
+  certificate, or `SSL_CERT_FILE` names the wrong file. Relay the fix; the right
+  certificate bundle is the user's (or their IT's) to point at.
 - `usage` says `redirect refused`: api.anthropic.com doesn't redirect, so a proxy or
   network is rewriting the request; dashline won't follow it with the token. Point at
   `HTTPS_PROXY` or the network.

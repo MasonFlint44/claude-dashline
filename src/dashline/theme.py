@@ -48,15 +48,17 @@ def config_dir(env) -> str:
 
 
 def is_absolute(path: str) -> bool:
-    """os.path.isabs, by Windows' rules where host.WINDOWS says so (`C:\\x`, `\\\\srv`).
-
-    On Windows a path from the root of the current drive (`/cfg`) counts too, as Node's
-    path.isAbsolute (Claude Code) has it; Python 3.13 stopped counting it.
+    """os.path.isabs, by Windows' rules where host.WINDOWS says so: there a path needs
+    its drive or server too (`C:\\x`, `\\\\srv\\share`). `/cfg`, the current drive's root,
+    is made absolute (`D:\\cfg`) as Node's path.resolve makes it: written into the
+    command as it is, Git Bash would read it under its own root (Python 3.13 also stopped
+    counting it as absolute).
     """
     if host.WINDOWS:
         import ntpath
 
-        return path.startswith(("/", "\\")) or ntpath.isabs(path)
+        drive, rest = ntpath.splitdrive(path)
+        return drive[:2] in ("\\\\", "//") or (bool(drive) and rest[:1] in ("/", "\\"))
     return os.path.isabs(path)
 
 

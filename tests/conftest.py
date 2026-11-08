@@ -94,6 +94,7 @@ SHELL_VARS = (
     "COLORFGBG",
     "COLUMNS",
     "CLAUDE_PROJECT_DIR",
+    "CLAUDE_CODE_GIT_BASH_PATH",
     "WSL_DISTRO_NAME",
     # The developer's own config: a test's git and theme must not depend on it.
     "XDG_CONFIG_HOME",
@@ -181,8 +182,10 @@ def isolated_home(tmp_path, monkeypatch):
         raise AssertionError("a test tried to start a real fetch")
 
     monkeypatch.setattr(usage, "spawn", no_spawn)
-    # A shared Windows runner can take seconds to start a shell: doctor's `command` check
-    # calls that slow, which these tests don't measure (test_command_slow* set their own).
+    # A busy runner (a shared Windows one most of all) can take seconds to start a shell:
+    # doctor's `command` check calls that slow, which these tests don't measure
+    # (test_command_slow* set their own).
+    monkeypatch.setattr(doctor, "SLOW_MS", 60_000)
     monkeypatch.setattr(doctor, "SLOW_MS_WINDOWS", 60_000)
     return home
 

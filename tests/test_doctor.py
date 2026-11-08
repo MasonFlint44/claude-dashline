@@ -216,6 +216,24 @@ def test_settings_missing(installed, tmp_path):
     assert check(installed, "command", tmp_path)[0] == "info"
 
 
+@pytest.mark.parametrize(
+    ("raw", "said"),
+    [
+        (b'{"theme": "dark",}', "isn't valid JSON"),
+        (b"[]", "isn't a JSON object"),
+        (b'{"theme": "caf\xe9"}', "isn't UTF-8 text"),
+    ],
+)
+def test_settings_unreadable_says_so(installed, tmp_path, raw, said):
+    """Not "no statusLine, run /dashline:install": install refuses such a file."""
+    settings_file(installed).write_bytes(raw)
+    status, text, fix = check(installed, "settings", tmp_path)
+    assert status == "fail"
+    assert text.startswith("~/.claude/settings.json " + said)
+    assert "run again" not in text
+    assert fix.startswith("fix it by hand")
+
+
 def test_settings_someone_else(installed, tmp_path):
     set_settings(installed, {"statusLine": {"type": "command", "command": "bash ~/x.sh"}})
     status, text, fix = check(installed, "settings", tmp_path)
@@ -366,6 +384,21 @@ def test_usage_network(sub, tmp_path):
     assert status == "fail"
     assert text == "no answer (network); renders retry in 1 min"
     assert "proxy" in fix
+
+
+def test_usage_certificate_failure(sub, tmp_path, monkeypatch):
+    import ssl
+    import urllib.error
+    import urllib.request
+
+    def refuse(self, request, *args, **kwargs):
+        raise urllib.error.URLError(ssl.SSLCertVerificationError(1, "certificate verify failed"))
+
+    monkeypatch.setattr(urllib.request.OpenerDirector, "open", refuse)
+    status, text, fix = check(sub, "usage", tmp_path, CLOSED)
+    assert status == "fail"
+    assert text.startswith(usage.TLS_FAILED)
+    assert "SSL_CERT_FILE" in fix
 
 
 def test_usage_server_error_backs_off(sub, server, tmp_path):
@@ -1545,6 +1578,42 @@ def test_command_that_prints_nothing_fails(installed, tmp_path, monkeypatch, she
     fake_run(monkeypatch, shell[0], stdout="", returncode=0)
     status, text, _ = check(installed, "command", tmp_path)
     assert (status, text) == ("fail", "exit 0, 0 lines")
+
+
+def test_edited_command_that_fails_isnt_sent_to_install(installed, tmp_path):
+    """Install keeps an edited command as written, so "run /dashline:install" would
+    change nothing: the fix says it was edited and how out."""
+    data = get_settings(installed)
+    data["statusLine"]["command"] += " --bogus"
+    set_settings(installed, data)
+    status, text, fix = check(installed, "command", tmp_path)
+    assert status == "fail"
+    assert "--bogus" in text
+    assert fix.startswith("the command was edited")
+    if host.WINDOWS:
+        assert "--replace" in fix
+    else:
+        assert "fix it in ~/.claude/settings.json" in fix
+
+
+def test_project_command_that_fails_is_fixed_in_its_file(installed, tmp_path):
+    """Install writes only the user's settings: a project's failing entry is fixed there."""
+    (tmp_path / ".claude").mkdir()
+    command = get_settings(installed)["statusLine"]["command"] + " --bogus"
+    (tmp_path / ".claude" / "settings.json").write_text(
+        json.dumps({"statusLine": {"type": "command", "command": command}})
+    )
+    status, _, fix = check(installed, "command", tmp_path)  # doctor runs in the project
+    assert status == "fail"
+    assert fix.startswith("fix the command in ")
+    assert "writes only your user settings" in fix
+
+
+def test_command_as_installed_that_fails_is_sent_to_install(
+    installed, tmp_path, monkeypatch, shell
+):
+    fake_run(monkeypatch, shell[0], stdout="", returncode=0)
+    assert check(installed, "command", tmp_path)[2] == "run /dashline:install"
 
 
 def test_windows_has_its_own_slow_threshold(installed, tmp_path, monkeypatch):

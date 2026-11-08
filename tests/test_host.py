@@ -36,6 +36,19 @@ def test_program_on_windows_never_comes_from_the_current_folder(tmp_path, monkey
     assert host.which("git", {"Path": str(tools), "PATHEXT": ".exe"}) == str(tools / "git.exe")
 
 
+def test_which_on_windows_reads_path_as_windows_writes_it(tmp_path, monkeypatch):
+    """Quoted folders, a trailing separator, PATHEXT with spaces and a trailing `;`."""
+    monkeypatch.setattr(host, "WINDOWS", True)
+    tools = tmp_path / "my tools"
+    tools.mkdir()
+    (tools / "git.exe").write_text("")
+    found = str(tools / "git.exe")
+    for path in (f'"{tools}"', f"{tools}{os.sep}", f"{os.pathsep}{tools}{os.pathsep}"):
+        assert host.which("git", {"PATH": path, "PATHEXT": ".com; .exe;"}) == found, path
+    assert host.which("git.exe", {"PATH": str(tools)}) == found  # named with its extension
+    assert host.which("git", {"PATH": str(tools), "PATHEXT": ".com"}) is None
+
+
 def test_git_runs_by_its_full_path_on_windows(tmp_path, monkeypatch):
     monkeypatch.setattr(host, "WINDOWS", True)
     started = []

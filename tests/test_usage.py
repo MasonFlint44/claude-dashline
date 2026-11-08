@@ -239,6 +239,15 @@ def test_newer_window_wins():
     assert (plan[0].percent, plan[0].resets_at) == (2, next_week)
 
 
+def test_same_window_means_resets_within_a_minute():
+    """PLAN §4: resets within 60 s are the same window (the higher percent wins);
+    further apart, the later window wins whatever its percent."""
+    base = NOW + 3600
+    assert usage._merge((30.0, base), (10.0, base + 30)) == (30.0, base)
+    assert usage._merge((30.0, base), (10.0, base + 300)) == (10.0, base + 300)
+    assert usage._merge((30.0, base + 300), (50.0, base)) == (30.0, base + 300)
+
+
 def test_passed_stdin_window_reads_zero():
     """Claude Code resends the last window it saw; once it has reset, it's 0%, not 95%."""
     session = make_session(
@@ -458,11 +467,12 @@ def test_load_slightly_future_timestamp_is_age_zero(isolated_home):
 
 
 def test_load_after_the_clock_was_set_back_refetches(isolated_home):
-    """Data fetched an hour "from now" would otherwise stay fresh for an hour."""
+    """Data fetched an hour "from now" would otherwise stay fresh for an hour, and while
+    fetches fail it would pass for fresh with no age tag: it isn't drawn."""
     write_cache(isolated_home, fetched_at=NOW + 3600)
+    write_hold(isolated_home, until=NOW + 600)  # a failed fetch: the cache isn't replaced
     state = usage.load(env_for(isolated_home), ULTRA, NOW)
-    assert state.data and state.fetch
-    assert (state.age, state.stale_age) == (None, None)
+    assert (state.data, state.age) == (None, None)
 
 
 @pytest.mark.parametrize("value", ["NaN", "Infinity", "1e400"])
@@ -1268,6 +1278,21 @@ def test_network_failure_backs_off(logged_in):
     assert cache_files(logged_in)["hold"]["until"] == NOW + 60
 
 
+def test_certificate_failure_is_named(logged_in, monkeypatch):
+    """A proxy that replaces certificates isn't "no answer (network)": doctor names it."""
+    import ssl
+    import urllib.error
+    import urllib.request
+
+    def refuse(self, request, *args, **kwargs):
+        raise urllib.error.URLError(ssl.SSLCertVerificationError(1, "certificate verify failed"))
+
+    monkeypatch.setattr(urllib.request.OpenerDirector, "open", refuse)
+    reason = usage.refresh(logged_in, NOW, "https://127.0.0.1:9", "linux")
+    assert reason == usage.TLS_FAILED
+    assert cache_files(logged_in)["hold"]["until"] == NOW + 60
+
+
 def test_failure_keeps_old_cache(server, logged_in):
     server.reply(200, json.dumps(usage_fixture("ultra")))
     usage.refresh(logged_in, NOW, server.url, "linux")
@@ -1438,6 +1463,44 @@ def test_duplicate_rows_draw_one_bar():
     }
     plan = usage.plan_bars(make_session(rate_limits=None), ULTRA, data, NOW)
     assert [(b.label, b.percent) for b in plan] == [("5h", 0), ("odd", 1)]
+
+
+# ---- found in the sixth review ----
+
+
+def test_a_long_model_name_still_matches_the_model_in_use():
+    """Shown cut to MAX_LABEL, but matched by its whole name: at 0% it's drawn while
+    that model is in use (PLAN §4)."""
+    long = "Fable 5.1 Preview Edition Extra"
+    row = {"kind": "weekly_scoped", "percent": 0, "scope": {"model": {"display_name": long}}}
+    session = make_session(rate_limits=None, model={"id": "x", "display_name": long})
+    plan = usage.plan_bars(session, ULTRA, {"limits": [row]}, NOW)
+    assert [b.label for b in plan] == [long[: usage.MAX_LABEL].strip()]
+
+
+def test_a_server_label_never_doubles_a_real_bar():
+    """A limit named "5h" next to stdin's 5h, or a model named "credits", gives way."""
+    data = {
+        "limits": [
+            {"kind": "5h", "percent": 1},
+            {
+                "kind": "weekly_scoped",
+                "percent": 2,
+                "scope": {"model": {"display_name": "credits"}},
+            },
+        ],
+        "spend": {
+            "enabled": True,
+            "used": {"amount_minor": 500, "exponent": 2},
+            "limit": {"amount_minor": 1000, "exponent": 2},
+        },
+    }
+    windows = {"five_hour": {"used_percentage": 40, "resets_at": NOW + 3600}}
+    plan = usage.plan_bars(make_session(rate_limits=windows), ULTRA, data, NOW)
+    labels = [b.label for b in plan]
+    assert labels.count("5h") == 1 and labels.count("credits") == 1
+    assert next(b for b in plan if b.label == "credits").percent == 50
+    assert next(b for b in plan if b.label == "5h").percent == 40
 
 
 def test_provider_sessions_draw_no_plan_windows_from_stdin():

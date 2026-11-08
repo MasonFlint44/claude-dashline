@@ -103,6 +103,9 @@ def test_api_key_counts_only_once_approved(isolated_home):
     write_claude_json(isolated_home, ULTRA)
     env = env_for(isolated_home, ANTHROPIC_API_KEY=key)
     assert account.load(env, make_session("startup")).mode == "subscription"
+    other = {"approved": ["b" * 20], "rejected": [key[-20:]]}  # seen, but not approved
+    write_claude_json(isolated_home, ULTRA, customApiKeyResponses=other)
+    assert account.load(env, make_session("startup")).mode == "subscription"
     write_claude_json(isolated_home, ULTRA, customApiKeyResponses={"approved": [key[-20:]]})
     assert account.load(env, make_session("startup")).mode == "api"
 
@@ -150,6 +153,13 @@ def test_odd_types_in_claude_json_read_as_missing(isolated_home, extra):
 def test_plan_name_control_characters_are_replaced(isolated_home):
     write_claude_json(isolated_home, dict(ULTRA, planDisplayName="Ul\x1b[31mtra\nX"))
     assert account.load(env_for(isolated_home), make_session()).label == "Ul?[31mtra?X"
+
+
+def test_a_long_plan_name_is_cut(isolated_home):
+    """As bar labels are: a long one would push every plan bar off line 2."""
+    write_claude_json(isolated_home, dict(ULTRA, planDisplayName="Ultra " + "x" * 99))
+    label = account.load(env_for(isolated_home), make_session()).label
+    assert label == ("Ultra " + "x" * 99)[: account.MAX_PLAN]
 
 
 def test_config_dir_holds_claude_json(tmp_path):
@@ -216,6 +226,16 @@ def test_fingerprint_is_a_hash_of_the_ids(isolated_home):
     assert acct.fingerprint == hashlib.sha256(ids.encode()).hexdigest()[:16]
     assert account.identity(env_for(isolated_home)) == acct.fingerprint
     assert ULTRA["accountUuid"] not in acct.fingerprint
+
+
+def test_fingerprint_without_ids_tells_logins_apart_by_email():
+    """Two logins without ids would share one cache file: the email tells them apart."""
+    a = account.fingerprint({"emailAddress": "a@example.com"}, {})
+    b = account.fingerprint({"emailAddress": "b@example.com"}, {})
+    assert a and b and a != b
+    assert account.fingerprint({"emailAddress": " A@example.com "}, {}) == a
+    assert "example" not in a
+    assert account.fingerprint({}, {}) is None
 
 
 # ---- trial ----

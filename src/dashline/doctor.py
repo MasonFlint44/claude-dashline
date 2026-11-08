@@ -446,6 +446,16 @@ class Doctor:
         winner = next(((p, d["statusLine"]) for p, d in sources if "statusLine" in d), None)
         if winner is None:
             where = self.short(install.user_settings(self.env))
+            try:  # one that can't be read says nothing, and install would refuse it
+                install.read_settings(install.user_settings(self.env), where)
+            except install.InstallError as e:
+                self.add(
+                    FAIL,
+                    "settings",
+                    str(e).replace("; fix it and run again", ""),
+                    "fix it by hand: Claude Code can't read it either, so none of it applies",
+                )
+                return
             self.add(FAIL, "settings", f"no statusLine in {where}", "run /dashline:install")
             return
         path, entry = winner
@@ -634,6 +644,11 @@ class Doctor:
         fix = self.user_fix(result) or "run doctor again later"
         if result.startswith("no answer"):
             fix = "check the network or proxy (HTTPS_PROXY) to api.anthropic.com"
+        elif result == usage.TLS_FAILED:
+            fix = (
+                "a proxy or firewall that replaces certificates, or SSL_CERT_FILE naming "
+                "the wrong file: point SSL_CERT_FILE at your network's certificate bundle"
+            )
         elif result.startswith("redirect refused"):
             # api.anthropic.com doesn't redirect: a proxy or network is rewriting traffic.
             fix = "something between here and api.anthropic.com redirects it: check HTTPS_PROXY"
@@ -759,6 +774,7 @@ class Doctor:
         if powershell:
             err = powershell_unwrapped(err)
         program = first_word(self.entry["command"])
+        where = self.short(self.entry_path)
         # The command dashline wrote before it ran on Windows (install rewrites it), or
         # another with $-variables, which only Git Bash reads as written (--replace).
         rewrite = host.WINDOWS and install.old_form(self.entry)
@@ -769,7 +785,6 @@ class Doctor:
             "/dashline:install with --replace writes the Windows command"
         )
         if not self.entry_is_user:  # install writes only the user's settings
-            where = self.short(self.entry_path)
             rewrite_fix = replace_fix = (
                 f"PowerShell can't run it: write the Windows command in {where} "
                 "(/dashline:install writes only your user settings)"
@@ -779,6 +794,19 @@ class Doctor:
             why = why or f"exit {r.returncode}, {len(lines)} lines"
             missing = host.WINDOWS and program_missing(why, program)
             fix = "run /dashline:install"
+            if not self.entry_is_user:
+                fix = (
+                    f"fix the command in {where} (/dashline:install writes only your user settings)"
+                )
+            elif not install.as_installed(self.entry, self.env, host.WINDOWS):
+                # Install keeps an edited command as written: running it changes nothing.
+                fix = (
+                    "the command was edited: /dashline:install with --replace writes "
+                    "the Windows command"
+                    if host.WINDOWS
+                    else f"the command was edited, and /dashline:install keeps it as written: "
+                    f"fix it in {where}, or remove the statusLine entry and run /dashline:install"
+                )
             if rewrite:
                 fix = rewrite_fix
             elif bash_only and powershell:

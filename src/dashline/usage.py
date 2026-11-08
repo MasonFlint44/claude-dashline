@@ -47,6 +47,7 @@ MAX_BODY = 1 << 20  # a usage answer is a few KB; anything past 1 MiB is not one
 MAX_LIMITS = 32
 MAX_LABEL = 20  # columns of a bar's label from the server (a model's or a limit's name)
 LATE = -1  # get()'s status for a request that missed its deadline
+TLS = -2  # get()'s status when the secure connection failed (a certificate, say)
 # Backoff after a failure: the first wait and the cap.
 BACKOFF_FIRST, BACKOFF_MAX = 60, 1800
 # The longest Retry-After honored: past it the value is nonsense, not a request.
@@ -229,7 +230,9 @@ def cached(env, who: str | None, now: float) -> tuple:
     elif cache.get("account") != who:
         data = None  # someone else's usage: a different login
     elif fetched_at > now + CLOCK_SLACK:
-        age = None  # fetched "later" than now: the clock was set back, so age is unknown
+        # Fetched "later" than now: the clock was set back, so its age is unknown. Not
+        # drawn: while fetches fail it would pass for fresh (stdin's windows still draw).
+        data = None
     else:
         age = max(0.0, now - fetched_at)
         if age > MAX_AGE:
@@ -485,8 +488,10 @@ def get(
     """GET the endpoint: (status, parsed JSON or None, Retry-After seconds or None).
 
     Status 0 means the request never got a whole HTTP answer (DNS, refused, timeout, a
-    connection cut mid-answer); LATE means it missed `deadline`. Redirects are refused,
-    so the token only ever goes to `url`'s host: a 3xx comes back as its status.
+    connection cut mid-answer); LATE means it missed `deadline`; TLS that the secure
+    connection failed (a certificate a proxy replaced, a wrong SSL_CERT_FILE). Redirects
+    are refused, so the token only ever goes to `url`'s host: a 3xx comes back as its
+    status.
 
     `timeout` bounds each step and `deadline` the whole request: a server sending a byte
     every few seconds, or a slow DNS lookup, would outlast the steps. The request runs in
@@ -543,7 +548,12 @@ def _request(url: str, token: str, timeout: float, now: float) -> tuple:
     except urllib.error.HTTPError as e:
         with contextlib.closing(e):  # it holds the connection open
             status, body, headers = e.code, b"", e.headers
-    except (OSError, ValueError, http.client.HTTPException):
+    except (OSError, ValueError, http.client.HTTPException) as e:
+        import ssl
+
+        # urllib wraps a certificate error in a URLError whose reason is the ssl error.
+        if isinstance(e, ssl.SSLError) or isinstance(getattr(e, "reason", None), ssl.SSLError):
+            return TLS, None, None
         return 0, None, None
     retry = retry_after(headers.get("Retry-After"), now) if headers is not None else None
     try:
@@ -617,6 +627,7 @@ def _tidy(env, now: float) -> None:
 # Reasons doctor tells apart (doctor.user_fix).
 REJECTED = "token rejected (401)"
 FORBIDDEN = "not allowed (403): the login may lack the profile scope"
+TLS_FAILED = "secure connection failed (certificate)"
 
 
 def refresh(
@@ -662,6 +673,8 @@ def refresh(
         reason = f"redirect refused (HTTP {status})"
     elif status == LATE:
         reason = f"no answer within {DEADLINE} s"
+    elif status == TLS:
+        reason = TLS_FAILED
     elif status:
         reason = f"HTTP {status}"
     else:
@@ -759,8 +772,9 @@ def plan_bars(session, account, data: dict | None, now: float) -> list:
         elif kind == "weekly_scoped":
             # A model's weekly limit: shown while you use that model (even at 0%), and
             # whenever it has use this week, since subagents and other sessions spend it.
-            name = _label(_dig(row, "scope", "model", "display_name"))
-            if name and (percent > 0 or _model_matches(name, session)):
+            full = _str(_dig(row, "scope", "model", "display_name")) or ""
+            name = _label(full)  # matched by its whole name: a cut one can't match
+            if name and (percent > 0 or _model_matches(clean(full), session)):
                 add(name, percent, resets_at)
         else:
             add(_label(kind.replace("_", " ")), percent, resets_at)
@@ -791,4 +805,11 @@ def plan_bars(session, account, data: dict | None, now: float) -> list:
         gateway = session.spend_limit
         period = PERIODS.get((gateway.period or "").lower(), "month")
         caps.append(Bar(period, *_live(gateway, now)))
-    return windows + caps + credits
+    # One bar per label across them all: a limit the server named "5h" or "credits"
+    # gives way to the real one.
+    kept, shown = set(), set()
+    for bar in caps + credits + windows:
+        if bar.label not in shown:
+            shown.add(bar.label)
+            kept.add(id(bar))
+    return [bar for bar in windows + caps + credits if id(bar) in kept]

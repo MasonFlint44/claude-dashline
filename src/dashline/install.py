@@ -147,6 +147,17 @@ def windows_form(entry, env) -> str | None:
     return None
 
 
+def as_installed(entry, env, windows: bool) -> bool:
+    """Whether an entry's command is the one install writes (any --glyphs): an edited
+    one is kept as written, so installing again doesn't change it."""
+    cmd = entry.get("command") if isinstance(entry, dict) else None
+    if not isinstance(cmd, str):
+        return False
+    if windows:
+        return windows_form(entry, env) is not None
+    return GLYPHS_QUOTED.sub("", cmd).strip() == COMMAND
+
+
 def windows_rewrite(current, ours: bool, replace: bool, env) -> str | None:
     """Why dashline's own entry gets the Windows command in place of its own: "old" for
     the Bash-only one it wrote before (old_form); with --replace, "variables" for one
@@ -163,13 +174,9 @@ def windows_rewrite(current, ours: bool, replace: bool, env) -> str | None:
     return "variables" if uses_variables(current) else "edited"
 
 
-def windows_entry(entry: dict, glyphs: str, keep: bool, env, python) -> dict:
-    """plan_entry's entry as Windows needs it. keep: an entry of dashline's that stays
-    as written. Any other gets the Windows command (windows_command), with the Python
-    `python()` finds.
-    """
-    if keep:
-        return entry
+def windows_entry(entry: dict, glyphs: str, env, python) -> dict:
+    """plan_entry's entry with the Windows command (windows_command), with the Python
+    `python()` finds."""
     name = python()
     if name is None:
         raise InstallError(
@@ -559,6 +566,8 @@ def _rmtree(path: str) -> None:
 
 def _alive(pid: int) -> bool | None:
     """Whether a process runs; None where that can't be asked (Windows)."""
+    if pid < 1:
+        return False  # no process has it: os.kill(0, 0) would ask about our own group
     if os.name == "nt":
         return None  # os.kill(pid, 0) sends Ctrl-C there
     try:
@@ -725,6 +734,9 @@ def copy(env) -> tuple:
         if made:
             notes.append(f"files from an interrupted install are in {home_short(made, env)}")
     had = os.path.lexists(real)
+    # An empty folder (or a dotfiles link to one) is a first install, not an update: the
+    # install skill asks about glyphs only after a first one.
+    updating = folder_state(real) == "ours"
     moved, stuck = [], []
     swapped = False
     try:
@@ -769,7 +781,7 @@ def copy(env) -> tuple:
             notes.append(f"couldn't move {name} into the new copy ({why}); it's in {kept}")
     else:
         _rmtree(old)
-    return target, "updated" if had else "installed", notes
+    return target, "updated" if updating else "installed", notes
 
 
 # ---- settings.json ----
@@ -1023,7 +1035,11 @@ def run(
                     f"{where} holds files that aren't dashline's, so it was left alone. "
                     f"--replace moves them to {where}.backup first.\n"
                 )
-            if entry is None:
+            # An entry that runs that folder's statusline.py isn't "something else":
+            # the folder is (it may be dashline's own command, over another tool's files).
+            if theirs_folder and runs_install_dir(current, env):
+                out.write(f"{settings}'s statusLine runs the statusline.py in that folder.\n")
+            elif entry is None:
                 shown = json.dumps(current, indent=2, ensure_ascii=False).replace("\n", "\n  ")
                 out.write(f"{settings} has a statusLine that runs something else:\n  {shown}\n")
             out.write("Nothing was changed. Run again with --replace to use dashline instead.\n")
@@ -1052,9 +1068,7 @@ def run(
         if on_windows and not (ours and not rewrite):
             check_writable(path, env)
             others = tuple(name for name in WINDOWS_PYTHONS if name != dead)  # asked already
-            entry = windows_entry(
-                entry, safe_glyphs(used), False, env, lambda: python(names=others)
-            )
+            entry = windows_entry(entry, safe_glyphs(used), env, lambda: python(names=others))
         text = None
         if entry != current:
             check_writable(path, env)

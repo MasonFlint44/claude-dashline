@@ -85,6 +85,7 @@ def test_not_a_repo(tmp_path, isolated_home):
     assert row(notes) == "~/Documents/notes"
     assert row(notes, glyph_set="nerd") == "\U000f0770 ~/Documents/notes"
     assert row(tmp_path, columns=1000) == tmp_path.as_posix()  # `/` on Windows too
+    assert row(f"{notes}{os.sep}") == "~/Documents/notes"  # no trailing slash
 
 
 def test_clean_main(project):

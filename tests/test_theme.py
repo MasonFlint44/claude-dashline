@@ -1,4 +1,5 @@
 import json
+import os
 
 import pytest
 
@@ -171,16 +172,18 @@ def test_custom_theme_with_an_odd_base_falls_back_to_dark(home, base):
 def test_config_dir_follows_the_env_home(tmp_path):
     env = {"HOME": str(tmp_path / "elsewhere")}
     assert theme.config_dir(env) == str(tmp_path / "elsewhere" / ".claude")
-    assert theme.config_dir({**env, "CLAUDE_CONFIG_DIR": "/cfg"}) == "/cfg"
+    rooted = os.path.abspath("/cfg")  # noqa: PTH100 (Windows gives it the current drive)
+    assert theme.config_dir({**env, "CLAUDE_CONFIG_DIR": "/cfg"}) == rooted
 
 
 def test_absolute_by_windows_rules(monkeypatch):
-    """As Node's path.isAbsolute on Windows: `/cfg` (the current drive's root) counts,
-    on every Python (3.13 stopped counting it); a drive-relative `C:cfg` doesn't."""
+    """On Windows a path needs its drive or server: `/cfg` is made absolute (`D:\\cfg`,
+    as Node's path.resolve), on every Python (3.13 changed ntpath.isabs for it), so
+    Git Bash can't read it under its own root. A drive-relative `C:cfg` isn't absolute."""
     monkeypatch.setattr(host, "WINDOWS", True)
-    for path in ("/cfg", "\\cfg", "C:\\cfg", "c:/cfg", "\\\\srv\\share"):
+    for path in ("C:\\cfg", "c:/cfg", "\\\\srv\\share", "//srv/share/x"):
         assert theme.is_absolute(path), path
-    for path in ("cfg", ".cc", "C:cfg", ""):
+    for path in ("/cfg", "\\cfg", "cfg", ".cc", "C:cfg", ""):
         assert not theme.is_absolute(path), path
 
 

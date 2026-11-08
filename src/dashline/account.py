@@ -16,7 +16,7 @@ import os
 import sys
 
 from dashline.stdin import _num, iso_time
-from dashline.text import clean
+from dashline.text import clean, cut
 from dashline.theme import _read_json, config_dir, home_dir
 
 # Third-party providers: no plan, no usage endpoint.
@@ -39,6 +39,7 @@ ORG_TYPES = {
 SUBSCRIPTIONS = {"pro": "Pro", "max": "Max", "team": "Team", "enterprise": "Enterprise"}
 TEAM_TYPES = ("claude_team", "claude_enterprise")
 EXPIRY_MARGIN = 60  # seconds: a token this close to expiry counts as expired
+MAX_PLAN = 20  # columns of the plan name, as for bar labels (usage.MAX_LABEL)
 
 
 def _truthy(value) -> bool:
@@ -130,7 +131,8 @@ def load(env, session=None, claude_json: dict | None = None) -> Account:
 
 
 def fingerprint(oauth: dict, env) -> str | None:
-    """Which login the cached usage belongs to: a hash of the account and org ids.
+    """Which login the cached usage belongs to: a hash of the account and org ids, or
+    of the email when they're missing.
 
     A `CLAUDE_CODE_OAUTH_TOKEN` wins over the stored login (the fetch uses it), and it
     may be another account's, so its own hash tags the cache instead. 64 bits of a
@@ -145,6 +147,11 @@ def fingerprint(oauth: dict, env) -> str | None:
     ids = (oauth.get("accountUuid"), oauth.get("organizationUuid"))
     if all(isinstance(x, str) and x for x in ids):
         return hashlib.sha256(":".join(ids).encode("utf-8", "replace")).hexdigest()[:16]
+    # Without the ids, the email still tells two logins apart (or they'd share a cache).
+    email = oauth.get("emailAddress")
+    if isinstance(email, str) and email.strip():
+        tagged = b"dashline-email:" + email.strip().lower().encode("utf-8", "replace")
+        return hashlib.sha256(tagged).hexdigest()[:16]
     return None
 
 
@@ -158,7 +165,9 @@ def plan_label(oauth: dict, env) -> str | None:
     """plan_display_name → organization type → the credentials' subscription type."""
     name = oauth.get("planDisplayName")
     if isinstance(name, str) and name.strip():
-        return clean(name.strip())
+        # Cut as the bar labels are (usage.MAX_LABEL): a long one would push every
+        # plan bar off line 2.
+        return cut(clean(name.strip()), MAX_PLAN).strip() or None
     org = ORG_TYPES.get(_key(oauth.get("organizationType")))
     if org:
         return _tier_label(org, oauth.get("organizationRateLimitTier"))

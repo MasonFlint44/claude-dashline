@@ -106,8 +106,9 @@
   sensible size.
 - A relative `CLAUDE_CONFIG_DIR` (like `.cc`) works: the background fetch used to look
   for it from another folder, so there were never any plan bars.
-  On Windows a value from the drive's root (`/cfg`) is kept as written on every Python,
-  as Claude Code reads it (Python 3.13 stopped counting it as absolute).
+  On Windows a value from the drive's root (`/cfg`) gets its drive (`C:\cfg`), as Claude
+  Code resolves it, on every Python: written as it was, Git Bash would read it under its
+  own folder.
 - A limit name from the server is cut to 20 columns, a blank one draws no bar, and a
   repeated one is drawn once, so 5h and 7d always keep their place. Very long names no
   longer slow a render.
@@ -144,6 +145,26 @@
   folder that can't be written. It fixes without asking when doctor spells out the
   user settings path on Windows, and relays any warning it doesn't list as doctor
   gives it. `--help` lists all of doctor's checks.
+- A first install into an empty `scripts/statusline/` folder (or a dotfiles link to one)
+  says `installed`, not `updated`, so `/dashline:install` asks which glyphs to use.
+- Doctor says a settings.json it can't read (a stray comma, a comment, not UTF-8) is
+  that, instead of "no statusLine, run /dashline:install", which would refuse it. A
+  command you edited that fails gets a fix that works (install keeps an edited command
+  as written; on Windows `--replace` writes dashline's).
+- A model's weekly bar is drawn at 0% while you use that model also when its name is
+  longer than 20 columns; a long plan name is cut to 20 columns too, so it can't push
+  the plan bars off line 2; a limit the server names `5h` or `credits` never doubles
+  the real one.
+- After the clock was set back (a restored VM), cached numbers dated "in the future"
+  are no longer drawn as current while fetches fail.
+- Two logins whose `.claude.json` lacks the account ids no longer share one cache: the
+  email tells them apart.
+- A certificate failure (a company proxy that presents its own) is reported as that,
+  with what to check, instead of as a network failure.
+- `/dashline:install` no longer shows dashline's own command as "something else" when
+  only the folder holds another tool's files, and clears a leftover folder named for
+  process 0.
+- A project folder outside git shows without a trailing slash.
 
 **CI**
 - The tests run on Windows too, and the Python 3.9 smoke test runs on Windows in Git
@@ -158,7 +179,8 @@
   through `bash -c`, as Claude Code does. Tests that let a retry or a timeout go
   unchecked now check them, and more edges are pinned (the plan name's line, doctor's
   exit code with warnings, overlapping git `insteadOf` rules, git 2.15.0, `NO_COLOR` on
-  a terminal). The Apple-Python job fails when that
+  a terminal), and the numbers the docs give (timeouts, limits, sizes) are written out
+  in one test. The Apple-Python job fails when that
   Python is missing instead of passing, and pytest names every skipped test.
 
 ## 0.1.10 — 2026-11-06

@@ -834,7 +834,9 @@ def _project(state: RepoState, ctx, home: str | None, worktree: bool, sub: str) 
     """sub: "full" shows the whole subpath, "last" only its last folder, "" none."""
     link = state.folder_url
     if not state.root:
-        text = ctx.g["folder"] + clean(collapse_home(state.project_dir, home))
+        # Normalized as a repo's path is: `/tmp/` shows as `/tmp`.
+        folder = os.path.normpath(state.project_dir) if state.project_dir else ""
+        text = ctx.g["folder"] + clean(collapse_home(folder, home))
         return [_link(ctx.seg(text, "text"), link)]
     out = [_link(ctx.seg(ctx.g["project"] + clean(state.repo_name), "text"), link)]
     path = _subpath(state) if sub else ""

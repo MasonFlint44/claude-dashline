@@ -73,6 +73,24 @@ def test_fresh_install(conf, env):
     }
 
 
+@pytest.mark.parametrize("seed", ["empty", "junk", pytest.param("link", marks=posix_only)])
+def test_first_install_into_an_empty_folder_says_installed(conf, env, tmp_path, seed):
+    """The install skill asks about glyphs only after `installed`: an empty folder (or one
+    with desktop junk, or a dotfiles link to an empty one) is a first install too."""
+    target = conf / "scripts" / "statusline"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if seed == "link":
+        (tmp_path / "dotfiles").mkdir()
+        target.symlink_to(tmp_path / "dotfiles")
+    else:
+        target.mkdir()
+        if seed == "junk":
+            (target / ".DS_Store").write_bytes(b"")
+    code, out = run(env)
+    assert code == 0
+    assert f"installed dashline {__version__}" in out
+
+
 def test_second_run_changes_nothing(conf, env):
     run(env, "nerd")
     before = (conf / "settings.json").stat().st_mtime_ns
@@ -297,6 +315,17 @@ def test_project_statusline_wins_note(conf, env, tmp_path):
     assert "sets its own statusLine" in out
 
 
+def test_project_entry_that_only_names_dashline_still_gets_the_note(conf, env, tmp_path):
+    """A project's entry is dashline's only if its whole command runs statusline.py."""
+    project = tmp_path / "proj"
+    (project / ".claude").mkdir(parents=True)
+    entry = {"type": "command", "command": ENTRY_CMD + " || echo x"}
+    (project / ".claude" / "settings.json").write_text(json.dumps({"statusLine": entry}))
+    code, out = run(env, cwd=str(project))
+    assert code == 0
+    assert "sets its own statusLine" in out
+
+
 # ---- helpers ----
 
 
@@ -363,6 +392,19 @@ def test_someone_elses_folder_is_left_alone(conf, env):
     assert "Nothing was changed" in out
     assert (other / "statusline.py").read_text() == "print('mine')\n"
     assert settings(conf)["statusLine"] == their_entry
+
+
+def test_someone_elses_folder_under_dashlines_own_entry(conf, env):
+    """Only the folder is someone else's: the entry isn't shown as "something else"."""
+    other = conf / "scripts" / "statusline"
+    other.mkdir(parents=True)
+    (other / "other.sh").write_text("echo mine\n")
+    write_settings(conf, {"statusLine": {"type": "command", "command": ENTRY_CMD}})
+    code, out = run(env)
+    assert code == install.NEEDS_REPLACE
+    assert "holds files that aren't dashline's" in out
+    assert "runs something else" not in out
+    assert "runs the statusline.py in that folder" in out
 
 
 def test_replace_moves_someone_elses_folder_aside(conf, env):
@@ -723,6 +765,8 @@ def test_leftovers_where_pids_cant_be_checked(conf, monkeypatch):
     (scripts / "statusline.old-11").mkdir(parents=True)
     (scripts / "statusline.old-12").mkdir()
     os.utime(scripts / "statusline.old-11", (NOW_REAL - 7200, NOW_REAL - 7200))
+    # Recent but already in the past: made just now, it would be "from the future".
+    os.utime(scripts / "statusline.old-12", (NOW_REAL - 10, NOW_REAL - 10))
     assert install.clean_leftovers(str(scripts), NOW_REAL) == (["statusline.old-11"], [])
     assert (scripts / "statusline.old-12").exists()
 
@@ -1817,3 +1861,20 @@ def test_a_dead_python_is_asked_once(conf, env):
 
     assert win(env, python=find)[0] == 0
     assert asked == [("py -3",), ("python", "python3")]
+
+
+def test_as_installed(env):
+    """The command install writes, with any --glyphs; an edited one isn't."""
+    entry = {"command": install.command("nerd")}
+    assert install.as_installed(entry, env, windows=False)
+    assert not install.as_installed({"command": install.COMMAND + " --bogus"}, env, False)
+    assert not install.as_installed({"command": None}, env, False)
+    windows = install.windows_command(env, "py -3")
+    assert install.as_installed({"command": windows + " --glyphs ascii"}, env, windows=True)
+    assert not install.as_installed({"command": "C:/Python/python.exe" + windows[5:]}, env, True)
+
+
+def test_pid_zero_is_never_alive():
+    """os.kill(0, 0) asks about the caller's own process group: a `statusline.old-0`
+    would look alive forever."""
+    assert install._alive(0) is False
