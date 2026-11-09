@@ -1,6 +1,6 @@
 [project]
 name = "dashline"
-version = "0.2.0"
+version = "0.2.1"
 description = "One Claude Code statusline for every plan: session, plan-limit bars and a git row."
 readme = "README.md"
 license = "MIT"

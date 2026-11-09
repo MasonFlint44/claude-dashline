@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.1 — 2026-11-08
+
+- dashline's folders are named after it: the copy is in `~/.claude/scripts/dashline/`
+  and the cache in `~/.claude/cache/dashline/` (were `scripts/statusline/` and
+  `cache/statusline/`, a name other tools use too). Nothing moves on its own: run
+  `/dashline:install` once and let it replace the old entry (it no longer counts as
+  dashline's), then delete `~/.claude/scripts/statusline/` and dashline's files in
+  `~/.claude/cache/statusline/`. Folders an install sets aside are now
+  `dashline.backup` and `dashline.kept`.
+- The cleanup of 0.1.6's shared `usage.json` and `fetch.hold` is gone: they can't
+  appear in the new cache folder.
+
 ## 0.2.0 — 2026-11-08
 
 **Windows**
