@@ -75,7 +75,7 @@ function Check-Install([string]$Expected, [string]$Note = "", [string]$Shell = $
     if ($Note -and -not ($out | Select-String -SimpleMatch $Note)) { throw "no note: $Note" }
     $settings = Get-Content $settingsFile -Raw -Encoding UTF8 | ConvertFrom-Json
     $command = $settings.statusLine.command
-    if ($command -notmatch "^$Expected -I -S `"[A-Za-z]:/[^`"]*/dashline\.py`"$") {
+    if ($command -notmatch "^$Expected -I -S `"[A-Za-z]:/[^`"]*/scripts/dashline/statusline\.py`"$") {
         throw "not the Windows command with $Expected"
     }
 
