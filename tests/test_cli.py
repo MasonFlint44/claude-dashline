@@ -169,7 +169,7 @@ def test_stray_modules_in_the_install_folder_are_never_imported(tmp_path, stdin_
     import os
     import shutil
 
-    folder = tmp_path / "statusline"
+    folder = tmp_path / "dashline"
     shutil.copytree(ROOT / "src" / "dashline", folder / "dashline")
     shutil.copy(ROOT / "statusline.py", folder / "statusline.py")
     for name in ("json", "__future__", "subprocess", "functools", "unicodedata"):

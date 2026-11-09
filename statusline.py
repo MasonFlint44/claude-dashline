@@ -1,6 +1,6 @@
 """dashline entry point: Claude Code runs this file as the statusline command.
 
-Installed as ${CLAUDE_CONFIG_DIR:-~/.claude}/scripts/statusline/statusline.py next to
+Installed as ${CLAUDE_CONFIG_DIR:-~/.claude}/scripts/dashline/statusline.py next to
 the copied `dashline/` package. Claude Code runs it with `python3 -I -S`, which leaves the
 script's own folder off sys.path, so we add it here. In the repo the package is under src/.
 

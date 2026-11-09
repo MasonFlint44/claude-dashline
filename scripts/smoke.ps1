@@ -75,7 +75,7 @@ function Check-Install([string]$Expected, [string]$Note = "", [string]$Shell = $
     if ($Note -and -not ($out | Select-String -SimpleMatch $Note)) { throw "no note: $Note" }
     $settings = Get-Content $settingsFile -Raw -Encoding UTF8 | ConvertFrom-Json
     $command = $settings.statusLine.command
-    if ($command -notmatch "^$Expected -I -S `"[A-Za-z]:/[^`"]*/statusline\.py`"$") {
+    if ($command -notmatch "^$Expected -I -S `"[A-Za-z]:/[^`"]*/dashline\.py`"$") {
         throw "not the Windows command with $Expected"
     }
 
@@ -130,7 +130,7 @@ try {
     Check-Install "python" "doesn't run here any more"
 
     # The command older versions wrote, Bash only: install rewrites it too.
-    $old = 'python3 -I -S "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/statusline/statusline.py"'
+    $old = 'python3 -I -S "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/dashline/statusline.py"'
     $json = @{ statusLine = @{ type = "command"; command = $old } } | ConvertTo-Json
     [IO.File]::WriteAllText($settingsFile, $json)
     Check-Install "python" "was Bash only"

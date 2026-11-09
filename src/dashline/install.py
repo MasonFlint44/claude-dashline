@@ -13,7 +13,7 @@ ran on Windows (Bash only) is rewritten that way too, and so is the Windows comm
 when the Python it names no longer runs. One the user edited is kept unless --replace.
 
 A statusLine that runs something else is never replaced without --replace: the skill
-shows it to the user and asks first. Neither is a scripts/statusline/ folder that holds
+shows it to the user and asks first. Neither is a scripts/dashline/ folder that holds
 another tool's files. Everything is checked before anything is written, so an install
 that stops to ask has changed nothing.
 """
@@ -31,10 +31,10 @@ from dashline.glyphs import SETS
 from dashline.host import retry_held
 from dashline.theme import config_dir, home_dir
 
-COMMAND = 'python3 -I -S "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/statusline/statusline.py"'
+COMMAND = 'python3 -I -S "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/dashline/statusline.py"'
 # In a command: it runs the copy in the config dir. Other tools can use the same path, so
 # an entry is only dashline's if that folder holds dashline too (folder_state).
-MARK = "/scripts/statusline/statusline.py"
+MARK = "/scripts/dashline/statusline.py"
 CONFIG_PREFIXES = ("}", "/.claude")  # ${CLAUDE_CONFIG_DIR:-…}, ~/.claude, $HOME/.claude
 REFRESH = 60
 GLYPH_SETS = tuple(SETS)  # nerd, unicode, ascii
@@ -45,7 +45,7 @@ GLYPHS_QUOTED = re.compile(GLYPHS.pattern + r"['\"]?")  # and its closing quote,
 # What may run statusline.py directly: python3, python3.12, py (Windows), with options.
 PYTHON = re.compile(r"(?i)^(?:python[0-9.]*|py)(?:\.exe)?$")
 ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
-# An install folder's name for leftovers: statusline.new-PID, statusline.old-PID.
+# An install folder's name for leftovers: dashline.new-PID, dashline.old-PID.
 LEFTOVER = r"^{}\.(?:new|old)-(\d{{1,10}})$"  # a pid: more digits is someone else's name
 LEFTOVER_AGE = 3600  # where a process can't be asked whether it's alive (Windows)
 # What an install consists of, at the top of its folder. Anything else there is the
@@ -64,7 +64,7 @@ class InstallError(Exception):
 
 
 def install_dir(env) -> str:
-    return os.path.join(config_dir(env), "scripts", "statusline")
+    return os.path.join(config_dir(env), "scripts", "dashline")
 
 
 def user_settings(env) -> str:
@@ -238,7 +238,7 @@ def runs_install_dir(entry, env=None) -> bool:
 def is_ours(entry, env=None, direct: bool = False) -> bool:
     """A statusLine entry that runs the installed copy of dashline.
 
-    The command must run the config dir's scripts/statusline/statusline.py, and that
+    The command must run the config dir's scripts/dashline/statusline.py, and that
     folder must hold dashline or nothing yet: another statusline may live at that path.
     direct: and the command is only Python running it (dashline_args, and nothing
     else: no `;`, `&&` or `||`), for an entry from a project's or managed settings,
@@ -580,19 +580,19 @@ def _alive(pid: int) -> bool | None:
 
 
 def _clear(path: str) -> str | None:
-    """Remove a folder an interrupted install left behind (statusline.new-PID or
+    """Remove a folder an interrupted install left behind (dashline.new-PID or
     .old-PID). One holding the user's files (an install stopped while moving them) is
-    renamed statusline.kept instead, without dashline's own files: returns its path."""
+    renamed dashline.kept instead, without dashline's own files: returns its path."""
     if not os.path.islink(path) and _extras(path):
         return _keep(path)
     _rmtree(path)
     return None
 
 
-def clean_leftovers(parent: str, now: float, base: str = "statusline") -> tuple:
+def clean_leftovers(parent: str, now: float, base: str = "dashline") -> tuple:
     """Clear `base`.new-PID / .old-PID folders of installs that are over (_clear), where
     `base` is the install folder's own name (a link's target can have another).
-    Returns (names cleared, statusline.kept paths made)."""
+    Returns (names cleared, dashline.kept paths made)."""
     removed, kept = [], []
     try:
         names = os.listdir(parent)
@@ -621,7 +621,7 @@ def clean_leftovers(parent: str, now: float, base: str = "statusline") -> tuple:
 
 
 def set_aside(target: str, env=None) -> str:
-    """Move another tool's folder out of the way: statusline.backup, .backup-2, …"""
+    """Move another tool's folder out of the way: dashline.backup, .backup-2, …"""
     n, aside = 1, f"{target}.backup"
     while os.path.lexists(aside):
         n += 1
@@ -666,14 +666,14 @@ def _move_back(moved: list, src: str, dst: str) -> list:
 
 def _keep(old: str) -> str:
     """What's left of the old folder once only the user's files are in it: renamed to
-    statusline.kept (never removed, since those files are theirs). Returns its path."""
+    dashline.kept (never removed, since those files are theirs). Returns its path."""
     for name in OWN_NAMES:
         path = os.path.join(old, name)
         if os.path.isdir(path) and not os.path.islink(path):
             _rmtree(path)
         elif os.path.lexists(path):
             retry_held(os.unlink, path)
-    kept = _unique(os.path.join(os.path.dirname(old), "statusline.kept"))
+    kept = _unique(os.path.join(os.path.dirname(old), "dashline.kept"))
     retry_held(os.rename, old, kept)
     return kept
 
@@ -694,7 +694,7 @@ def copy(env) -> tuple:
 
     Files the user added at the top of the folder (notes, a wrapper script, a venv) are
     moved into the new folder, so an update doesn't lose them or copy them. One that
-    can't be moved stays behind in statusline.kept, and a note says so. When the folder
+    can't be moved stays behind in dashline.kept, and a note says so. When the folder
     is a link (dotfiles), the copy goes where it points and the link stays.
     """
     import shutil
@@ -766,7 +766,7 @@ def copy(env) -> tuple:
         if not swapped:
             home = real if os.path.isdir(real) else old
             if _move_back(moved, new, home):  # never delete the user's files
-                os.rename(new, _unique(os.path.join(parent, "statusline.kept")))
+                os.rename(new, _unique(os.path.join(parent, "dashline.kept")))
             else:
                 _rmtree(new)
         if isinstance(e, OSError):
@@ -776,7 +776,7 @@ def copy(env) -> tuple:
         try:
             kept = home_short(_keep(old), env)
         except OSError:
-            kept = home_short(old, env)  # the next install moves it to statusline.kept
+            kept = home_short(old, env)  # the next install moves it to dashline.kept
         for name, why in stuck:
             notes.append(f"couldn't move {name} into the new copy ({why}); it's in {kept}")
     else:

@@ -707,7 +707,7 @@ class Doctor:
         # Windows has no such mode bits (files inherit the profile folder's access).
         exposed = []
         try:
-            names = [] if host.WINDOWS else usage.own_files(os.listdir(path), path)
+            names = [] if host.WINDOWS else usage.own_files(os.listdir(path))
         except OSError:
             names = []
         for name in names:

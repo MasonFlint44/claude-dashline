@@ -35,7 +35,7 @@ def setup_home(home, oauth, usage_name=None, fetched_at=NOW - 30):
         from dashline import account, usage
 
         who = account.identity({"HOME": str(home)})
-        path = home / ".claude" / "cache" / "statusline"
+        path = home / ".claude" / "cache" / "dashline"
         path.mkdir(parents=True)
         body = {
             "fetched_at": fetched_at,
@@ -87,7 +87,7 @@ def test_held_fetch_does_not_spawn(isolated_home, spawned):
     from dashline import account, usage
 
     setup_home(isolated_home, ULTRA_ACCOUNT)
-    path = isolated_home / ".claude" / "cache" / "statusline"
+    path = isolated_home / ".claude" / "cache" / "dashline"
     path.mkdir(parents=True)
     who = account.identity({"HOME": str(isolated_home)})
     (path / usage.hold_name(who)).write_text(json.dumps({"until": NOW + 60, "account": who}))

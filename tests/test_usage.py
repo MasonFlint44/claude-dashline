@@ -350,7 +350,7 @@ def test_gateway_period_label(period, label):
 
 
 def cache_folder(home):
-    path = home / ".claude" / "cache" / "statusline"
+    path = home / ".claude" / "cache" / "dashline"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -406,13 +406,6 @@ def test_load_ignores_another_login_in_its_file(isolated_home):
     assert (state.data, state.fetch) == (None, True)
 
 
-def test_load_ignores_the_shared_file_of_older_versions(isolated_home):
-    body = {"fetched_at": NOW - 10, "account": "abc", "data": usage_fixture("ultra")}
-    (cache_folder(isolated_home) / "usage.json").write_text(json.dumps(body))
-    state = usage.load(env_for(isolated_home), ULTRA, NOW)
-    assert (state.data, state.fetch) == (None, True)
-
-
 @pytest.mark.parametrize(
     ("who", "tag"),
     [
@@ -442,17 +435,17 @@ def test_own_files():
         "usage-unknown.json",
         "fetch.lock",
         "fetch.lock.break",
-        "usage.json",
-        "fetch.hold",
         f"usage-{tag}.json.123.tmp",
         f"fetch-{tag}.hold.9.tmp",
+        "usage.json",  # not a tag dashline writes
+        "fetch.hold",
         "plan-usage",
         "other.json",
         "usage-notes.txt",
         "usage-notes.json",  # another tool's, in a shared folder: not a tag dashline writes
         f"usage-{tag.upper()}.json",
     ]
-    assert usage.own_files(names) == sorted(names[:9])
+    assert usage.own_files(names) == sorted(names[:7])
 
 
 def test_load_drops_day_old_data(isolated_home):
@@ -525,7 +518,7 @@ def test_odd_hold_is_no_hold(isolated_home, until):
 
 def test_config_dir_cache_path(tmp_path):
     env = {"CLAUDE_CONFIG_DIR": str(tmp_path / "conf")}
-    assert usage.cache_dir(env) == str(tmp_path / "conf" / "cache" / "statusline")
+    assert usage.cache_dir(env) == str(tmp_path / "conf" / "cache" / "dashline")
 
 
 # ---- the lock ----
@@ -542,7 +535,7 @@ def test_lock_without_content_uses_mtime(isolated_home):
     import time
 
     env = env_for(isolated_home)
-    path = isolated_home / ".claude" / "cache" / "statusline"
+    path = isolated_home / ".claude" / "cache" / "dashline"
     path.mkdir(parents=True)
     (path / "fetch.lock").write_text("")
     now = time.time()
@@ -989,47 +982,6 @@ def test_two_logins_keep_their_own_cache_and_hold(server, logged_in):
     assert usage.load(other, acct, NOW + 500).fetch is False
 
 
-LEGACY_CACHE = {"fetched_at": NOW - 600, "account": "abc", "data": {"limits": []}}
-LEGACY_HOLD = {"until": NOW + 60, "reason": "HTTP 500", "failures": 1, "account": "abc"}
-
-
-def test_success_removes_the_shared_files_of_older_versions(server, logged_in):
-    folder = Path(usage.cache_dir(logged_in))
-    folder.mkdir(parents=True)
-    (folder / "usage.json").write_text(json.dumps(LEGACY_CACHE))
-    (folder / "fetch.hold").write_text(json.dumps(LEGACY_HOLD))
-    (folder / "plan-usage").write_text("{}")  # another tool's
-    server.reply(200, "{}")
-    usage.refresh(logged_in, NOW, server.url, "linux")
-    names = sorted(p.name for p in folder.iterdir())
-    assert names == ["plan-usage", usage.cache_name(account.identity(logged_in))]
-
-
-@pytest.mark.parametrize(
-    "body",
-    ['{"another_tool": true}', '{"until": 1, "reason": "x"}', "not json", "[]"],
-)
-def test_another_tools_usage_json_and_fetch_hold_are_left_alone(server, logged_in, body):
-    """The folder may be shared: only files holding what dashline 0.1.6 wrote go."""
-    folder = Path(usage.cache_dir(logged_in))
-    folder.mkdir(parents=True)
-    for name in ("usage.json", "fetch.hold"):
-        (folder / name).write_text(body)
-    server.reply(200, "{}")
-    usage.refresh(logged_in, NOW, server.url, "linux")
-    assert (folder / "usage.json").read_text() == body
-    assert (folder / "fetch.hold").read_text() == body
-    assert usage.own_files(["usage.json", "fetch.hold"], str(folder)) == []
-
-
-def test_own_files_reads_legacy_files_when_given_the_folder(tmp_path):
-    (tmp_path / "usage.json").write_text(json.dumps(LEGACY_CACHE))
-    (tmp_path / "fetch.hold").write_text('{"another_tool": true}')
-    names = ["usage.json", "fetch.hold", "usage.json.12.tmp"]
-    assert usage.own_files(names, str(tmp_path)) == ["usage.json", "usage.json.12.tmp"]
-    assert usage.own_files(names) == sorted(names)  # by name alone
-
-
 def test_temp_files_left_by_a_killed_writer_are_removed(server, logged_in):
     import os
 
@@ -1149,7 +1101,7 @@ def test_child_ignores_a_stray_module_in_the_install_folder(tmp_path, isolated_h
     import subprocess
     import sys
 
-    folder = tmp_path / "statusline"
+    folder = tmp_path / "dashline"
     shutil.copytree(Path(usage.__file__).parent, folder / "dashline")
     (folder / "json.py").write_text("raise RuntimeError('the stray json.py was imported')\n")
     env = dict(env_for(isolated_home), PATH=os.environ.get("PATH", ""))

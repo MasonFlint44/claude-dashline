@@ -6,7 +6,7 @@ description: Install or update the dashline statusline — copy it into the Clau
 # Install dashline
 
 dashline is a Python script. This skill copies it to
-`${CLAUDE_CONFIG_DIR:-~/.claude}/scripts/statusline/`, writes the `statusLine` entry in
+`${CLAUDE_CONFIG_DIR:-~/.claude}/scripts/dashline/`, writes the `statusLine` entry in
 user settings, and picks the glyph set. `statusline.py --install` does the copying and
 the settings edit. Don't edit settings.json by hand.
 
@@ -47,16 +47,16 @@ uses `unicode`.
 - **Exit 0:** done. The output says where it copied the files and what settings.json
   now runs. Pass on any `note:` line: a project's own settings override the user
   entry there; files from an interrupted install were kept in
-  `scripts/statusline.kept`; the command was rewritten for Windows (or, after
+  `scripts/dashline.kept`; the command was rewritten for Windows (or, after
   `--replace`, `wrote dashline's own command in place of the edited one`). A note that
   `--glyphs <x> isn't a glyph set` means the command keeps a typo (like `Nerd`) and
   the statusline shows an error until it names a set: ask the glyph question (step 4).
 - **Exit 3:** nothing was changed, because something else is there. The output says
   what: settings.json runs a different statusline (the entry is shown), or
-  `scripts/statusline/` holds another tool's files. Show it to the user and ask
+  `scripts/dashline/` holds another tool's files. Show it to the user and ask
   (AskUserQuestion) whether to replace it. Only if they say yes, run
   `DASHLINE --install --replace`; it moves another tool's files to
-  `scripts/statusline.backup` rather than deleting them. If they say no, stop.
+  `scripts/dashline.backup` rather than deleting them. If they say no, stop.
 - **Exit 4:** nothing was changed, because the installed copy is newer than this
   plugin's (the output gives both versions). This plugin is probably out of date. Ask
   (AskUserQuestion) with updating the plugin as the recommended choice: `/plugin`,
@@ -75,9 +75,9 @@ uses `unicode`.
 - **Exit 2:** a usage error (a mistyped flag or glyph set). Relay the message; nothing
   was changed.
 
-An update keeps files the user added to `scripts/statusline/` (notes, a wrapper script).
+An update keeps files the user added to `scripts/dashline/` (notes, a wrapper script).
 A `note:` line names any it couldn't move, and where they are now (usually
-`scripts/statusline.kept`); pass it on.
+`scripts/dashline.kept`); pass it on.
 
 An entry that is already dashline's keeps its command as written (for example a full
 path to Python); only the `--glyphs` flag changes. One exception, on Windows: the

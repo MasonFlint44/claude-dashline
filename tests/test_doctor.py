@@ -82,7 +82,7 @@ def test_api_user_all_good(installed, tmp_path):
 def test_nothing_installed(env, tmp_path):
     code, out = report(env, tmp_path)
     assert code == 1
-    assert "fail  install   nothing installed in ~/.claude/scripts/statusline" in out
+    assert "fail  install   nothing installed in ~/.claude/scripts/dashline" in out
     assert "fix: run /dashline:install" in out
     assert "2 problems: install, settings" in out
 
@@ -138,7 +138,7 @@ def test_install_matches(installed, tmp_path):
 
 
 def test_install_differs(installed, isolated_home, tmp_path):
-    layout = isolated_home / ".claude" / "scripts" / "statusline" / "dashline" / "layout.py"
+    layout = isolated_home / ".claude" / "scripts" / "dashline" / "dashline" / "layout.py"
     layout.write_text("# edited\n")
     status, text, fix = check(installed, "install", tmp_path)
     assert status == "warn"
@@ -147,7 +147,7 @@ def test_install_differs(installed, isolated_home, tmp_path):
 
 
 def test_install_older_version(installed, isolated_home, tmp_path):
-    target = isolated_home / ".claude" / "scripts" / "statusline"
+    target = isolated_home / ".claude" / "scripts" / "dashline"
     (target / "VERSION").write_text("0.0.0-old\n")
     (target / "dashline" / "layout.py").write_text("# old\n")
     status, text, _ = check(installed, "install", tmp_path)
@@ -157,7 +157,7 @@ def test_install_older_version(installed, isolated_home, tmp_path):
 
 def test_install_newer_than_this_copy(installed, isolated_home, tmp_path):
     """An older plugin's doctor mustn't push its own version over a newer install."""
-    target = isolated_home / ".claude" / "scripts" / "statusline"
+    target = isolated_home / ".claude" / "scripts" / "dashline"
     (target / "VERSION").write_text("99.0.0\n")
     (target / "dashline" / "layout.py").write_text("# newer\n")
     status, text, fix = check(installed, "install", tmp_path)
@@ -175,7 +175,7 @@ def test_version_tuple(text, parsed):
 
 
 def test_doctor_from_the_installed_copy(installed, isolated_home):
-    shim = isolated_home / ".claude" / "scripts" / "statusline" / "statusline.py"
+    shim = isolated_home / ".claude" / "scripts" / "dashline" / "statusline.py"
     r = subprocess.run(
         [sys.executable, "-I", "-S", str(shim), "--doctor"],
         capture_output=True,
@@ -278,7 +278,7 @@ def test_project_dashline_without_refresh(installed, tmp_path):
 
 
 def test_someone_elses_folder(installed, isolated_home, tmp_path):
-    target = isolated_home / ".claude" / "scripts" / "statusline"
+    target = isolated_home / ".claude" / "scripts" / "dashline"
     (target / "dashline" / "__init__.py").unlink()
     status, text, _ = check(installed, "settings", tmp_path)
     assert status == "fail"
@@ -451,7 +451,7 @@ def cache_file(env):
 
 def test_cache_not_needed_for_api(installed, tmp_path):
     status, text, _ = check(installed, "cache", tmp_path)
-    assert (status, text) == ("ok", "~/.claude/cache/statusline: not needed without plan bars")
+    assert (status, text) == ("ok", "~/.claude/cache/dashline: not needed without plan bars")
 
 
 def test_shared_cache_folder_is_fine(sub, server, tmp_path):
@@ -460,7 +460,7 @@ def test_shared_cache_folder_is_fine(sub, server, tmp_path):
     cache_path(sub).mkdir(parents=True)
     cache_path(sub).chmod(0o775)
     status, text, fix = check(sub, "cache", tmp_path, server.url)
-    assert (status, text, fix) == ("ok", "~/.claude/cache/statusline: fetched just now", None)
+    assert (status, text, fix) == ("ok", "~/.claude/cache/dashline: fetched just now", None)
     if os.name != "nt":
         assert cache_file(sub).stat().st_mode & 0o777 == 0o600
 
@@ -487,7 +487,7 @@ def test_cache_file_readable_by_others(sub, tmp_path):
     status, text, fix = check(sub, "cache", tmp_path)  # the fetch fails: the cache stays
     assert status == "warn"
     assert text.endswith(f"other users can read {cached.name}")
-    assert fix == f"chmod 600 ~/.claude/cache/statusline/{cached.name}"
+    assert fix == f"chmod 600 ~/.claude/cache/dashline/{cached.name}"
 
 
 @posix_only
@@ -513,20 +513,20 @@ def test_cache_checks_every_file_of_dashline_and_no_other(sub, tmp_path):
 def test_chmod_fix_is_quoted(sub, isolated_home, tmp_path):
     conf = isolated_home / "My Claude"
     env = dict(sub, CLAUDE_CONFIG_DIR=str(conf))
-    cache = conf / "cache" / "statusline"
+    cache = conf / "cache" / "dashline"
     cache.mkdir(parents=True)
     name = usage.cache_name(account.identity(env))
     (cache / name).write_text(json.dumps({"fetched_at": NOW - 60, "data": {}}))
     (cache / name).chmod(0o644)
     _, _, fix = check(env, "cache", tmp_path)
-    assert fix == f"chmod 600 ~/'My Claude/cache/statusline/{name}'"
+    assert fix == f"chmod 600 ~/'My Claude/cache/dashline/{name}'"
 
 
 @posix_only
 def test_chmod_fix_outside_home(sub, tmp_path):
     conf = tmp_path / "other place"
     env = dict(sub, CLAUDE_CONFIG_DIR=str(conf))
-    cache = conf / "cache" / "statusline"
+    cache = conf / "cache" / "dashline"
     cache.mkdir(parents=True)
     (cache / "usage-0123456789abcdef.json").write_text("{}")
     (cache / "usage-0123456789abcdef.json").chmod(0o640)
@@ -542,7 +542,7 @@ def test_cache_not_writable(sub, tmp_path):
         if os.access(cache_path(sub), os.W_OK):
             pytest.skip("running as root")
         status, text, _ = check(sub, "cache", tmp_path)
-        assert (status, text) == ("fail", "~/.claude/cache/statusline isn't writable")
+        assert (status, text) == ("fail", "~/.claude/cache/dashline isn't writable")
     finally:
         cache_path(sub).chmod(0o700)
 
@@ -617,7 +617,7 @@ def test_command_broken_python(installed, tmp_path):
 
 
 def test_command_script_missing(installed, isolated_home, tmp_path):
-    (isolated_home / ".claude" / "scripts" / "statusline" / "statusline.py").unlink()
+    (isolated_home / ".claude" / "scripts" / "dashline" / "statusline.py").unlink()
     status, text, fix = check(installed, "command", tmp_path)
     assert status == "fail"
     assert "can't open file" in text
@@ -641,7 +641,7 @@ def test_project_dir_from_claude(installed, tmp_path):
 
 
 def test_command_internal_error(installed, isolated_home, tmp_path):
-    layout = isolated_home / ".claude" / "scripts" / "statusline" / "dashline" / "layout.py"
+    layout = isolated_home / ".claude" / "scripts" / "dashline" / "dashline" / "layout.py"
     layout.write_text("def render(*args):\n    raise RuntimeError('boom')\n")
     status, text, _ = check(installed, "command", tmp_path)
     assert status == "fail"
@@ -1152,7 +1152,7 @@ def test_command_errors_through_powershell(installed, tmp_path, monkeypatch):
         f"{program} : The term '{program}' is not recognized as the name of a cmdlet, "
         "function, script file, or operable program.\n"
         "At line:1 char:1\n"
-        f"+ {program} -I -S C:/Users/pat/.claude/scripts/statusline/statusline.py\n"
+        f"+ {program} -I -S C:/Users/pat/.claude/scripts/dashline/statusline.py\n"
         "+ ~~\n"
         f"    + CategoryInfo          : ObjectNotFound: ({program}:String) [], "
         "CommandNotFoundException\n"
@@ -1250,7 +1250,7 @@ def test_command_with_bash_variables_on_windows(installed, tmp_path, monkeypatch
     data = get_settings(installed)
     data["statusLine"]["command"] = install.COMMAND + " 2>/dev/null"  # an edit: not old_form
     set_settings(installed, data)
-    missing = "C:\\Py\\python.exe: can't open file 'C:\\scripts\\statusline\\statusline.py'"
+    missing = "C:\\Py\\python.exe: can't open file 'C:\\scripts\\dashline\\statusline.py'"
     status, _, fix = windows_command_check(
         installed, tmp_path, monkeypatch, stderr=missing, returncode=2
     )
@@ -1496,7 +1496,7 @@ def test_install_missing_only_its_shim(installed, tmp_path):
     (Path(install.install_dir(installed)) / "statusline.py").unlink()
     status, text, fix = check(installed, "install", tmp_path)
     assert (status, fix) == ("fail", "run /dashline:install")
-    assert text == "statusline.py is missing from ~/.claude/scripts/statusline"
+    assert text == "statusline.py is missing from ~/.claude/scripts/dashline"
 
 
 def test_doctor_run_from_the_installed_copy(installed, tmp_path, monkeypatch):
@@ -1513,7 +1513,7 @@ def test_doctor_run_from_the_installed_copy(installed, tmp_path, monkeypatch):
 def test_newer_install_with_the_same_files(installed, isolated_home, tmp_path):
     """A newer release can ship the same code (one that changed only docs): still
     newer, not "same as this copy"."""
-    target = isolated_home / ".claude" / "scripts" / "statusline"
+    target = isolated_home / ".claude" / "scripts" / "dashline"
     (target / "VERSION").write_text("99.0.0\n")
     status, text, fix = check(installed, "install", tmp_path)
     assert status == "warn"
@@ -1532,7 +1532,7 @@ def test_project_entry_that_only_names_the_install_path(installed, tmp_path):
     marker = tmp_path / "ran"
     cmd = (
         f"touch '{marker.as_posix()}'; printf '\x1b[31mEVIL'; "
-        "python3 $HOME/.claude/scripts/statusline/statusline.py"
+        "python3 $HOME/.claude/scripts/dashline/statusline.py"
     )
     (tmp_path / ".claude").mkdir()
     (tmp_path / ".claude" / "settings.json").write_text(
@@ -1642,7 +1642,7 @@ def test_symbols_check_is_powershells_only(installed, tmp_path, monkeypatch):
 
 
 def test_first_word_keeps_windows_backslashes(monkeypatch):
-    cmd = 'C:\\Python312\\python.exe -I -S "C:/Users/pat/.claude/scripts/statusline/statusline.py"'
+    cmd = 'C:\\Python312\\python.exe -I -S "C:/Users/pat/.claude/scripts/dashline/statusline.py"'
     monkeypatch.setattr(host, "WINDOWS", True)
     assert doctor.first_word(cmd) == "C:\\Python312\\python.exe"
     assert doctor.first_word('"C:\\Program Files\\Py\\python.exe" -I x') == (

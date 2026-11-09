@@ -66,17 +66,13 @@ PERIODS = {"month": "month", "monthly": "month", "week": "week", "weekly": "week
 
 
 def cache_dir(env) -> str:
-    return os.path.join(config_dir(env), "cache", "statusline")
+    return os.path.join(config_dir(env), "cache", "dashline")
 
 
 def _path(env, name: str) -> str:
     return os.path.join(cache_dir(env), name)
 
 
-# The files dashline 0.1.6 and earlier shared between logins: removed on the next write,
-# but only when they hold what dashline wrote (the folder may be shared with other tools).
-# The keys each one always had:
-LEGACY = {"usage.json": ("fetched_at", "account", "data"), "fetch.hold": ("until", "reason")}
 TMP_STALE = 300  # a write takes milliseconds: a .tmp this old was left by a killed writer
 
 
@@ -120,30 +116,15 @@ def _per_login(name: str) -> bool:
     return False
 
 
-def _legacy(folder: str, name: str) -> bool:
-    """`name` is one of 0.1.6's shared files and holds what dashline wrote there."""
-    keys = LEGACY.get(name)
-    if keys is None:
-        return False
-    data = _read_json(os.path.join(folder, name))
-    return all(k in data for k in keys) and ("account" in data or name != "fetch.hold")
-
-
-def own_files(names, folder: str | None = None) -> list:
-    """The names in `names` that are dashline's: the cache folder may be shared.
-
-    With `folder`, a 0.1.6 `usage.json` / `fetch.hold` counts only if its content is
-    dashline's; without it, by name alone.
-    """
+def own_files(names) -> list:
+    """The names in `names` that are dashline's: only its own tags match, so another
+    tool's files in the folder are never touched."""
     out = []
     for name in names:
         base = name
         if name.endswith(".tmp"):  # `usage-x.json.123.tmp`, left by a killed writer
             base = name.rsplit(".", 2)[0]
-        if base in LEGACY:
-            if folder is None or base != name or _legacy(folder, name):
-                out.append(name)
-        elif base.startswith("fetch.lock") or _per_login(base):
+        if base.startswith("fetch.lock") or _per_login(base):
             out.append(name)
     return sorted(out)
 
@@ -595,17 +576,14 @@ def _backoff(env, who, now: float, reason: str, retry: float | None = None) -> N
 
 
 def _tidy(env, now: float) -> None:
-    """Remove 0.1.6's shared files, other logins' files too old to matter, and temp
-    files a killed writer left.
+    """Remove other logins' files too old to matter, and temp files a killed writer
+    left.
 
     Data older than MAX_AGE isn't drawn and no hold outlasts RETRY_MAX, so a file left
     alone longer than both belongs to a login no longer used (a replaced token, say).
     Only dashline's own files are touched: the folder may be shared.
     """
     folder = cache_dir(env)
-    for name in LEGACY:
-        if _legacy(folder, name):
-            _remove(os.path.join(folder, name))
     try:
         names = os.listdir(folder)
     except OSError:
@@ -617,7 +595,7 @@ def _tidy(env, now: float) -> None:
         elif _per_login(name):
             age = limit
         else:
-            continue  # the lock, and legacy files (handled above)
+            continue  # the lock
         path = os.path.join(folder, name)
         with contextlib.suppress(OSError):
             if now - os.stat(path).st_mtime > age:

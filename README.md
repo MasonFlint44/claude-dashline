@@ -16,7 +16,7 @@ where you are in git, in three lines that fit the terminal's width.
 ```
 
 `/dashline:install` checks for Python, copies dashline to
-`~/.claude/scripts/statusline/` (or under `$CLAUDE_CONFIG_DIR`), and points the
+`~/.claude/scripts/dashline/` (or under `$CLAUDE_CONFIG_DIR`), and points the
 `statusLine` setting at it. It asks first if you already have a statusline, if
 that folder holds another tool's files, or if a newer dashline is already installed
 there. Updates keep any files of your own you put in that folder. On a first install
@@ -77,7 +77,7 @@ names. Nothing wraps.
 | `ascii` | nothing | `(main)  * +12  >2` |
 
 Switch with `/dashline:install`, or try one with
-`python3 ~/.claude/scripts/statusline/statusline.py --preview --glyphs nerd`
+`python3 ~/.claude/scripts/dashline/statusline.py --preview --glyphs nerd`
 (on Windows, `py -3` or `python` in place of `python3`).
 
 Colors follow your Claude Code theme, including custom themes. `NO_COLOR`
@@ -88,7 +88,7 @@ turns them off.
 Run `/dashline:doctor`. It checks Python, the installed copy, which settings file's
 statusline wins, your login, one live usage fetch, the cache, the statusline command
 itself, git, the theme and fonts, then explains each problem and fixes what's safe.
-Outside Claude Code: `python3 ~/.claude/scripts/statusline/statusline.py --doctor`
+Outside Claude Code: `python3 ~/.claude/scripts/dashline/statusline.py --doctor`
 (on Windows, `py -3` or `python` in place of `python3`).
 
 ## How plan usage is fetched
@@ -108,7 +108,7 @@ Keychain, or `~/.claude/.credentials.json`.
 - The token goes only to `api.anthropic.com`: redirects are refused, so it can't follow
   one elsewhere. It is never written anywhere, passed on a command line or put in an
   environment variable.
-- The answer is cached in `~/.claude/cache/statusline/` (files only you can read; on
+- The answer is cached in `~/.claude/cache/dashline/` (files only you can read; on
   Windows, as private as your user folder) and tagged
   with your account (or, with `CLAUDE_CODE_OAUTH_TOKEN`, a hash of that token), so
   switching logins never shows someone else's numbers.
@@ -119,12 +119,10 @@ dashline catches up; the rest of the statusline keeps working.
 ## Uninstall
 
 Remove the `statusLine` entry from `~/.claude/settings.json`, delete
-`~/.claude/scripts/statusline/` (and `statusline.backup` or `statusline.kept` next to
+`~/.claude/scripts/dashline/` (and `dashline.backup` or `dashline.kept` next to
 it, if `/dashline:install` set another tool's files or one of yours aside there), then
-`/plugin uninstall dashline@claude-toolbox`. dashline's cache is `usage-*.json`,
-`fetch-*.hold` and `fetch.lock*` in `~/.claude/cache/statusline/`, plus `usage.json` and
-`fetch.hold` from 0.1.6 and earlier, and any of these ending in `.tmp`. Delete those
-files, and the folder only if nothing else uses it. With `CLAUDE_CONFIG_DIR` set, all
+`/plugin uninstall dashline@claude-toolbox`. Delete dashline's cache,
+`~/.claude/cache/dashline/`, too. With `CLAUDE_CONFIG_DIR` set, all
 of these are under that folder instead of `~/.claude`. On Windows, `~` is your user
 folder (`%USERPROFILE%`).
 

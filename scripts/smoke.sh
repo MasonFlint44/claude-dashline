@@ -62,14 +62,14 @@ case "$(uname -s)" in
     hide=(env "ProgramFiles=$empty" "ProgramW6432=$empty" "ProgramFiles(x86)=$empty")
     shell="(Git Bash)"
     run=("$py" -I -S)
-    installed="$home_dir/.claude/scripts/statusline/statusline.py"
+    installed="$home_dir/.claude/scripts/dashline/statusline.py"
     ;;
   *)
     mkdir -p "$tmp/bin"
     ln -s "$py" "$tmp/bin/python3"
     export HOME="$home_dir" PATH="$tmp/bin:/usr/bin:/bin"
     run=(python3 -I -S)
-    installed="$HOME/.claude/scripts/statusline/statusline.py"
+    installed="$HOME/.claude/scripts/dashline/statusline.py"
     hide=(env)
     shell=""
     ;;

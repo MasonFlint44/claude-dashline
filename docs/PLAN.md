@@ -28,8 +28,8 @@ from live calls to the endpoints on 2026-11-03.
 | Enterprise / Team spend | a simple monthly bar; no day bar, no holiday calendar |
 | Model-scoped bar (Fable) | shown while the current model is in scope (even at 0%), or whenever it has use this week (changed 11/5: subagents and other sessions spend it) |
 | Pace tick | out for v1; possible later feature |
-| Install path | `${CLAUDE_CONFIG_DIR:-~/.claude}/scripts/statusline/` |
-| Config file | none in v1; if ever needed, `${CLAUDE_CONFIG_DIR:-~/.claude}/config/statusline/` |
+| Install path | `${CLAUDE_CONFIG_DIR:-~/.claude}/scripts/dashline/` |
+| Config file | none in v1; if ever needed, `${CLAUDE_CONFIG_DIR:-~/.claude}/config/dashline/` |
 | Layout | E3 (§4): line 1 session + `context` bar, line 2 plan name + plan bars, line 3 repo |
 | Bar widths | plan bars share line 2's free space: 1/n each, at most 1/3 (three bars fill the row), minimum 8; `context` = plan width (line 1's room permitting; 2× until 0.1.2); overflow turns trailing plan bars into text, one at a time, on line 2; bars never change lines; never wraps (changed 11/5, was a 24/48 cap; bars moved up to line 1 until 0.1.5) |
 | Separators | `·` between items, `│` between groups, both in theme gray (ascii: `/`, `\|`) |
@@ -155,22 +155,25 @@ It's undocumented, so any shape change must degrade to a hidden bar, never a cra
 ## 3. Install layout
 
 ```
-${CLAUDE_CONFIG_DIR:-~/.claude}/scripts/statusline/
+${CLAUDE_CONFIG_DIR:-~/.claude}/scripts/dashline/
   statusline.py          entry shim: run with -S (as installed) it appends its dir to
                          sys.path, so a stray .py there can't stand in for the
                          standard library (0.1.8); without -S it inserts the dir,
                          imports the package and takes the dir off again (0.1.7)
   dashline/              package, copied from the plugin
   VERSION
-${CLAUDE_CONFIG_DIR:-~/.claude}/cache/statusline/
+${CLAUDE_CONFIG_DIR:-~/.claude}/cache/dashline/
   usage-<tag>.json  fetch-<tag>.hold     one pair per login (0.1.7)
   fetch.lock  fetch.lock.break           shared by all logins
 ```
 
-The lock's name is generic, in a folder other tools may share: a `fetch.lock` of
-theirs a minute old would be taken for a dead child's and removed. Accepted (0.2.0
-review): renaming it would make one release's renders and the next one's fetch side by
-side once.
+Both folders are named `dashline` (changed 11/8 by the author; until 0.2.0 they were
+`scripts/statusline/` and `cache/statusline/`, a name other tools use too, so a
+`fetch.lock` of theirs could pass for a dead child's). No code moves files from the old
+folders: there were next to no users, and the author moved theirs by hand. The cache
+stays in the config folder rather than `CLAUDE_PLUGIN_DATA`: Claude Code doesn't give
+that variable to the statusLine command (only to a plugin's hooks, MCP and LSP
+servers), and its path depends on the marketplace and `CLAUDE_CODE_PLUGIN_CACHE_DIR`.
 
 Fetching (Phase 3): a render that finds this login's cache missing or ≥ 3 min old, and
 no hold in force for it, takes `fetch.lock` (O_EXCL; a lock ≥ 60 s old
@@ -190,8 +193,7 @@ hold the server set). Each login has its own cache and hold, named by its tag (t
 `account` hash: 16 hex digits, `env-` and 16 for `CLAUDE_CODE_OAUTH_TOKEN`, or
 `unknown`), so two logins in use at once don't overwrite each other's numbers or clear
 each other's waits (0.1.7; before, they refetched over each other every render). Writes
-remove 0.1.6's shared `usage.json` / `fetch.hold` (only when they hold dashline's keys,
-since 0.1.8: the folder may be shared), other logins' files untouched for over a day,
+remove other logins' files untouched for over a day,
 and dashline's own `.tmp` leftovers older than 5 min; files whose names aren't
 dashline's tags are never touched. A request gets 10 s per step and 30 s in all, DNS
 included; past that the reason is "no answer within 30 s" (0.1.8). An error the request
@@ -202,7 +204,7 @@ ahead of the clock (it was set back: an NTP step, a restored VM; daylight saving
 doesn't move epoch time) count as unknown: the cache isn't drawn (while fetches fail
 it would pass for fresh) and refetches, and a lock or hold from the future is ignored. With `CLAUDE_CODE_OAUTH_TOKEN` the `account` tag is a
 salted hash of that token. Data older than a day is dropped. Files are 0600 in a 0700
-`statusline/` folder (0700 when dashline creates it; a `cache/` above it that dashline
+`dashline/` folder (0700 when dashline creates it; a `cache/` above it that dashline
 makes gets the usual mode, and a folder another tool made is left as it is, since its
 files stay 0600), written atomically through a new temp file (`O_EXCL`, never one left
 in its place). A usage answer's `limits` are kept and read up to 32 rows (a real one
@@ -238,7 +240,7 @@ another user still resolves it:
 ```json
 "statusLine": {
   "type": "command",
-  "command": "python3 -I -S \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/statusline/statusline.py\"",
+  "command": "python3 -I -S \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/scripts/dashline/statusline.py\"",
   "refreshInterval": 60
 }
 ```
@@ -256,7 +258,7 @@ Bash eats unquoted backslashes. The Windows entry is therefore a Python by bare 
 and the copy's full path in forward slashes, double-quoted:
 
 ```json
-"command": "py -3 -I -S \"C:/Users/pat/.claude/scripts/statusline/statusline.py\""
+"command": "py -3 -I -S \"C:/Users/pat/.claude/scripts/dashline/statusline.py\""
 ```
 
 `--install` picks the name by running each of `py -3`, `python`, `python3` (first
@@ -771,7 +773,7 @@ What would actually need configuring:
 **No config file in v1.** The glyph set is a flag in the
 `statusLine.command` (`… statusline.py --glyphs nerd`) that the install skill
 writes. If hiding elements ever earns its keep, a file goes in
-`~/.claude/config/statusline/`.
+`~/.claude/config/dashline/`.
 
 ---
 
@@ -815,13 +817,13 @@ terminal's width, 100 when there's no terminal.
   `refreshInterval`). A statusLine that isn't dashline's is left alone: exit 3 with the
   entry printed, and `--replace` overwrites it. Notes a project statusLine that wins.
   Since 0.1.6: an entry is dashline's when its command runs the config dir's
-  `scripts/statusline/statusline.py` and that folder holds the `dashline` package (or
+  `scripts/dashline/statusline.py` and that folder holds the `dashline` package (or
   nothing). Install checks the settings entry, the folder, and that settings.json is
   writable before writing anything, so exit 3 changes nothing; `--replace` moves
-  another tool's folder to `statusline.backup`. dashline's own entry keeps its command
+  another tool's folder to `dashline.backup`. dashline's own entry keeps its command
   as written (e.g. a full path to Python); only `--glyphs` changes. A failed swap puts
   the old copy back; folders left by an interrupted install are removed, or renamed
-  `statusline.kept` (named in a `note:`) when they hold the user's files, also when a
+  `dashline.kept` (named in a `note:`) when they hold the user's files, also when a
   later install got the same pid. A BOM in
   settings.json is kept. An installed copy newer than this one is left alone: exit 4,
   and the skill asks (updating the plugin is the recommended answer) before
@@ -832,7 +834,7 @@ terminal's width, 100 when there's no terminal.
   - the temp settings file is 0600 until it takes the old file's mode;
   - in a hand-edited command, `--glyphs` goes right after the script path, so a shell
     tail (`|| …`) keeps working;
-  - updates keep files the user added at the top of `scripts/statusline/` (not inside
+  - updates keep files the user added at the top of `scripts/dashline/` (not inside
     `dashline/`);
   - a folder holding only `.DS_Store`, `Thumbs.db` or `desktop.ini` counts as empty;
   - the swap is two renames, so a render starting between them draws nothing once.
@@ -848,8 +850,8 @@ terminal's width, 100 when there's no terminal.
   - rollback (`put_back`, the swap, the user's files) runs on any failure, Ctrl-C
     included;
   - the user's files are moved, not copied, into the new folder; one that can't move
-    stays in `scripts/statusline.kept`, named in a `note:` line;
-  - a symlinked `scripts/statusline` stays a link: the copy is built beside its target.
+    stays in `scripts/dashline.kept`, named in a `note:` line;
+  - a symlinked `scripts/dashline` stays a link: the copy is built beside its target.
 
   Skills: doctor runs at most twice per request (once, plus once after fixes). The
   no-ask `--install` fix applies only when the `settings` line is ok and names the

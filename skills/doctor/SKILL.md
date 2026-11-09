@@ -41,11 +41,11 @@ What the checks mean:
 | check | what it covers |
 |---|---|
 | `python` | the Python running doctor; the statusline runs the Python its command names (`python3`, or on Windows `py -3`, `python` or `python3`) from the PATH Claude Code sees |
-| `install` | the copy in `<config>/scripts/statusline/` and whether it matches this plugin version |
+| `install` | the copy in `<config>/scripts/dashline/` and whether it matches this plugin version |
 | `settings` | which settings file's `statusLine` wins, and whether it runs dashline; `disableAllHooks` |
 | `login` | subscription vs API key / Bedrock / Vertex / Foundry; where the token comes from |
 | `usage` | one live fetch of plan usage (none while the server asked to wait): the bars it would draw, or why it failed |
-| `cache` | `<config>/cache/statusline/`: writable, dashline's files private, when last fetched, fetch lock |
+| `cache` | `<config>/cache/dashline/`: writable, dashline's files private, when last fetched, fetch lock |
 | `command` | runs the exact settings command on a sample session, like Claude Code does |
 | `git` | git for the directory row (2.15 or newer) |
 | `theme` | the Claude Code theme whose colors the statusline uses |
@@ -81,7 +81,7 @@ Ask first (AskUserQuestion), and act only on a yes:
   `DASHLINE --install`. It copies dashline and writes the statusLine entry, which turns
   the statusline on, so the user may have removed it on purpose. If it exits 3, show
   what its output says is there (the existing entry, or another tool's files in
-  `scripts/statusline/`) and ask before `DASHLINE --install --replace`. If it exits 4,
+  `scripts/dashline/`) and ask before `DASHLINE --install --replace`. If it exits 4,
   the installed copy is newer than this plugin: recommend updating the plugin
   (`/plugin`), and only on an explicit yes run `DASHLINE --install --downgrade`.
 - `usage` says `server asked to wait`: the server turned the usage request away and
